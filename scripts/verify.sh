@@ -46,13 +46,55 @@ fi
 
 "$bin" check-prompt --file "$tmp_dir/worker.prompt"
 
-if "$bin" render-prompt --role worker --report "$tmp_dir/bad.md" >/dev/null 2>&1; then
+if "$bin" render-prompt \
+  --role worker \
+  --report "$tmp_dir/bad.md" \
+  --ledger "$tmp_dir/harness.db" \
+  --allowed-write-paths issue_feedback_agent/tests >/dev/null 2>&1; then
+  echo "error: worker prompt without brief unexpectedly passed" >&2
+  exit 1
+fi
+
+if "$bin" render-prompt \
+  --role worker \
+  --brief "$tmp_dir/brief.md" \
+  --report "$tmp_dir/bad.md" \
+  --ledger "$tmp_dir/harness.db" >/dev/null 2>&1; then
   echo "error: worker prompt without write scope unexpectedly passed" >&2
   exit 1
 fi
 
 if "$bin" render-prompt --role discussion --report "$tmp_dir/bad.md" --allowed-write-paths /tmp >/dev/null 2>&1; then
   echo "error: discussion prompt with write scope unexpectedly passed" >&2
+  exit 1
+fi
+
+{
+  printf '%s\n' "Stable text"
+  printf '\n'
+  printf '%s\n' "--- DYNAMIC TASK CONTEXT ---"
+  printf '%s\n' "REPORT_PATH=$tmp_dir/bad.md"
+  printf '%s\n' "AGENT_LEDGER_PATH=$tmp_dir/harness.db"
+  printf '%s\n' "ALLOWED_WRITE_PATHS=issue_feedback_agent/tests"
+} > "$tmp_dir/missing-role.prompt"
+
+if "$bin" check-prompt --file "$tmp_dir/missing-role.prompt" >/dev/null 2>&1; then
+  echo "error: prompt without ROLE unexpectedly passed" >&2
+  exit 1
+fi
+
+{
+  printf '%s\n' "Stable text"
+  printf '\n'
+  printf '%s\n' "--- DYNAMIC TASK CONTEXT ---"
+  printf '%s\n' "ROLE=bogus"
+  printf '%s\n' "REPORT_PATH=$tmp_dir/bad.md"
+  printf '%s\n' "AGENT_LEDGER_PATH=$tmp_dir/harness.db"
+  printf '%s\n' "ALLOWED_WRITE_PATHS=issue_feedback_agent/tests"
+} > "$tmp_dir/bogus-role.prompt"
+
+if "$bin" check-prompt --file "$tmp_dir/bogus-role.prompt" >/dev/null 2>&1; then
+  echo "error: prompt with bogus ROLE unexpectedly passed" >&2
   exit 1
 fi
 
@@ -75,5 +117,26 @@ fi
 
 "$bin" ledger-update --db "$tmp_dir/harness.db" --handle agent-1 --status closed --waited true --next-action done
 "$bin" ledger-audit --db "$tmp_dir/harness.db" --mode final
+
+"$bin" ledger-init --db "$tmp_dir/final-exception.db" --max-concurrent 2 --max-total 4
+"$bin" ledger-add \
+  --db "$tmp_dir/final-exception.db" \
+  --handle agent-2 \
+  --role explorer \
+  --task failed-check \
+  --status failed \
+  --report-path "$tmp_dir/report.md" \
+  --next-action inspect
+
+if "$bin" ledger-audit --db "$tmp_dir/final-exception.db" --mode final >/dev/null 2>&1; then
+  echo "error: final audit unexpectedly passed for failed agent without reason" >&2
+  exit 1
+fi
+
+"$bin" ledger-update \
+  --db "$tmp_dir/final-exception.db" \
+  --handle agent-2 \
+  --reason "tool unavailable during verification"
+"$bin" ledger-audit --db "$tmp_dir/final-exception.db" --mode final
 
 echo "verification passed"

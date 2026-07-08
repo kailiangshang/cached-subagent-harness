@@ -81,12 +81,15 @@ Before dispatch, check:
 - The prompt has no repeated historical summaries.
 - The prompt names files instead of embedding their content.
 - The task report path and ledger path are present when the role can create, update, or depend on lifecycle state.
+- `ROLE` is present and is one of `discussion`, `explorer`, `worker`, `reviewer`, or `fixer`.
+- `worker` prompts include `TASK_BRIEF_PATH`.
+- `fixer` prompts include `FINDINGS_PATH`.
 - The role's write scope is present. Read-only roles use `ALLOWED_WRITE_PATHS=none`; writing roles use explicit paths.
 
 Use the bundled Rust harness binary when available:
 
 ```text
-scripts/bin/harnessctl render-prompt --role worker --report <path> --ledger <db> --allowed-write-paths <path>
+scripts/bin/harnessctl render-prompt --role worker --brief <path> --report <path> --ledger <db> --allowed-write-paths <path>
 scripts/bin/harnessctl check-prompt --file <prompt-file>
 ```
 

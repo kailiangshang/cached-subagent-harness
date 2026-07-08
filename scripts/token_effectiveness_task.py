@@ -20,7 +20,6 @@ from typing import Any
 
 DYNAMIC_MARKER = "--- DYNAMIC TASK CONTEXT ---"
 DEFAULT_AGENTS = 4
-DEFAULT_MIN_RAW_SAVINGS_PCT = 0.0
 DEFAULT_MIN_CACHE_ADJUSTED_SAVINGS_PCT = 50.0
 DEFAULT_MIN_STABLE_PREFIX_RATIO_PCT = 55.0
 
@@ -244,12 +243,15 @@ Recent controller notes:
 def validate_report(
     report: dict[str, Any],
     *,
-    min_raw_savings_pct: float,
+    min_raw_savings_pct: float | None,
     min_cache_adjusted_savings_pct: float,
     min_stable_prefix_ratio_pct: float,
 ) -> list[str]:
     errors: list[str] = []
-    if report["savings"]["raw_pct"] < min_raw_savings_pct:
+    if (
+        min_raw_savings_pct is not None
+        and report["savings"]["raw_pct"] < min_raw_savings_pct
+    ):
         errors.append(
             "raw savings "
             f"{report['savings']['raw_pct']}% below {min_raw_savings_pct}%"
@@ -313,7 +315,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--min-raw-savings-pct",
         type=float,
-        default=DEFAULT_MIN_RAW_SAVINGS_PCT,
+        default=None,
+        help="Optional raw prompt-size gate. Omitted by default because stable prefixes may intentionally make single prompts larger.",
     )
     parser.add_argument(
         "--min-cache-adjusted-savings-pct",
@@ -337,7 +340,7 @@ def main(argv: list[str] | None = None) -> int:
             f"missing harnessctl binary at {args.harnessctl}; run scripts/build-harnessctl.sh"
         )
 
-    with tempfile.TemporaryDirectory(prefix="codex-token-task-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="harness-token-task-") as tmp:
         work_dir = Path(tmp)
         harness_prompts = render_harness_prompts(args.harnessctl, work_dir, args.agents)
         baseline_prompts = build_baseline_prompts(work_dir, args.agents)

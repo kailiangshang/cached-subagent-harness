@@ -133,4 +133,4 @@ install_superpowers
 install_cached_skill
 build_harnessctl
 
-echo "done. Restart Codex to pick up the installed skill."
+echo "done. Restart your CLI runtime to pick up the installed skill."

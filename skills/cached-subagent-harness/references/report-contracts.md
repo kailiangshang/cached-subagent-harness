@@ -30,7 +30,7 @@ Keep entries dense. Link file paths for details; do not paste long logs, diffs, 
 Every harness-created agent must have a row:
 
 ```text
-handle | role | task | status | report_path | spawned_at | waited | closed | write_scope | token_risk | next_action
+handle | role | task | status | report_path | spawned_at | waited | closed | write_scope | token_risk | final_reason | next_action
 ```
 
 Create and update rows with `scripts/bin/harnessctl ledger-add` and `scripts/bin/harnessctl ledger-update`.
@@ -54,8 +54,9 @@ Lifecycle rules:
 - update to `spawned` or `running` immediately after spawn;
 - after wait, set `reported`, fill `report_path`, and summarize `next_action`;
 - after close, set `closed` and `closed=yes`;
-- use `failed`, `abandoned`, or `externally-unknown` only with a reason.
+- use `failed`, `abandoned`, or `externally-unknown` only with `final_reason`.
 - set `write_scope=none` for read-only roles; set explicit paths for `worker` and `fixer`.
+- for temporary replacement agents, record the expiry condition in `next_action`, then close the agent when it is superseded.
 
 ## Status Names
 
@@ -137,4 +138,4 @@ External Agent Reconciliation:
 Degraded Mode:
 ```
 
-All ledger rows must be `closed`, or must be `failed`, `abandoned`, or `externally-unknown` with an explicit reason. UI-visible completed agents are not a failure when the ledger says they were waited and closed. Unknown UI-visible agents are recorded only when the controller cannot inspect them and the user-provided `/agent` reconciliation indicates they matter for budget or cleanup.
+All ledger rows must be `closed`, or must be `failed`, `abandoned`, or `externally-unknown` with an explicit `final_reason`. UI-visible completed agents are not a failure when the ledger says they were waited and closed. Unknown UI-visible agents are recorded only when the controller cannot inspect them and the user-provided `/agent` reconciliation indicates they matter for budget or cleanup. Temporary replacement agents must be closed as soon as their original agent is resumed or their task is cancelled.

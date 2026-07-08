@@ -22,6 +22,7 @@ CACHE_HOSTILE_PATTERNS = {
 }
 READ_ONLY_ROLES = {"discussion", "explorer", "reviewer"}
 WRITE_ROLES = {"worker", "fixer"}
+ALL_ROLES = READ_ONLY_ROLES | WRITE_ROLES
 
 
 def dynamic_fields(lines: list[str], marker_index: int) -> dict[str, str]:
@@ -51,15 +52,24 @@ def check_prompt(text: str, max_lines: int) -> list[str]:
             errors.append(f"dynamic field before marker at line {idx}: {line}")
 
     role = fields.get("ROLE")
-    write_scope = fields.get("ALLOWED_WRITE_PATHS")
-    if role in WRITE_ROLES and (not write_scope or write_scope == "none"):
-        errors.append(f"{role} prompt must include explicit ALLOWED_WRITE_PATHS")
-    if role in READ_ONLY_ROLES and write_scope != "none":
-        errors.append(f"{role} prompt must use ALLOWED_WRITE_PATHS=none")
-    if role and "REPORT_PATH" not in fields:
-        errors.append("missing REPORT_PATH dynamic field")
-    if role and "AGENT_LEDGER_PATH" not in fields:
-        errors.append("missing AGENT_LEDGER_PATH dynamic field")
+    if not role:
+        errors.append("missing ROLE dynamic field")
+    elif role not in ALL_ROLES:
+        errors.append(f"unknown role: {role}")
+    else:
+        write_scope = fields.get("ALLOWED_WRITE_PATHS")
+        if role in WRITE_ROLES and (not write_scope or write_scope == "none"):
+            errors.append(f"{role} prompt must include explicit ALLOWED_WRITE_PATHS")
+        if role in READ_ONLY_ROLES and write_scope != "none":
+            errors.append(f"{role} prompt must use ALLOWED_WRITE_PATHS=none")
+        if "REPORT_PATH" not in fields:
+            errors.append("missing REPORT_PATH dynamic field")
+        if "AGENT_LEDGER_PATH" not in fields:
+            errors.append("missing AGENT_LEDGER_PATH dynamic field")
+        if role == "worker" and "TASK_BRIEF_PATH" not in fields:
+            errors.append("worker prompt must include TASK_BRIEF_PATH")
+        if role == "fixer" and "FINDINGS_PATH" not in fields:
+            errors.append("fixer prompt must include FINDINGS_PATH")
 
     for label, pattern in CACHE_HOSTILE_PATTERNS.items():
         if pattern.search(text):

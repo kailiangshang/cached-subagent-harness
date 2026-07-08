@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate release metadata without relying on local Codex system skills."""
+"""Validate release metadata without relying on local runtime skills."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 
-PLUGIN_NAME = "codex-cached-subagent-harness"
+PLUGIN_NAME = "cached-subagent-harness"
 SKILL_NAME = "cached-subagent-harness"
 SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$")
 SKILL_NAME_RE = re.compile(r"^[a-z0-9-]+$")

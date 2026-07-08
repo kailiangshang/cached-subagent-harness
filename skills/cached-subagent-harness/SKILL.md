@@ -1,6 +1,6 @@
 ---
 name: cached-subagent-harness
-description: Use when Codex coordinates subagents for long-running development work where token budget, stable prompts, repo-backed lifecycle tracking, complete-development gates, or resume-safe handoffs matter.
+description: Use when an agentic CLI coordinates subagents for long-running development work where token budget, stable prompts, repo-backed lifecycle tracking, complete-development gates, or resume-safe handoffs matter.
 ---
 
 # Cached Subagent Harness
@@ -19,6 +19,7 @@ It may use superpowers skills as phase references, but it must remain operationa
 6. Subagents are token investments, not default acceleration. Use them only when they reduce controller context load, isolate read-heavy discovery, or provide independent review.
 7. Do not add version suffixes to skill, agent, or role names. Use stable names such as `explorer`, `worker`, `reviewer`, and `fixer`.
 8. Protect the control plane: skill files, harness files, and agent-management rules are read-only to subagents unless a worker brief explicitly grants those paths as its write scope.
+9. Close superseded agents immediately. If a temporary replacement agent is created while recovering another agent, close the replacement as soon as the original resumes or the task is cancelled.
 
 ## Superpowers Relationship
 
@@ -56,7 +57,9 @@ Default budget:
 
 The repo report is the authoritative lifecycle source for agents created by this harness. For known harness-created handles, do not ask the user to paste `/agent` output. If the UI or user reports extra unknown agents and the platform lacks `list_agents`, ask for one `/agent` reconciliation only when it affects budget, cleanup, or correctness; record the result as `externally-unknown` rather than pretending the harness can close unknown handles.
 
-Each spawned agent must move through the ledger: `planned`, `spawned` or `running`, `reported`, then `closed`; or `failed`, `abandoned`, or `externally-unknown` with a reason. Completed or closed agents may remain visible in the UI; treat that as platform state, not harness state.
+Each spawned agent must move through the ledger: `planned`, `spawned` or `running`, `reported`, then `closed`; or `failed`, `abandoned`, or `externally-unknown` with `final_reason`. Completed or closed agents may remain visible in the UI; treat that as platform state, not harness state.
+
+Temporary or replacement agents must have an expiry condition in the report, such as `superseded_by:<agent_id>` or `expires_when:original_resumed`. When the condition becomes true, close that agent before continuing and update the ledger.
 
 See `references/report-contracts.md` for ledger fields and audit requirements.
 
@@ -107,7 +110,8 @@ Avoid recursive subagents unless the user explicitly asks for nested delegation.
 A task is not complete until:
 
 - the report file records PSOC, agent budget, lifecycle ledger, status, files changed, commits, tests run, known risks, degraded mode notes, and final audit;
-- every harness-created agent is `closed`, or is `failed`, `abandoned`, or `externally-unknown` with a reason;
+- every harness-created agent is `closed`, or is `failed`, `abandoned`, or `externally-unknown` with `final_reason`;
+- every temporary replacement agent spawned in the current turn has either become the active agent or has been closed as superseded;
 - the relevant focused tests pass;
 - the controller runs the project harness or documented equivalent;
 - Critical/Important review findings are fixed or explicitly escalated;

@@ -2,7 +2,7 @@
 
 `cached-subagent-harness` is a control-plane skill for subagent orchestration.
 It does not replace Superpowers. It narrows and enforces the parts that become
-fragile during long-running, multi-agent Codex work:
+fragile during long-running, multi-agent CLI work:
 
 - stable prompt prefixes;
 - file-path handoffs instead of pasted bulk context;
@@ -23,7 +23,7 @@ Superpowers remains the recommended source for the broader development process:
 
 ## Install Behavior
 
-The installer first checks for Superpowers in common Codex locations:
+The installer first checks for Superpowers in common Codex-compatible locations:
 
 ```text
 $CODEX_HOME/skills/using-superpowers/SKILL.md

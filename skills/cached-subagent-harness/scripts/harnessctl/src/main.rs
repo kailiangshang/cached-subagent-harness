@@ -20,7 +20,7 @@ const DYNAMIC_FIELDS: &[&str] = &[
 const READ_ONLY_ROLES: &[&str] = &["discussion", "explorer", "reviewer"];
 const WRITE_ROLES: &[&str] = &["worker", "fixer"];
 const ALL_ROLES: &[&str] = &["discussion", "explorer", "worker", "reviewer", "fixer"];
-const FINAL_STATUSES: &[&str] = &["closed", "failed", "abandoned", "externally-unknown"];
+const EXCEPTION_FINAL_STATUSES: &[&str] = &["failed", "abandoned", "externally-unknown"];
 const ALL_STATUSES: &[&str] = &[
     "planned",
     "spawned",
@@ -41,7 +41,13 @@ Stable operating rules:
 - Maintain the PSOC loop: Problem, Scenarios, Options, Chosen Plan.
 - If new evidence invalidates PSOC, return LOOP_REQUIRED with the earliest invalid section.
 - Use stable role behavior. Do not spawn nested subagents unless explicitly instructed.
+- Require ledger state. A planned ledger row, budget, and report path must exist before spawn.
+- Keep lifecycle closed. After reporting, the controller must wait, consume the report, then close or mark a final exception with final_reason.
+- Close superseded agents. Temporary replacement agents expire when the original agent is resumed or the task is cancelled.
+- Follow the report contract. Reports must cover PSOC, files, tests, risks, degraded mode, and final audit evidence.
 - Respect ALLOWED_WRITE_PATHS. Read-only roles must treat it as none; writing roles must stay inside it.
+- Treat control-plane files and agent-management rules as read-only unless explicitly granted.
+- Reconcile unknown UI agents through one /agent snapshot only when they affect budget, cleanup, or correctness.
 - Write the full report to REPORT_PATH and return only status, commits, tests, risks, and report path.
 "#;
 
@@ -76,6 +82,7 @@ struct AgentInput {
     closed: bool,
     write_scope: String,
     token_risk: String,
+    final_reason: String,
     next_action: String,
 }
 
@@ -157,6 +164,21 @@ fn validate_write_scope(role: &str, write_scope: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_prompt_contract(
+    role: &str,
+    brief: Option<&String>,
+    findings: Option<&String>,
+) -> Result<(), String> {
+    validate_role(role)?;
+    if role == "worker" && brief.is_none() {
+        return Err("worker requires --brief with PSOC/TASK_BRIEF_PATH".to_string());
+    }
+    if role == "fixer" && findings.is_none() {
+        return Err("fixer requires --findings with FINDINGS_PATH".to_string());
+    }
+    Ok(())
+}
+
 fn dynamic_field_name(line: &str) -> Option<&str> {
     let (name, _) = line.split_once('=')?;
     DYNAMIC_FIELDS.contains(&name).then_some(name)
@@ -196,7 +218,26 @@ fn check_prompt(text: &str, max_lines: usize) -> Vec<String> {
         }
     }
 
-    if let Some(role) = fields.get("ROLE") {
+    let role = match fields.get("ROLE") {
+        Some(role) if role.trim().is_empty() => {
+            errors.push("missing ROLE dynamic field".to_string());
+            None
+        }
+        Some(role) => {
+            if let Err(error) = validate_role(role) {
+                errors.push(error);
+                None
+            } else {
+                Some(role.as_str())
+            }
+        }
+        None => {
+            errors.push("missing ROLE dynamic field".to_string());
+            None
+        }
+    };
+
+    if let Some(role) = role {
         let write_scope = fields.get("ALLOWED_WRITE_PATHS").map(String::as_str);
         if is_write_role(role) && matches!(write_scope, None | Some("none")) {
             errors.push(format!(
@@ -211,6 +252,12 @@ fn check_prompt(text: &str, max_lines: usize) -> Vec<String> {
         }
         if !fields.contains_key("AGENT_LEDGER_PATH") {
             errors.push("missing AGENT_LEDGER_PATH dynamic field".to_string());
+        }
+        if role == "worker" && !fields.contains_key("TASK_BRIEF_PATH") {
+            errors.push("worker prompt must include TASK_BRIEF_PATH".to_string());
+        }
+        if role == "fixer" && !fields.contains_key("FINDINGS_PATH") {
+            errors.push("fixer prompt must include FINDINGS_PATH".to_string());
         }
     }
 
@@ -292,6 +339,11 @@ fn abs_path(value: &str) -> String {
 
 fn render_prompt_full(options: &RenderOptions) -> Result<String, String> {
     validate_role(&options.role)?;
+    validate_prompt_contract(
+        &options.role,
+        options.brief.as_ref(),
+        options.findings.as_ref(),
+    )?;
     let write_scope = if options.allowed_write_paths.is_empty() {
         "none".to_string()
     } else {
@@ -346,17 +398,6 @@ fn render_prompt_full(options: &RenderOptions) -> Result<String, String> {
     Ok(format!("{}\n", lines.join("\n")))
 }
 
-#[cfg(test)]
-fn render_prompt(role: &str, report: &str, allowed_write_paths: &[String]) -> String {
-    render_prompt_full(&RenderOptions {
-        role: role.to_string(),
-        report: report.to_string(),
-        allowed_write_paths: allowed_write_paths.to_vec(),
-        ..RenderOptions::default()
-    })
-    .expect("valid render prompt options")
-}
-
 fn ensure_schema(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         r#"
@@ -375,11 +416,33 @@ fn ensure_schema(conn: &Connection) -> rusqlite::Result<()> {
             closed INTEGER NOT NULL DEFAULT 0,
             write_scope TEXT NOT NULL DEFAULT 'none',
             token_risk TEXT NOT NULL DEFAULT '',
+            final_reason TEXT NOT NULL DEFAULT '',
             next_action TEXT NOT NULL DEFAULT '',
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
         "#,
-    )
+    )?;
+    ensure_agent_ledger_column(conn, "final_reason", "TEXT NOT NULL DEFAULT ''")?;
+    Ok(())
+}
+
+fn ensure_agent_ledger_column(
+    conn: &Connection,
+    name: &str,
+    definition: &str,
+) -> rusqlite::Result<()> {
+    let mut stmt = conn.prepare("PRAGMA table_info(agent_ledger)")?;
+    let columns = stmt.query_map([], |row| row.get::<_, String>(1))?;
+    for column in columns {
+        if column? == name {
+            return Ok(());
+        }
+    }
+    conn.execute(
+        &format!("ALTER TABLE agent_ledger ADD COLUMN {name} {definition}"),
+        [],
+    )?;
+    Ok(())
 }
 
 fn open_db(path: &str) -> Result<Connection, String> {
@@ -428,9 +491,9 @@ fn ledger_add(conn: &Connection, input: &AgentInput) -> Result<(), String> {
         r#"
         INSERT INTO agent_ledger(
             handle, role, task, status, report_path, spawned_at, waited, closed,
-            write_scope, token_risk, next_action, updated_at
+            write_scope, token_risk, final_reason, next_action, updated_at
         )
-        VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, datetime('now'))
+        VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, datetime('now'))
         "#,
         params![
             input.handle,
@@ -443,6 +506,7 @@ fn ledger_add(conn: &Connection, input: &AgentInput) -> Result<(), String> {
             input.closed as i64,
             input.write_scope,
             input.token_risk,
+            input.final_reason,
             input.next_action
         ],
     )
@@ -527,6 +591,9 @@ fn ledger_update(conn: &Connection, handle: &str, parsed: &ParsedArgs) -> Result
     if let Some(token_risk) = flag_one(parsed, "token-risk") {
         update_field(conn, handle, "token_risk", &token_risk)?;
     }
+    if let Some(final_reason) = flag_one(parsed, "reason") {
+        update_field(conn, handle, "final_reason", &final_reason)?;
+    }
     if let Some(next_action) = flag_one(parsed, "next-action") {
         update_field(conn, handle, "next_action", &next_action)?;
     }
@@ -566,7 +633,9 @@ fn ledger_audit(
         "budget" => {}
         "final" => {
             let mut stmt = conn
-                .prepare("SELECT handle, status, closed FROM agent_ledger ORDER BY handle")
+                .prepare(
+                    "SELECT handle, status, closed, final_reason FROM agent_ledger ORDER BY handle",
+                )
                 .map_err(|error| error.to_string())?;
             let rows = stmt
                 .query_map([], |row| {
@@ -574,14 +643,24 @@ fn ledger_audit(
                         row.get::<_, String>(0)?,
                         row.get::<_, String>(1)?,
                         row.get::<_, i64>(2)?,
+                        row.get::<_, String>(3)?,
                     ))
                 })
                 .map_err(|error| error.to_string())?;
             for row in rows {
-                let (handle, status, closed) = row.map_err(|error| error.to_string())?;
-                let final_ok = (status == "closed" && closed == 1)
-                    || (FINAL_STATUSES.contains(&status.as_str()) && status != "closed");
-                if !final_ok {
+                let (handle, status, closed, final_reason) =
+                    row.map_err(|error| error.to_string())?;
+                if status == "closed" {
+                    if closed != 1 {
+                        errors.push(format!("agent {handle} is not final: {status}"));
+                    }
+                } else if EXCEPTION_FINAL_STATUSES.contains(&status.as_str()) {
+                    if final_reason.trim().is_empty() {
+                        errors.push(format!(
+                            "agent {handle} is {status} but missing final reason"
+                        ));
+                    }
+                } else {
                     errors.push(format!("agent {handle} is not final: {status}"));
                 }
             }
@@ -665,6 +744,7 @@ fn cmd_ledger_add(args: &[String]) -> Result<(), String> {
             .unwrap_or(false),
         write_scope,
         token_risk: flag_one(&parsed, "token-risk").unwrap_or_default(),
+        final_reason: flag_one(&parsed, "reason").unwrap_or_default(),
         next_action: flag_one(&parsed, "next-action").unwrap_or_default(),
     };
     let conn = open_db(&db)?;
@@ -712,11 +792,11 @@ fn cmd_ledger_audit(args: &[String]) -> Result<(), String> {
 
 fn usage() -> &'static str {
     r#"usage:
-  harnessctl render-prompt --role ROLE --report PATH [--brief PATH] [--ledger PATH] [--allowed-write-paths PATH]...
+  harnessctl render-prompt --role ROLE --report PATH [--brief PATH for worker] [--ledger PATH] [--allowed-write-paths PATH]...
   harnessctl check-prompt --file PATH [--max-lines N]
   harnessctl ledger-init --db PATH [--max-concurrent N] [--max-total N]
-  harnessctl ledger-add --db PATH --handle ID --role ROLE --task TEXT [--status STATUS] [--write-scope SCOPE]
-  harnessctl ledger-update --db PATH --handle ID [--status STATUS] [--waited true] [--closed true]
+  harnessctl ledger-add --db PATH --handle ID --role ROLE --task TEXT [--status STATUS] [--write-scope SCOPE] [--reason TEXT]
+  harnessctl ledger-update --db PATH --handle ID [--status STATUS] [--waited true] [--closed true] [--reason TEXT]
   harnessctl ledger-audit --db PATH [--mode budget|final]
 "#
 }
@@ -775,6 +855,71 @@ AGENT_LEDGER_PATH=/tmp/harness.db
     }
 
     #[test]
+    fn check_prompt_rejects_missing_role() {
+        let prompt = "\
+Stable text
+
+--- DYNAMIC TASK CONTEXT ---
+REPORT_PATH=/tmp/report.md
+AGENT_LEDGER_PATH=/tmp/harness.db
+ALLOWED_WRITE_PATHS=issue_feedback_agent/tests
+";
+        let errors = check_prompt(prompt, 120);
+        assert!(
+            errors.iter().any(|error| error.contains("missing ROLE")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn check_prompt_rejects_unknown_role() {
+        let prompt = "\
+Stable text
+
+--- DYNAMIC TASK CONTEXT ---
+ROLE=bogus
+REPORT_PATH=/tmp/report.md
+AGENT_LEDGER_PATH=/tmp/harness.db
+ALLOWED_WRITE_PATHS=issue_feedback_agent/tests
+";
+        let errors = check_prompt(prompt, 120);
+        assert!(
+            errors.iter().any(|error| error.contains("unknown role")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn check_prompt_rejects_worker_without_brief() {
+        let prompt = "\
+Stable text
+
+--- DYNAMIC TASK CONTEXT ---
+ROLE=worker
+REPORT_PATH=/tmp/report.md
+AGENT_LEDGER_PATH=/tmp/harness.db
+ALLOWED_WRITE_PATHS=issue_feedback_agent/tests
+";
+        let errors = check_prompt(prompt, 120);
+        assert!(
+            errors.iter().any(|error| error.contains("TASK_BRIEF_PATH")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn render_prompt_rejects_worker_without_brief() {
+        let error = render_prompt_full(&RenderOptions {
+            role: "worker".to_string(),
+            report: "/tmp/report.md".to_string(),
+            allowed_write_paths: vec!["issue_feedback_agent/tests".to_string()],
+            ..RenderOptions::default()
+        })
+        .expect_err("worker without a brief must fail");
+        assert!(error.contains("--brief"), "{error}");
+    }
+
+    #[test]
     fn check_prompt_rejects_dynamic_field_before_marker() {
         let prompt = "\
 ROLE=worker
@@ -793,15 +938,20 @@ ALLOWED_WRITE_PATHS=issue_feedback_agent/tests
 
     #[test]
     fn render_prompt_places_dynamic_values_after_marker() {
-        let prompt = render_prompt(
-            "worker",
-            "/tmp/report.md",
-            &[String::from("issue_feedback_agent/services")],
-        );
+        let prompt = render_prompt_full(&RenderOptions {
+            role: "worker".to_string(),
+            brief: Some("/tmp/brief.md".to_string()),
+            report: "/tmp/report.md".to_string(),
+            allowed_write_paths: vec![String::from("issue_feedback_agent/services")],
+            ..RenderOptions::default()
+        })
+        .unwrap();
         let marker = prompt.find(DYNAMIC_MARKER).unwrap();
         let role_pos = prompt.find("ROLE=worker").unwrap();
+        let brief_pos = prompt.find("TASK_BRIEF_PATH=").unwrap();
         let write_pos = prompt.find("ALLOWED_WRITE_PATHS=").unwrap();
         assert!(role_pos > marker);
+        assert!(brief_pos > marker);
         assert!(write_pos > marker);
     }
 
@@ -822,6 +972,7 @@ ALLOWED_WRITE_PATHS=issue_feedback_agent/tests
                 closed: false,
                 write_scope: "none".to_string(),
                 token_risk: "low".to_string(),
+                final_reason: String::new(),
                 next_action: "close".to_string(),
             },
         )
@@ -852,11 +1003,43 @@ ALLOWED_WRITE_PATHS=issue_feedback_agent/tests
                 closed: true,
                 write_scope: "none".to_string(),
                 token_risk: "low".to_string(),
+                final_reason: String::new(),
                 next_action: "done".to_string(),
             },
         )
         .unwrap();
         let errors = ledger_audit(&conn, "final", 2, 4).unwrap();
         assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn final_audit_rejects_failed_agent_without_reason() {
+        let conn = Connection::open_in_memory().unwrap();
+        ensure_schema(&conn).unwrap();
+        ledger_add(
+            &conn,
+            &AgentInput {
+                handle: "agent-1".to_string(),
+                role: "explorer".to_string(),
+                task: "inspect".to_string(),
+                status: "failed".to_string(),
+                report_path: "/tmp/report.md".to_string(),
+                spawned_at: String::new(),
+                waited: true,
+                closed: false,
+                write_scope: "none".to_string(),
+                token_risk: "low".to_string(),
+                final_reason: String::new(),
+                next_action: String::new(),
+            },
+        )
+        .unwrap();
+        let errors = ledger_audit(&conn, "final", 2, 4).unwrap();
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("missing final reason")),
+            "{errors:?}"
+        );
     }
 }

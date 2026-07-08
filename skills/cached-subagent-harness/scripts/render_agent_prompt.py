@@ -45,7 +45,13 @@ Stable operating rules:
 - Maintain the PSOC loop: Problem, Scenarios, Options, Chosen Plan.
 - If new evidence invalidates PSOC, return LOOP_REQUIRED with the earliest invalid section.
 - Use stable role behavior. Do not spawn nested subagents unless explicitly instructed.
+- Require ledger state. A planned ledger row, budget, and report path must exist before spawn.
+- Keep lifecycle closed. After reporting, the controller must wait, consume the report, then close or mark a final exception with final_reason.
+- Close superseded agents. Temporary replacement agents expire when the original agent is resumed or the task is cancelled.
+- Follow the report contract. Reports must cover PSOC, files, tests, risks, degraded mode, and final audit evidence.
 - Respect ALLOWED_WRITE_PATHS. Read-only roles must treat it as none; writing roles must stay inside it.
+- Treat control-plane files and agent-management rules as read-only unless explicitly granted.
+- Reconcile unknown UI agents through one /agent snapshot only when they affect budget, cleanup, or correctness.
 - Write the full report to REPORT_PATH and return only status, commits, tests, risks, and report path.
 """
 
@@ -115,6 +121,10 @@ def main() -> int:
     args = parser.parse_args()
     if args.role in {"worker", "fixer"} and not args.allowed_write_paths:
         parser.error(f"{args.role} requires --allowed-write-paths")
+    if args.role == "worker" and not args.brief:
+        parser.error("worker requires --brief with PSOC/TASK_BRIEF_PATH")
+    if args.role == "fixer" and not args.findings:
+        parser.error("fixer requires --findings with FINDINGS_PATH")
     if args.role in {"discussion", "explorer", "reviewer"} and args.allowed_write_paths:
         parser.error(f"{args.role} is read-only and cannot accept --allowed-write-paths")
     print(build_prompt(args), end="")

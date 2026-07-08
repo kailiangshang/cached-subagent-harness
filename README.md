@@ -1,6 +1,6 @@
-# Codex Cached Subagent Harness
+# Cached Subagent Harness
 
-Cache-aware subagent orchestration for Codex. This repository packages the
+Cache-aware subagent orchestration for agentic CLIs. This repository packages the
 `cached-subagent-harness` skill plus a Rust `harnessctl` tool for stable
 dispatch prompts, SQLite lifecycle ledgers, write-scope gates, and final audits.
 
@@ -22,14 +22,15 @@ The installer detects Superpowers and installs its skills when they are missing.
 Recommended install from a checkout:
 
 ```bash
-git clone https://github.com/shangkailiang/codex-cached-subagent-harness
-cd codex-cached-subagent-harness
+git clone https://github.com/shangkailiang/cached-subagent-harness
+cd cached-subagent-harness
 scripts/install.sh
 ```
 
-The installer is tested for Linux, macOS, and WSL-style Bash environments. On
-native Windows, use WSL for now or install the skill manually by copying
-`skills/cached-subagent-harness` into `%USERPROFILE%\.codex\skills`.
+The installer is tested for Linux, macOS, and WSL-style Bash environments for
+Codex-compatible skill directories. On native Windows, use WSL for now or
+install the skill manually by copying `skills/cached-subagent-harness` into the
+runtime skill directory, such as `%USERPROFILE%\.codex\skills` for Codex.
 
 Use a custom Codex home:
 
@@ -55,7 +56,7 @@ Pin the Superpowers version, branch, or commit used by the installer:
 SUPERPOWERS_REF=v6.0.3 scripts/install.sh
 ```
 
-After install, restart Codex so the new skill is loaded.
+After install, restart your CLI runtime so the new skill is loaded.
 
 ## Superpowers Dependency
 
@@ -105,7 +106,9 @@ cache-adjusted estimated savings, stable-prefix ratio, dynamic-tail size, and
 repeated cacheable tokens.
 
 The estimator is a deterministic `bytes/4` proxy. It is meant to prove prompt
-shape and regressions in CI; it is not provider billing telemetry.
+shape and regressions in CI; it is not provider billing telemetry. Raw prompt
+size is informational by default because a stronger stable prefix can make a
+single prompt larger while improving cache-adjusted cost.
 
 ## Rust Tool
 
@@ -127,9 +130,13 @@ The binary is not committed because it is platform-specific. The source lives in
 skills/cached-subagent-harness/scripts/harnessctl
 ```
 
+For public releases, prefer building `harnessctl` from source with Cargo on the
+target machine. Prebuilt binaries should be published as a release matrix rather
+than committed into the skill directory.
+
 ## Usage
 
-Invoke the skill in Codex:
+Invoke the skill in a supported CLI runtime:
 
 ```text
 Use cached-subagent-harness to coordinate this long-running development task.

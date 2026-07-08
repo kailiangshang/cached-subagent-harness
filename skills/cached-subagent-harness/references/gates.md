@@ -10,6 +10,7 @@ Before any dispatch, the controller must create or update the repo report with:
 - `Agent Ledger`: one row per planned or spawned agent.
 - `Write Scope`: explicit allowed write paths for any worker or fixer; `none` for read-only roles.
 - `Degraded Mode Notes`: present when a superpowers reference or harness binary is unavailable or skipped.
+- `Expiry`: present for temporary or replacement agents, for example `superseded_by:<agent_id>` or `expires_when:original_resumed`.
 
 Do not spawn from memory. The ledger is the source of truth for agents created by this harness.
 
@@ -48,6 +49,7 @@ Ledger constraints:
 - update to `spawned` or `running` immediately after spawn;
 - after wait, record report path, short outcome, and next action;
 - close the agent after its report is consumed and mark `closed`.
+- close temporary replacement agents immediately when their expiry condition becomes true.
 
 Use `scripts/bin/harnessctl ledger-add` before spawn and `scripts/bin/harnessctl ledger-update` after spawn, wait, report, and close.
 
@@ -117,7 +119,8 @@ Re-review only after the report contains commands run and outcomes.
 Before final response, audit the report ledger:
 
 - every harness-created agent is `closed`; or
-- the row is `failed`, `abandoned`, or `externally-unknown` with a reason and next action.
+- the row is `failed`, `abandoned`, or `externally-unknown` with `final_reason` and next action.
+- every temporary replacement agent spawned in the current turn is either the active chosen agent or is closed as superseded.
 
 Completed or closed agents may remain visible in UI. If the platform lacks agent listing, audit the handles recorded by this harness. If the user or UI reports additional unknown agents that affect budget or cleanup, request one `/agent` reconciliation and record unknown handles as `externally-unknown`.
 
