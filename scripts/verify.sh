@@ -16,6 +16,7 @@ cleanup() {
 trap cleanup EXIT
 
 python3 "$repo_root/scripts/validate-release.py" "$repo_root"
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest "$repo_root/scripts/test_token_effectiveness_task.py"
 
 if command -v cargo >/dev/null 2>&1; then
   cargo fmt --check --manifest-path "$crate_dir/Cargo.toml"
@@ -26,6 +27,10 @@ if command -v cargo >/dev/null 2>&1; then
     echo "warning: clippy not installed; skipping clippy check" >&2
   fi
   "$repo_root/scripts/build-harnessctl.sh"
+  python3 "$repo_root/scripts/token_effectiveness_task.py" \
+    --harnessctl "$bin" \
+    --format json \
+    --output "$tmp_dir/token-effectiveness.json"
 else
   echo "error: cargo is required for full verification" >&2
   exit 1

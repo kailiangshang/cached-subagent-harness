@@ -85,10 +85,27 @@ scripts/verify.sh
 ```
 
 This validates plugin metadata and skill frontmatter, runs Rust formatting,
-tests, optional clippy, builds `harnessctl`, and runs prompt plus ledger smoke
-tests.
+tests, optional clippy, builds `harnessctl`, runs the token-effectiveness task,
+and runs prompt plus ledger smoke tests.
 
 GitHub Actions runs the same release verification on push and pull request.
+
+## Token Effectiveness Task
+
+Run the offline task directly after building `harnessctl`:
+
+```bash
+scripts/build-harnessctl.sh
+python3 scripts/token_effectiveness_task.py --format markdown
+```
+
+The task compares a baseline embedded handoff against the cached harness handoff
+for repeated worker dispatches. It reports raw estimated token savings,
+cache-adjusted estimated savings, stable-prefix ratio, dynamic-tail size, and
+repeated cacheable tokens.
+
+The estimator is a deterministic `bytes/4` proxy. It is meant to prove prompt
+shape and regressions in CI; it is not provider billing telemetry.
 
 ## Rust Tool
 
