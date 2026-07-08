@@ -22,7 +22,7 @@ The installer detects Superpowers and installs its skills when they are missing.
 Recommended install from a checkout:
 
 ```bash
-git clone https://github.com/shangkailiang/cached-subagent-harness
+git clone https://github.com/kailiangshang/cached-subagent-harness
 cd cached-subagent-harness
 scripts/install.sh
 ```
