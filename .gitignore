@@ -1,0 +1,6 @@
+.DS_Store
+*.tmp
+*.db
+target/
+skills/cached-subagent-harness/scripts/harnessctl/target/
+skills/cached-subagent-harness/scripts/bin/harnessctl

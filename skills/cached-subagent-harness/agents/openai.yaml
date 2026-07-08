@@ -1,0 +1,4 @@
+interface:
+  display_name: "Cached Subagent Harness"
+  short_description: "Long-running subagent control protocol"
+  default_prompt: "Use $cached-subagent-harness to coordinate long-running development with stable prompts, repo-backed agent lifecycle tracking, and complete-development gates."
