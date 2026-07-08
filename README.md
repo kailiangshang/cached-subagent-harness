@@ -101,14 +101,29 @@ python3 scripts/token_effectiveness_task.py --format markdown
 ```
 
 The task compares a baseline embedded handoff against the cached harness handoff
-for repeated worker dispatches. It reports raw estimated token savings,
-cache-adjusted estimated savings, stable-prefix ratio, dynamic-tail size, and
-repeated cacheable tokens.
+for repeated worker dispatches. The representative task is a feedback-agent /
+inspection-platform refactor brief with PSOC, read-only source constraints,
+future workflow needs, and explicit write scopes.
 
 The estimator is a deterministic `bytes/4` proxy. It is meant to prove prompt
 shape and regressions in CI; it is not provider billing telemetry. Raw prompt
 size is informational by default because a stronger stable prefix can make a
 single prompt larger while improving cache-adjusted cost.
+
+Current checked-in fixture result with 4 worker dispatches:
+
+| Metric | Baseline embedded handoff | Cached harness handoff |
+|---|---:|---:|
+| Estimated tokens total | 1784 | 2164 |
+| Cache-adjusted estimated tokens | n/a | 856 |
+| Stable prefix ratio | n/a | 80.59% |
+| Repeated cacheable tokens | n/a | 1308 |
+
+Raw estimated savings is `-21.3%` because the stable safety prefix is larger.
+Cache-adjusted estimated savings is `52.02%`, which is the CI gate that matters.
+
+See [docs/token-effectiveness-task.md](docs/token-effectiveness-task.md) for the
+task fixture, comparison method, and interpretation.
 
 ## Rust Tool
 
