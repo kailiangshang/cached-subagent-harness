@@ -1,4 +1,4 @@
-# Cached Subagent Harness
+# Cached Subagent Harness 🧭
 
 Cache-aware subagent orchestration for agentic CLIs. This repository packages the
 `cached-subagent-harness` skill plus a Rust `harnessctl` tool for stable
@@ -7,7 +7,76 @@ dispatch prompts, SQLite lifecycle ledgers, write-scope gates, and final audits.
 It is designed to work with [Superpowers](https://github.com/obra/superpowers).
 The installer detects Superpowers and installs its skills when they are missing.
 
-## What It Adds
+## Why This Exists 🔍
+
+Subagents are useful, but unmanaged subagents get expensive and messy quickly:
+
+- each worker receives a large repeated handoff;
+- prompt-cache hits become accidental instead of designed;
+- lifecycle state lives in chat history instead of a durable report;
+- finished agents stay open and keep counting against concurrency limits;
+- write scopes are unclear, so parallel work can collide;
+- the controller cannot easily audit whether workers actually reported,
+  verified, and closed.
+
+This harness treats subagents as a controlled workflow, not just extra chat
+tabs. It makes the controller keep a stable prompt contract, pass dynamic
+context by path, record lifecycle state in a ledger, and verify gates before
+claiming completion.
+
+## Design Principles 🧱
+
+- 🧩 **Problem first**: every worker brief starts with Problem, Scenarios,
+  Options, and Chosen Plan before code changes.
+- 🪪 **Stable identity, dynamic tail**: reusable rules stay in a stable prompt
+  prefix; task-specific paths and values stay after `--- DYNAMIC TASK CONTEXT ---`.
+- 📉 **Cache-aware, not magic**: the harness is valuable when repeated dispatches
+  can reuse the stable prefix. It is not guaranteed to reduce raw tokens for
+  tiny one-agent tasks.
+- 🧾 **Durable lifecycle**: every agent has a ledger row with role, status,
+  report path, write scope, token risk, next action, and final reason when
+  needed.
+- 🔐 **Explicit write scope**: worker prompts require `ALLOWED_WRITE_PATHS`;
+  discussion, explorer, and reviewer roles remain read-only.
+- 🔁 **Loop before drift**: if exploration, tests, or review invalidate the
+  plan, update the brief/report and return to the earliest invalid gate.
+- ✅ **Complete development**: tests, review, verification, docs, cleanup, and
+  final audit are part of the work, not optional follow-up.
+
+## How It Works ⚙️
+
+1. **Controller frames the work** with PSOC: Problem, Scenarios, Options, Chosen
+   Plan.
+2. **Controller creates durable state**: report path, lifecycle ledger, agent
+   budget, and write scopes.
+3. **`harnessctl render-prompt` generates dispatch prompts** with a stable
+   prefix and a small dynamic tail.
+4. **Subagents work inside role gates**:
+   - `explorer`: read-only context gathering;
+   - `discussion`: product or architecture discussion, read-only;
+   - `worker`: bounded writes only inside `ALLOWED_WRITE_PATHS`;
+   - `reviewer`: read-only review against brief, report, and diff;
+   - `fixer`: one batched fix pass for review findings.
+5. **`harnessctl ledger-audit` checks lifecycle state** before budget expansion
+   or final completion.
+6. **Controller closes superseded agents** and records any failed, abandoned, or
+   externally unknown agents with explicit reasons.
+
+## When To Use It 🚦
+
+Use this harness when the task has one or more of these properties:
+
+- multiple subagents or repeated worker dispatches;
+- long task briefs that would otherwise be pasted into every worker prompt;
+- strict write boundaries across parallel workers;
+- lifecycle cleanup matters because open agents consume budget;
+- the task needs durable status across resumes or context compaction;
+- you want a reviewer/fixer gate before claiming completion.
+
+It is usually not worth it for a single small edit, a one-off question, or a task
+where prompt-cache behavior is irrelevant.
+
+## What It Adds 📦
 
 - Stable prompt prefixes with dynamic task context at the tail.
 - Problem, Scenarios, Options, Chosen Plan before worker code.
@@ -91,9 +160,22 @@ and runs prompt plus ledger smoke tests.
 
 GitHub Actions runs the same release verification on push and pull request.
 
-## Benchmarks
+## Benchmarks 📊
 
 This repo has two benchmark layers.
+
+The benchmark design intentionally separates three different claims:
+
+- **Raw prompt estimate**: how many prompt bytes are generated before provider
+  prompt-cache effects.
+- **Cache-adjusted estimate**: the stable harness prefix is counted once, while
+  each dynamic tail is counted per dispatch.
+- **Runtime observation**: real status and token telemetry from an actual
+  agentic CLI run.
+
+Only runtime observations can prove end-to-end savings for a specific model,
+CLI, cache policy, and task. The offline benchmarks are regression tests and
+planning signals.
 
 ### Prompt-shape Regression
 
@@ -153,6 +235,10 @@ Latest local offline estimate with 4 workers:
 | Stable prefix ratio | n/a | 81.69% |
 
 Raw estimated savings is `26.18%`; cache-adjusted estimated savings is `71.4%`.
+
+The key difference from the prompt-shape fixture is that the game workload has a
+larger realistic brief and four independent worker slices. That makes it closer
+to the kind of task where subagent orchestration is actually useful.
 
 Generate artifacts for a real A/B run:
 
