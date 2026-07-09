@@ -1,0 +1,145 @@
+# Game Dev A/B Benchmark
+
+This benchmark answers a stronger question than the offline token fixture:
+
+Can two equivalent small-game development runs show lower prompt overhead,
+auditable worker status, and the same quality gates when one run uses cached
+subagent harness prompts?
+
+It still does not call an LLM API by itself. The script generates equivalent
+dispatch artifacts and can ingest real runtime observations after you run the
+agents in your CLI.
+
+## Why This Exists
+
+The original token-effectiveness task is a CI regression guard. It proves that
+the harness keeps reusable instructions in a stable prefix and task-specific
+values in a dynamic tail.
+
+That is useful, but it is not a full product claim. In the current refactor
+fixture, raw prompt size is larger:
+
+- baseline embedded handoff: `1784` estimated tokens;
+- cached harness handoff: `2164` estimated tokens;
+- cache-adjusted harness handoff: `856` estimated tokens.
+
+That result means the harness is not an unconditional raw-token reducer. It
+needs repeated dispatches and stable-prefix cache hits. The game-dev benchmark
+adds a larger, more realistic development brief and a status-observation
+protocol so the comparison can include actual worker lifecycle data.
+
+## Workload
+
+The fixed workload is a small browser arcade game named `Signal Sweep`:
+
+- deterministic 12x12 game-state engine;
+- responsive rendering and keyboard/touch controls;
+- high-score and session JSON export;
+- tests plus browser smoke evidence.
+
+The same four worker slices are generated in both modes:
+
+1. engine;
+2. rendering and controls;
+3. session records;
+4. verification and integration.
+
+## Run Offline Estimate
+
+```bash
+scripts/build-harnessctl.sh
+python3 scripts/game_dev_ab_benchmark.py --format markdown
+```
+
+Latest local estimate:
+
+| Metric | Baseline embedded handoff | Cached harness handoff |
+|---|---:|---:|
+| Prompt count | 4 | 4 |
+| Estimated tokens total | 2892 | 2135 |
+| Average tokens per prompt | 723.0 | 533.75 |
+| Cache-adjusted estimated tokens | 2892 | 827 |
+| Stable prefix tokens counted once | n/a | 436 |
+| Dynamic tail tokens total | n/a | 391 |
+| Stable prefix ratio | n/a | 81.69% |
+
+Raw estimated savings: `26.18%`
+
+Cache-adjusted estimated savings: `71.4%`
+
+Break-even dispatches: `1`
+
+## Generate Real-Run Artifacts
+
+```bash
+python3 scripts/game_dev_ab_benchmark.py \
+  --output-dir /tmp/game-dev-ab \
+  --output /tmp/game-dev-ab/report.json \
+  --format json
+```
+
+This writes:
+
+- `/tmp/game-dev-ab/baseline/worker-01.prompt` through `worker-04.prompt`;
+- `/tmp/game-dev-ab/cached_harness/worker-01.prompt` through `worker-04.prompt`;
+- `/tmp/game-dev-ab/signal-sweep-game-brief.md`;
+- `/tmp/game-dev-ab/observations-template.jsonl`.
+
+Use the generated prompts for two isolated runs against the same target repo.
+The benchmark compares prompt shape; the target repo and actual generated game
+should be evaluated by the same quality gates in both modes.
+
+## Runtime Status Observations
+
+During a real run, append JSONL events with this shape:
+
+```json
+{"mode":"baseline","worker":"worker-01","event":"spawned","input_tokens":1200,"output_tokens":0,"elapsed_ms":0}
+{"mode":"baseline","worker":"worker-01","event":"running","elapsed_ms":30000}
+{"mode":"baseline","worker":"worker-01","event":"reported","input_tokens":100,"output_tokens":1600,"elapsed_ms":180000}
+{"mode":"baseline","worker":"worker-01","event":"closed","elapsed_ms":181000}
+```
+
+Supported `mode` values are `baseline` and `cached_harness`.
+
+Required lifecycle events are:
+
+- `spawned`;
+- `running`;
+- `reported`;
+- `closed`.
+
+Then rerun:
+
+```bash
+python3 scripts/game_dev_ab_benchmark.py \
+  --observations /tmp/game-dev-ab/observations.jsonl \
+  --format markdown
+```
+
+The report aggregates final status, event counts, workers seen, workers closed,
+input tokens, output tokens, and observed runtime savings. If observations are
+missing, the report says `not-observed` instead of pretending a real run
+happened.
+
+## Quality Gates
+
+Both modes must meet the same gates:
+
+- `engine-tests`: game rules, scoring, collision, restart, and timer behavior;
+- `build-or-static-smoke`: the game can be served without missing assets;
+- `desktop-mobile-screenshot`: game is visible and framed on desktop/mobile;
+- `interaction-smoke`: start, move, pause, game-over, and restart work.
+
+## Interpretation
+
+Use three separate claims:
+
+- Raw prompt estimate: what is sent before provider caching.
+- Cache-adjusted estimate: stable harness prefix counted once, dynamic tails
+  counted per dispatch.
+- Runtime observation: actual status and token telemetry from a real agent run.
+
+Only the third claim can prove real end-to-end savings for a specific CLI,
+model, cache policy, and task. The offline estimates are regression tests and
+planning signals, not billing guarantees.

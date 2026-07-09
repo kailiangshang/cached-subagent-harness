@@ -91,23 +91,25 @@ and runs prompt plus ledger smoke tests.
 
 GitHub Actions runs the same release verification on push and pull request.
 
-## Token Effectiveness Task
+## Benchmarks
 
-Run the offline task directly after building `harnessctl`:
+This repo has two benchmark layers.
+
+### Prompt-shape Regression
 
 ```bash
 scripts/build-harnessctl.sh
 python3 scripts/token_effectiveness_task.py --format markdown
 ```
 
-The task compares a baseline embedded handoff against the cached harness handoff
-for repeated worker dispatches. The representative task is a feedback-agent /
-inspection-platform refactor brief with PSOC, read-only source constraints,
-future workflow needs, and explicit write scopes.
+This low-cost CI task compares a baseline embedded handoff against the cached
+harness handoff for repeated worker dispatches. The representative task is a
+feedback-agent / inspection-platform refactor brief with PSOC, read-only source
+constraints, future workflow needs, and explicit write scopes.
 
 The estimator is a deterministic `bytes/4` proxy. It is meant to prove prompt
 shape and regressions in CI; it is not provider billing telemetry. Raw prompt
-size is informational by default because a stronger stable prefix can make a
+size is informational because a stronger stable prefix can make a compact
 single prompt larger while improving cache-adjusted cost.
 
 Current checked-in fixture result with 4 worker dispatches:
@@ -122,8 +124,51 @@ Current checked-in fixture result with 4 worker dispatches:
 Raw estimated savings is `-21.3%` because the stable safety prefix is larger.
 Cache-adjusted estimated savings is `52.02%`, which is the CI gate that matters.
 
+This result does not prove unconditional token savings. It proves that repeated
+worker dispatches keep reusable harness rules cacheable and dynamic tails small.
+
 See [docs/token-effectiveness-task.md](docs/token-effectiveness-task.md) for the
-task fixture, comparison method, and interpretation.
+task fixture, comparison method, and limits.
+
+### Game-development A/B Protocol
+
+```bash
+scripts/build-harnessctl.sh
+python3 scripts/game_dev_ab_benchmark.py --format markdown
+```
+
+This stronger benchmark generates equivalent worker prompts for a small browser
+game development task in two modes:
+
+- baseline: each worker receives a self-contained embedded handoff;
+- cached harness: each worker receives the stable harness prefix plus dynamic
+  paths to a shared brief and lifecycle ledger.
+
+Latest local offline estimate with 4 workers:
+
+| Metric | Baseline embedded handoff | Cached harness handoff |
+|---|---:|---:|
+| Estimated tokens total | 2892 | 2135 |
+| Cache-adjusted estimated tokens | 2892 | 827 |
+| Stable prefix ratio | n/a | 81.69% |
+
+Raw estimated savings is `26.18%`; cache-adjusted estimated savings is `71.4%`.
+
+Generate artifacts for a real A/B run:
+
+```bash
+python3 scripts/game_dev_ab_benchmark.py \
+  --output-dir /tmp/game-dev-ab \
+  --output /tmp/game-dev-ab/report.json \
+  --format json
+```
+
+The generated observation template can ingest real status and token telemetry
+from two actual agent runs. Without observations, the report marks runtime
+status as `not-observed`.
+
+See [docs/game-dev-ab-benchmark.md](docs/game-dev-ab-benchmark.md) for the
+status schema, quality gates, and interpretation.
 
 ## Rust Tool
 

@@ -1,7 +1,8 @@
 # Token Effectiveness Task
 
 This repository includes an offline task test for prompt size and cache shape.
-It is designed to answer one question:
+It is a CI regression guard, not a complete product benchmark. It is designed to
+answer one narrow question:
 
 Can repeated subagent dispatches move reusable instructions into a stable prefix
 while keeping task-specific context in a small dynamic tail?
@@ -71,7 +72,9 @@ Raw prompt size is allowed to increase because the stable prefix now carries
 more safety rules: lifecycle closure, prompt gates, write scopes, final audit,
 control-plane safety, and superseded-agent cleanup.
 
-The gate that matters is cache-adjusted behavior:
+That makes this fixture useful, but limited. The current raw result is worse
+than the baseline, so it must not be used to claim unconditional token savings.
+The gate that matters for this specific CI task is cache-adjusted behavior:
 
 - stable prefix ratio must stay high;
 - dynamic tail must stay small;
@@ -81,3 +84,7 @@ The gate that matters is cache-adjusted behavior:
 This makes the test useful as a regression guard: if future changes paste bulky
 task context into prompts, remove the dynamic marker, weaken ROLE validation, or
 grow the dynamic tail too far, CI can fail before the skill is published.
+
+For a stronger comparison that uses a small game-development workload and can
+ingest real runtime status/token observations, see
+[game-dev-ab-benchmark.md](game-dev-ab-benchmark.md).

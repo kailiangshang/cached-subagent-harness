@@ -1,0 +1,629 @@
+#!/usr/bin/env python3
+"""Game-development A/B benchmark for cached subagent dispatch prompts.
+
+The benchmark is provider-neutral. It generates equivalent worker prompts for a
+small browser-game task in two modes:
+
+- baseline: each worker receives a self-contained embedded handoff;
+- cached_harness: each worker receives the harness stable prefix plus a dynamic
+  tail that points to a shared brief and lifecycle ledger.
+
+Optional JSONL observations can be supplied after a real run to aggregate
+runtime status and token telemetry without making CI depend on a specific
+agentic CLI.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import sys
+import tempfile
+from pathlib import Path
+from typing import Any
+
+from token_effectiveness_task import (
+    DYNAMIC_MARKER,
+    build_effectiveness_report,
+    default_harnessctl_path,
+    run_harnessctl,
+    savings_pct,
+)
+
+
+DEFAULT_WORKERS = 4
+DEFAULT_MIN_CACHE_ADJUSTED_SAVINGS_PCT = 30.0
+DEFAULT_MIN_STABLE_PREFIX_RATIO_PCT = 45.0
+MODES = ("baseline", "cached_harness")
+REQUIRED_RUNTIME_EVENTS = ("spawned", "running", "reported", "closed")
+
+QUALITY_GATES = [
+    {
+        "name": "engine-tests",
+        "command": "npm test",
+        "purpose": "Game rules, scoring, collision, restart, and timer behavior are covered.",
+    },
+    {
+        "name": "build-or-static-smoke",
+        "command": "npm run build || python3 -m http.server",
+        "purpose": "The game can be served without missing assets or module errors.",
+    },
+    {
+        "name": "desktop-mobile-screenshot",
+        "command": "playwright screenshot at 1280x800 and 390x844",
+        "purpose": "Canvas/UI is visible, framed, and not overlapped on desktop or mobile.",
+    },
+    {
+        "name": "interaction-smoke",
+        "command": "manual or scripted: start, move, pause, game-over, restart",
+        "purpose": "Core loop is playable instead of only compiling.",
+    },
+]
+
+GAME_DEV_BRIEF = """Problem:
+Build a small browser arcade game called Signal Sweep. The player moves a
+cursor through a 12x12 signal grid, collects pulses, avoids static traps, and
+tries to beat a 60-second timer. The game must be playable as the first screen,
+with no landing page or marketing copy.
+
+Scenarios:
+1. Engine worker implements deterministic grid generation, movement, scoring,
+   timer, pause/resume, restart, and game-over state.
+2. Rendering worker implements responsive canvas or DOM rendering with keyboard
+   and touch controls, visible score/time/status, and no overlapping UI.
+3. Persistence worker implements local high score, session summary, and an
+   exportable JSON run record for later agent workflow tests.
+4. Verification worker adds focused tests and a browser smoke checklist for
+   desktop and mobile.
+
+Options:
+1. One worker receives the whole game. Lowest orchestration overhead, but weak
+   status visibility and no parallelism.
+2. Four self-contained workers each receive the full brief. Easy to dispatch,
+   but repeats task context and lifecycle rules in every prompt.
+3. Four workers share one brief through cached-subagent-harness. Higher control
+   contract overhead per role, but task context stays in a shared file and
+   dynamic tails remain small.
+
+Chosen Plan:
+Compare option 2 and option 3 with identical worker slices. Each worker must
+record status events, report changed files, run the relevant quality gate, and
+close its agent lifecycle entry. The benchmark treats raw prompt tokens,
+cache-adjusted prompt tokens, runtime status, and observed token telemetry as
+separate evidence.
+
+Target implementation shape:
+- Vanilla HTML/CSS/JavaScript unless the target repo already has a frontend
+  framework.
+- Stable dimensions for the board and controls.
+- No decorative card-heavy landing page.
+- Tests for pure game-state logic before UI wiring.
+- Browser smoke evidence for desktop and mobile.
+"""
+
+WORKER_SLICES = [
+    {
+        "id": "worker-01",
+        "title": "engine",
+        "task": "Implement game-state engine and focused tests for movement, scoring, traps, timer, pause, restart, and game-over.",
+        "allowed_write_paths": ["src/game", "tests/game"],
+        "quality_gate": "engine-tests",
+    },
+    {
+        "id": "worker-02",
+        "title": "rendering-controls",
+        "task": "Implement responsive board rendering, keyboard controls, touch controls, score/time/status display, and layout constraints.",
+        "allowed_write_paths": ["src/ui", "src/styles", "tests/ui"],
+        "quality_gate": "desktop-mobile-screenshot",
+    },
+    {
+        "id": "worker-03",
+        "title": "session-records",
+        "task": "Implement high-score persistence, session summary, and exportable JSON run records.",
+        "allowed_write_paths": ["src/session", "tests/session"],
+        "quality_gate": "build-or-static-smoke",
+    },
+    {
+        "id": "worker-04",
+        "title": "verification-integration",
+        "task": "Wire integration tests, browser smoke checklist, and final playable workflow verification.",
+        "allowed_write_paths": ["tests", "docs/benchmarks", "playwright.config.js"],
+        "quality_gate": "interaction-smoke",
+    },
+]
+
+
+def worker_slice(index: int) -> dict[str, Any]:
+    if index < len(WORKER_SLICES):
+        return WORKER_SLICES[index]
+    worker_id = f"worker-{index + 1:02d}"
+    return {
+        "id": worker_id,
+        "title": f"extended-verification-{index + 1}",
+        "task": "Run an additional focused verification pass without changing unrelated files.",
+        "allowed_write_paths": ["tests", "docs/benchmarks"],
+        "quality_gate": "interaction-smoke",
+    }
+
+
+def break_even_dispatches(
+    *,
+    baseline_avg_tokens: float,
+    stable_prefix_tokens_once: float,
+    dynamic_tail_avg_tokens: float,
+) -> int | None:
+    """Return the first dispatch count where cached cost is strictly lower."""
+    per_dispatch_delta = baseline_avg_tokens - dynamic_tail_avg_tokens
+    if per_dispatch_delta <= 0:
+        return None
+    return math.floor(stable_prefix_tokens_once / per_dispatch_delta) + 1
+
+
+def build_baseline_prompt(work_dir: Path, index: int) -> str:
+    slice_info = worker_slice(index)
+    return f"""Dispatch Signal Sweep baseline worker.
+MODE=baseline
+WORKER={slice_info['id']}
+SLICE={slice_info['title']}
+REPORT_PATH={work_dir / f"baseline-{slice_info['id']}-report.md"}
+STATUS_LOG_PATH={work_dir / "baseline-status-observations.jsonl"}
+ALLOWED_WRITE_PATHS={",".join(slice_info['allowed_write_paths'])}
+QUALITY_GATE={slice_info['quality_gate']}
+
+You are not alone in the codebase. Do not revert unrelated edits. Write only in
+the allowed paths above. Record runtime status events when actually executing:
+spawned, running, reported, closed. Include input/output token telemetry when
+the CLI exposes it.
+
+Worker task:
+{slice_info['task']}
+
+Full shared task brief pasted for self-contained baseline dispatch:
+
+{GAME_DEV_BRIEF}
+
+Required final report:
+- files changed;
+- tests or smoke checks run;
+- current worker status;
+- blockers and residual risk;
+- confirmation that the worker agent was closed or a reason it was not closed.
+"""
+
+
+def build_baseline_prompts(work_dir: Path, workers: int) -> list[str]:
+    return [build_baseline_prompt(work_dir, index) for index in range(workers)]
+
+
+def render_cached_prompts(harnessctl: Path, work_dir: Path, workers: int) -> list[str]:
+    brief = work_dir / "signal-sweep-game-brief.md"
+    ledger = work_dir / "cached-harness-agent-ledger.db"
+    brief.write_text(GAME_DEV_BRIEF, encoding="utf-8")
+
+    prompts: list[str] = []
+    for index in range(workers):
+        slice_info = worker_slice(index)
+        args = [
+            "render-prompt",
+            "--role",
+            "worker",
+            "--brief",
+            str(brief),
+            "--report",
+            str(work_dir / f"cached-{slice_info['id']}-report.md"),
+            "--ledger",
+            str(ledger),
+            "--base-commit",
+            f"gamebench{index:02d}",
+        ]
+        for allowed_path in slice_info["allowed_write_paths"]:
+            args.extend(["--allowed-write-paths", allowed_path])
+        prompts.append(run_harnessctl(harnessctl, args))
+    return prompts
+
+
+def load_observations(path: Path) -> list[dict[str, Any]]:
+    observations: list[dict[str, Any]] = []
+    for line_number, raw_line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            observation = json.loads(line)
+        except json.JSONDecodeError as error:
+            raise ValueError(f"{path}:{line_number}: invalid JSON: {error}") from error
+        if not isinstance(observation, dict):
+            raise ValueError(f"{path}:{line_number}: observation must be a JSON object")
+        mode = observation.get("mode")
+        if mode not in MODES:
+            raise ValueError(f"{path}:{line_number}: unknown mode {mode!r}")
+        if "worker" not in observation or "event" not in observation:
+            raise ValueError(f"{path}:{line_number}: worker and event are required")
+        observations.append(observation)
+    return observations
+
+
+def _int_field(value: Any) -> int:
+    if value is None:
+        return 0
+    if isinstance(value, bool):
+        raise ValueError("token fields must be integers")
+    return int(value)
+
+
+def summarize_observations(
+    observations: list[dict[str, Any]],
+    *,
+    workers: int,
+) -> dict[str, dict[str, Any]]:
+    summary: dict[str, dict[str, Any]] = {
+        mode: {
+            "event_count": 0,
+            "workers_seen": 0,
+            "workers_closed": 0,
+            "final_status": "not-observed",
+            "actual_input_tokens_total": 0,
+            "actual_output_tokens_total": 0,
+            "actual_total_tokens": 0,
+            "events_by_type": {},
+        }
+        for mode in MODES
+    }
+    workers_by_mode: dict[str, set[str]] = {mode: set() for mode in MODES}
+    latest_event_by_worker: dict[str, dict[str, str]] = {mode: {} for mode in MODES}
+
+    for observation in observations:
+        mode = str(observation["mode"])
+        worker = str(observation["worker"])
+        event = str(observation["event"])
+        mode_summary = summary[mode]
+
+        mode_summary["event_count"] += 1
+        mode_summary["actual_input_tokens_total"] += _int_field(
+            observation.get("input_tokens")
+        )
+        mode_summary["actual_output_tokens_total"] += _int_field(
+            observation.get("output_tokens")
+        )
+        events_by_type = mode_summary["events_by_type"]
+        events_by_type[event] = events_by_type.get(event, 0) + 1
+        workers_by_mode[mode].add(worker)
+        latest_event_by_worker[mode][worker] = event
+
+    for mode in MODES:
+        mode_summary = summary[mode]
+        mode_summary["workers_seen"] = len(workers_by_mode[mode])
+        mode_summary["workers_closed"] = sum(
+            1 for event in latest_event_by_worker[mode].values() if event == "closed"
+        )
+        mode_summary["actual_total_tokens"] = (
+            mode_summary["actual_input_tokens_total"]
+            + mode_summary["actual_output_tokens_total"]
+        )
+        if mode_summary["event_count"] == 0:
+            mode_summary["final_status"] = "not-observed"
+        elif mode_summary["workers_closed"] >= workers:
+            mode_summary["final_status"] = "closed"
+        elif mode_summary["workers_seen"] >= workers:
+            mode_summary["final_status"] = "partial"
+        else:
+            mode_summary["final_status"] = "incomplete"
+    return summary
+
+
+def build_game_dev_report(
+    *,
+    harness_prompts: list[str],
+    baseline_prompts: list[str],
+    workers: int,
+    observations: list[dict[str, Any]],
+) -> dict[str, Any]:
+    effectiveness = build_effectiveness_report(
+        harness_prompts=harness_prompts,
+        baseline_prompts=baseline_prompts,
+        agents=workers,
+        estimator="bytes/4",
+    )
+    dynamic_avg = (
+        effectiveness["harness"]["dynamic_tail_estimated_tokens_total"] / workers
+    )
+    break_even = break_even_dispatches(
+        baseline_avg_tokens=effectiveness["baseline"]["avg_tokens_per_prompt"],
+        stable_prefix_tokens_once=effectiveness["harness"][
+            "stable_prefix_estimated_tokens_once"
+        ],
+        dynamic_tail_avg_tokens=dynamic_avg,
+    )
+    observation_summary = summarize_observations(observations, workers=workers)
+    observed_savings: dict[str, float | None] = {
+        "actual_input_tokens_pct": None,
+        "actual_total_tokens_pct": None,
+    }
+    baseline_observed = observation_summary["baseline"]
+    cached_observed = observation_summary["cached_harness"]
+    if baseline_observed["actual_input_tokens_total"] > 0:
+        observed_savings["actual_input_tokens_pct"] = savings_pct(
+            baseline_observed["actual_input_tokens_total"],
+            cached_observed["actual_input_tokens_total"],
+        )
+    if baseline_observed["actual_total_tokens"] > 0:
+        observed_savings["actual_total_tokens_pct"] = savings_pct(
+            baseline_observed["actual_total_tokens"],
+            cached_observed["actual_total_tokens"],
+        )
+
+    return {
+        "benchmark": "game-dev-ab",
+        "estimator": "bytes/4",
+        "workload": {
+            "name": "signal-sweep-browser-game",
+            "workers": workers,
+            "description": "Equivalent four-slice browser-game development task.",
+        },
+        "quality_gates": QUALITY_GATES,
+        "status_protocol": {
+            "required_runtime_events": list(REQUIRED_RUNTIME_EVENTS),
+            "observation_jsonl_fields": [
+                "mode",
+                "worker",
+                "event",
+                "input_tokens",
+                "output_tokens",
+                "elapsed_ms",
+                "note",
+            ],
+            "offline_events_are_artifact_status_only": True,
+        },
+        "runs": {
+            "baseline": {
+                **effectiveness["baseline"],
+                "cache_adjusted_estimated_tokens": effectiveness["baseline"][
+                    "estimated_tokens_total"
+                ],
+                "mode_description": "Full task brief and status instructions embedded in every worker prompt.",
+            },
+            "cached_harness": {
+                **effectiveness["harness"],
+                "mode_description": "Stable harness prefix plus dynamic paths to the shared game brief and ledger.",
+            },
+        },
+        "savings": {
+            **effectiveness["savings"],
+            "break_even_dispatches": break_even,
+            "observed_runtime": observed_savings,
+        },
+        "status_observations": observation_summary,
+        "interpretation": {
+            "raw_tokens": "Prompt bytes sent before provider prompt-cache effects.",
+            "cache_adjusted_tokens": "Stable harness prefix counted once, dynamic tails counted per dispatch.",
+            "runtime_status": "Only populated from an external observations JSONL after actual subagents run.",
+        },
+    }
+
+
+def validate_report(
+    report: dict[str, Any],
+    *,
+    min_raw_savings_pct: float | None,
+    min_cache_adjusted_savings_pct: float,
+    min_stable_prefix_ratio_pct: float,
+) -> list[str]:
+    errors: list[str] = []
+    if (
+        min_raw_savings_pct is not None
+        and report["savings"]["raw_pct"] < min_raw_savings_pct
+    ):
+        errors.append(
+            f"raw savings {report['savings']['raw_pct']}% below {min_raw_savings_pct}%"
+        )
+    if report["savings"]["cache_adjusted_pct"] < min_cache_adjusted_savings_pct:
+        errors.append(
+            "cache-adjusted savings "
+            f"{report['savings']['cache_adjusted_pct']}% below "
+            f"{min_cache_adjusted_savings_pct}%"
+        )
+    if (
+        report["runs"]["cached_harness"]["stable_prefix_ratio_pct"]
+        < min_stable_prefix_ratio_pct
+    ):
+        errors.append(
+            "stable prefix ratio "
+            f"{report['runs']['cached_harness']['stable_prefix_ratio_pct']}% below "
+            f"{min_stable_prefix_ratio_pct}%"
+        )
+    if not report["runs"]["cached_harness"]["stable_prefix_consistent"]:
+        errors.append("cached harness stable prefix is not identical across prompts")
+    return errors
+
+
+def write_artifacts(
+    output_dir: Path,
+    *,
+    baseline_prompts: list[str],
+    cached_prompts: list[str],
+) -> None:
+    baseline_dir = output_dir / "baseline"
+    cached_dir = output_dir / "cached_harness"
+    baseline_dir.mkdir(parents=True, exist_ok=True)
+    cached_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / "signal-sweep-game-brief.md").write_text(
+        GAME_DEV_BRIEF, encoding="utf-8"
+    )
+    for index, prompt in enumerate(baseline_prompts):
+        (baseline_dir / f"worker-{index + 1:02d}.prompt").write_text(
+            prompt, encoding="utf-8"
+        )
+    for index, prompt in enumerate(cached_prompts):
+        (cached_dir / f"worker-{index + 1:02d}.prompt").write_text(
+            prompt, encoding="utf-8"
+        )
+    (output_dir / "observations-template.jsonl").write_text(
+        "\n".join(
+            [
+                '{"mode":"baseline","worker":"worker-01","event":"spawned","input_tokens":0,"output_tokens":0,"elapsed_ms":0,"note":"replace with real telemetry"}',
+                '{"mode":"cached_harness","worker":"worker-01","event":"spawned","input_tokens":0,"output_tokens":0,"elapsed_ms":0,"note":"replace with real telemetry"}',
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def format_markdown(report: dict[str, Any]) -> str:
+    break_even = report["savings"]["break_even_dispatches"]
+    break_even_text = "unreachable" if break_even is None else str(break_even)
+    baseline_status = report["status_observations"]["baseline"]
+    cached_status = report["status_observations"]["cached_harness"]
+    return f"""# Game Dev A/B Benchmark
+
+Workload: `{report['workload']['name']}` with {report['workload']['workers']} workers.
+Estimator: `{report['estimator']}`. Offline estimates are not provider billing
+telemetry.
+
+| Metric | Baseline embedded handoff | Cached harness handoff |
+|---|---:|---:|
+| Prompt count | {report['runs']['baseline']['prompt_count']} | {report['runs']['cached_harness']['prompt_count']} |
+| Estimated tokens total | {report['runs']['baseline']['estimated_tokens_total']} | {report['runs']['cached_harness']['estimated_tokens_total']} |
+| Average tokens per prompt | {report['runs']['baseline']['avg_tokens_per_prompt']} | {report['runs']['cached_harness']['avg_tokens_per_prompt']} |
+| Cache-adjusted estimated tokens | {report['runs']['baseline']['cache_adjusted_estimated_tokens']} | {report['runs']['cached_harness']['cache_adjusted_estimated_tokens']} |
+| Stable prefix tokens counted once | n/a | {report['runs']['cached_harness']['stable_prefix_estimated_tokens_once']} |
+| Dynamic tail tokens total | n/a | {report['runs']['cached_harness']['dynamic_tail_estimated_tokens_total']} |
+| Stable prefix ratio | n/a | {report['runs']['cached_harness']['stable_prefix_ratio_pct']}% |
+
+Raw estimated savings: `{report['savings']['raw_pct']}%`
+
+Cache-adjusted estimated savings: `{report['savings']['cache_adjusted_pct']}%`
+
+Break-even dispatches: `{break_even_text}`
+
+## Runtime Status Observations
+
+| Mode | Final status | Events | Workers seen | Workers closed | Input tokens | Output tokens |
+|---|---:|---:|---:|---:|---:|---:|
+| baseline | {baseline_status['final_status']} | {baseline_status['event_count']} | {baseline_status['workers_seen']} | {baseline_status['workers_closed']} | {baseline_status['actual_input_tokens_total']} | {baseline_status['actual_output_tokens_total']} |
+| cached_harness | {cached_status['final_status']} | {cached_status['event_count']} | {cached_status['workers_seen']} | {cached_status['workers_closed']} | {cached_status['actual_input_tokens_total']} | {cached_status['actual_output_tokens_total']} |
+
+Required runtime events: `{", ".join(report['status_protocol']['required_runtime_events'])}`.
+
+Quality gates:
+{chr(10).join(f"- `{gate['name']}`: {gate['purpose']}" for gate in report['quality_gates'])}
+"""
+
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--harnessctl",
+        type=Path,
+        default=default_harnessctl_path(),
+        help="Path to the built harnessctl binary.",
+    )
+    parser.add_argument("--workers", type=int, default=DEFAULT_WORKERS)
+    parser.add_argument(
+        "--format",
+        choices=("markdown", "json"),
+        default="markdown",
+        help="Output format.",
+    )
+    parser.add_argument("--output", type=Path, help="Optional report output path.")
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        help="Optional directory for generated A/B prompts and observation template.",
+    )
+    parser.add_argument(
+        "--observations",
+        type=Path,
+        help="Optional JSONL file with real runtime status/token observations.",
+    )
+    parser.add_argument(
+        "--min-raw-savings-pct",
+        type=float,
+        default=None,
+        help="Optional raw prompt-size gate. Omitted by default.",
+    )
+    parser.add_argument(
+        "--min-cache-adjusted-savings-pct",
+        type=float,
+        default=DEFAULT_MIN_CACHE_ADJUSTED_SAVINGS_PCT,
+    )
+    parser.add_argument(
+        "--min-stable-prefix-ratio-pct",
+        type=float,
+        default=DEFAULT_MIN_STABLE_PREFIX_RATIO_PCT,
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv or sys.argv[1:])
+    if args.workers < 2:
+        raise SystemExit("--workers must be at least 2")
+    if not args.harnessctl.is_file():
+        raise SystemExit(
+            f"missing harnessctl binary at {args.harnessctl}; run scripts/build-harnessctl.sh"
+        )
+
+    observations = load_observations(args.observations) if args.observations else []
+    context_manager: Any
+    if args.output_dir:
+        args.output_dir.mkdir(parents=True, exist_ok=True)
+        context_manager = _StaticWorkDir(args.output_dir)
+    else:
+        context_manager = tempfile.TemporaryDirectory(prefix="game-dev-ab-")
+
+    with context_manager as tmp:
+        work_dir = Path(tmp)
+        baseline_prompts = build_baseline_prompts(work_dir, args.workers)
+        cached_prompts = render_cached_prompts(args.harnessctl, work_dir, args.workers)
+        if args.output_dir:
+            write_artifacts(
+                args.output_dir,
+                baseline_prompts=baseline_prompts,
+                cached_prompts=cached_prompts,
+            )
+        report = build_game_dev_report(
+            harness_prompts=cached_prompts,
+            baseline_prompts=baseline_prompts,
+            workers=args.workers,
+            observations=observations,
+        )
+
+    errors = validate_report(
+        report,
+        min_raw_savings_pct=args.min_raw_savings_pct,
+        min_cache_adjusted_savings_pct=args.min_cache_adjusted_savings_pct,
+        min_stable_prefix_ratio_pct=args.min_stable_prefix_ratio_pct,
+    )
+    rendered = (
+        json.dumps(report, indent=2, sort_keys=True)
+        if args.format == "json"
+        else format_markdown(report)
+    )
+    if args.output:
+        args.output.write_text(rendered + "\n", encoding="utf-8")
+    else:
+        print(rendered)
+
+    if errors:
+        for error in errors:
+            print(f"FAIL: {error}", file=sys.stderr)
+        return 1
+    print("OK: game-dev A/B benchmark thresholds passed")
+    return 0
+
+
+class _StaticWorkDir:
+    def __init__(self, path: Path) -> None:
+        self.path = path
+
+    def __enter__(self) -> Path:
+        return self.path
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> bool:
+        return False
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

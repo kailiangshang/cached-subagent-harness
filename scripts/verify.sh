@@ -17,6 +17,7 @@ trap cleanup EXIT
 
 python3 "$repo_root/scripts/validate-release.py" "$repo_root"
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest "$repo_root/scripts/test_token_effectiveness_task.py"
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest "$repo_root/scripts/test_game_dev_ab_benchmark.py"
 
 if command -v cargo >/dev/null 2>&1; then
   cargo fmt --check --manifest-path "$crate_dir/Cargo.toml"
@@ -31,6 +32,11 @@ if command -v cargo >/dev/null 2>&1; then
     --harnessctl "$bin" \
     --format json \
     --output "$tmp_dir/token-effectiveness.json"
+  python3 "$repo_root/scripts/game_dev_ab_benchmark.py" \
+    --harnessctl "$bin" \
+    --format json \
+    --output "$tmp_dir/game-dev-ab.json" \
+    --output-dir "$tmp_dir/game-dev-ab"
 else
   echo "error: cargo is required for full verification" >&2
   exit 1
