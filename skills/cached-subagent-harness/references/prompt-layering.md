@@ -8,7 +8,7 @@ Keep the prompt prefix stable across dispatches for the same role. The prefix sh
 
 - role contract;
 - harness discipline;
-- local minimum contract;
+- built-in standalone controller contract;
 - file handoff discipline;
 - PSOC loop requirement;
 - lifecycle ledger requirement;
@@ -51,7 +51,7 @@ Dispatch prompts should route work, not carry bulk data.
 Prefer:
 
 ```text
-TASK_BRIEF_PATH=/repo/.superpowers/sdd/task-11-brief.md
+TASK_BRIEF_PATH=/repo/.agent-harness/task-11-brief.md
 ```
 
 Avoid:

@@ -25,6 +25,10 @@ Final Audit:
 
 Keep entries dense. Link file paths for details; do not paste long logs, diffs, plans, or histories.
 
+Optional methodology absence is not degraded. Populate `Degraded Mode Notes`
+only when a required harness/runtime capability is unavailable or an explicitly
+requested methodology adapter fails.
+
 ## Agent Ledger
 
 Every harness-created agent must have a row:

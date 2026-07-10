@@ -6,10 +6,10 @@ Use this reference when deciding whether to dispatch a subagent, how many to run
 
 Before any dispatch, the controller must create or update the repo report with:
 
-- `Agent Budget`: default max concurrent `2`, default max total `4`, with justification for exceptions.
+- `Agent Budget`: default max open delegated sessions `2`, default max total spawned sessions `4`, with justification for exceptions.
 - `Agent Ledger`: one row per planned or spawned agent.
 - `Write Scope`: explicit allowed write paths for any worker or fixer; `none` for read-only roles.
-- `Degraded Mode Notes`: present when a superpowers reference or harness binary is unavailable or skipped.
+- `Degraded Mode Notes`: present only when a required harness/runtime capability is unavailable or an explicitly requested methodology adapter fails. Optional methodology absence is not degraded.
 - `Expiry`: present for temporary or replacement agents, for example `superseded_by:<agent_id>` or `expires_when:original_resumed`.
 
 Do not spawn from memory. The ledger is the source of truth for agents created by this harness.
@@ -57,7 +57,9 @@ Discussion agents are read-only. Use them for product, architecture, or skill di
 
 ## Gate 2: Write
 
-Use exactly one `worker` at a time.
+Use exactly one write-active `worker` at a time. One worker may execute one
+bounded batch of compatible assignments when role, required capability, risk,
+write scope, base revision, dependency order, and review boundary align.
 
 Worker constraints:
 
@@ -71,7 +73,9 @@ Worker constraints:
 
 If the worker discovers that the Problem, Scenarios, Options, or Chosen Plan is wrong, it must stop the affected work path and report `LOOP_REQUIRED`.
 
-Do not dispatch another worker until the current worker is waited, reported, and closed or marked with an exception state.
+Until assignment/session lease enforcement lands, keep write-heavy execution
+serial. Wait for and consume the current worker's report, then close the worker
+or mark it with an exception state before dispatching another worker.
 
 ## Gate 3: Harness
 
