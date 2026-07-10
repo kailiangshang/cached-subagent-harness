@@ -31,6 +31,28 @@ REQUIRED_INTERFACE_FIELDS = {
     "capabilities",
     "defaultPrompt",
 }
+EXPECTED_INVARIANTS = [
+    "Harness first",
+    "PSOC first",
+    "Complete development",
+    "Explicit write scope",
+    "Protect the control plane",
+    "Independent gates",
+    "Evidence before completion",
+    "Durable state is authoritative",
+    "Read-heavy parallel, write-heavy serial",
+    "Close deliberately",
+    "No uncontrolled fan-out",
+    "Budget every session",
+    "Information density first",
+    "Stable prompt prefixes",
+    "Subagents are investments",
+    "Quality-constrained optimization",
+    "Requested is not actual",
+    "Unknown is honest",
+    "Facts do not depend on an LLM",
+    "Stable names, no version suffixes",
+]
 
 
 def fail(message: str) -> None:
@@ -126,7 +148,20 @@ def validate_skill(repo: Path) -> None:
     if len(description) > 1024:
         fail("skill description is too long")
 
+    matches = re.findall(r"(?m)^(\d+)\. \*\*(.+?)\.\*\*", text)
+    numbers = [int(number) for number, _ in matches]
+    names = [name for _, name in matches]
+    if numbers != list(range(1, 21)) or names != EXPECTED_INVARIANTS:
+        fail("SKILL.md must contain the complete ordered invariant constitution")
+    if "## Non-negotiable Invariants" not in text:
+        fail("SKILL.md missing invariant heading")
+    if "Standalone is the normal operating mode" not in text:
+        fail("SKILL.md must declare standalone normal mode")
+    if "## Superpowers Relationship" in text:
+        fail("SKILL.md must not make Superpowers a core relationship")
+
     required_files = [
+        "references/standalone-methodology.md",
         "references/gates.md",
         "references/prompt-layering.md",
         "references/report-contracts.md",

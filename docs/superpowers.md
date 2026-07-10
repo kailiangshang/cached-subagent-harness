@@ -1,75 +1,16 @@
-# Superpowers Integration
+# Optional Superpowers Integration
 
-`cached-subagent-harness` is a control-plane skill for subagent orchestration.
-It does not replace Superpowers. It narrows and enforces the parts that become
-fragile during long-running, multi-agent CLI work:
+cached-subagent-harness is standalone. Superpowers integration is
+explicitly optional and is never installed, fetched, detected, or copied by the
+default installer path.
 
-- stable prompt prefixes;
-- file-path handoffs instead of pasted bulk context;
-- explicit writer scopes;
-- SQLite lifecycle ledgers;
-- completion gates and final audits.
+Enable it explicitly with scripts/install.sh --with-superpowers.
 
-Superpowers remains the recommended source for the broader development process:
+When enabled, compatible planning, TDD, review, or finishing guidance loads only
+when that phase begins and its context cost is justified. It cannot replace the
+numbered invariant contract, force a fresh session per assignment, or redefine
+standalone completion.
 
-- brainstorming;
-- writing plans;
-- using worktrees;
-- test-driven development;
-- subagent-driven development;
-- requesting and receiving code review;
-- verification before completion;
-- finishing a development branch.
-
-## Install Behavior
-
-The installer first checks for Superpowers in common Codex-compatible locations:
-
-```text
-$CODEX_HOME/skills/using-superpowers/SKILL.md
-$CODEX_HOME/superpowers/skills/using-superpowers/SKILL.md
-$CODEX_HOME/plugins/cache/**/skills/using-superpowers/SKILL.md
-```
-
-When Superpowers is missing, the installer clones:
-
-```text
-https://github.com/obra/superpowers
-```
-
-into:
-
-```text
-$CODEX_HOME/superpowers
-```
-
-The clone uses `SUPERPOWERS_REF` when set:
-
-```bash
-SUPERPOWERS_REF=v6.0.3 scripts/install.sh
-```
-
-`SUPERPOWERS_REF` may be a branch, tag, or commit. The default is `main`.
-
-Then it copies Superpowers skill directories into:
-
-```text
-$CODEX_HOME/skills
-```
-
-Existing skill directories are preserved.
-
-## Degraded Mode
-
-If Superpowers is unavailable, `cached-subagent-harness` still works under its
-local minimum contract:
-
-- define Problem, Scenarios, Options, and Chosen Plan;
-- use read-heavy parallelism and write-heavy serialization;
-- keep prompt prefixes stable;
-- keep a ledger of harness-created agents;
-- verify focused behavior and project harnesses;
-- run final lifecycle audit before completion.
-
-Record degraded mode in the task report whenever Superpowers is unavailable or
-intentionally skipped.
+Optional methodology absence is not degraded. If explicitly requested setup
+fails, the installer reports failure while leaving the standalone core
+installed. SUPERPOWERS_REF may pin the optional clone.

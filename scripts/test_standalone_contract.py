@@ -86,6 +86,21 @@ class StandaloneContractTests(unittest.TestCase):
         self.assertIn("Optional methodology absence is not degraded", gates)
         self.assertIn("Optional methodology absence is not degraded", reports)
 
+    def test_public_docs_present_superpowers_as_optional(self) -> None:
+        readme = self.read("README.md")
+        integration = self.read("docs/superpowers.md")
+        self.assertIn("Standalone is the default", readme)
+        self.assertIn("scripts/install.sh --with-superpowers", readme)
+        self.assertNotIn(
+            "installer detects Superpowers and installs its skills",
+            readme,
+        )
+        self.assertIn("explicitly optional", integration)
+        self.assertIn(
+            "Optional methodology absence is not degraded",
+            integration,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

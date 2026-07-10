@@ -1,11 +1,13 @@
 # Cached Subagent Harness 🧭
 
-Cache-aware subagent orchestration for agentic CLIs. This repository packages the
-`cached-subagent-harness` skill plus a Rust `harnessctl` tool for stable
-dispatch prompts, SQLite lifecycle ledgers, write-scope gates, and final audits.
+Standalone control-plane orchestration for subagents in agentic CLIs. This
+repository packages the `cached-subagent-harness` skill plus a Rust
+`harnessctl` tool for stable dispatch prompts, SQLite lifecycle ledgers,
+write-scope gates, and final audits.
 
-It is designed to work with [Superpowers](https://github.com/obra/superpowers).
-The installer detects Superpowers and installs its skills when they are missing.
+Standalone is the default. The built-in method owns planning, bounded work,
+test-first behavior changes, review, verification, and lifecycle audit without
+requiring an external methodology.
 
 ## Why This Exists 🔍
 
@@ -88,7 +90,7 @@ where prompt-cache behavior is irrelevant.
 
 ## Install
 
-Recommended install from a checkout:
+Standalone is the default installation mode. Install from a checkout with:
 
 ```bash
 git clone https://github.com/kailiangshang/cached-subagent-harness
@@ -113,38 +115,46 @@ Replace an existing local install:
 scripts/install.sh --force
 ```
 
-Skip automatic Superpowers handling when you manage it another way:
+Skip the local Cargo build:
+
+```bash
+scripts/install.sh --skip-build
+```
+
+The legacy `--skip-superpowers` flag remains accepted as a deprecated no-op for
+compatibility. Standalone is already the default:
 
 ```bash
 scripts/install.sh --skip-superpowers
 ```
 
-Pin the Superpowers version, branch, or commit used by the installer:
-
-```bash
-SUPERPOWERS_REF=v6.0.3 scripts/install.sh
-```
+The installer normally builds the Rust `harnessctl` runtime with Cargo. If
+Cargo is unavailable, the standalone skill is still copied, but the required
+runtime binary is not built; that is a real runtime degradation and must be
+reported until Cargo builds the binary or a documented equivalent preserves
+the gates. Optional methodology absence is not degraded.
 
 After install, restart your CLI runtime so the new skill is loaded.
 
-## Superpowers Dependency
+### Optional methodology integration
 
-This harness is intentionally small and relies on Superpowers for the broader
-development methodology: brainstorming, TDD, planning, code review, and
-finishing workflows.
+Enable Superpowers explicitly in the same standalone-first installer run:
 
-The installer checks:
+```bash
+scripts/install.sh --with-superpowers
+```
 
-- `$CODEX_HOME/skills/using-superpowers/SKILL.md`
-- `$CODEX_HOME/superpowers/skills/using-superpowers/SKILL.md`
-- `$CODEX_HOME/plugins/cache/**/skills/using-superpowers/SKILL.md`
+Pin the optional clone to a branch, tag, or commit with `SUPERPOWERS_REF`:
 
-If none are present, it clones `https://github.com/obra/superpowers` into
-`$CODEX_HOME/superpowers` and copies its skills into `$CODEX_HOME/skills`
-without replacing existing skill directories. Use `SUPERPOWERS_REF` to pin the
-branch, tag, or commit. The default is `main`.
+```bash
+SUPERPOWERS_REF=v6.0.3 scripts/install.sh --with-superpowers
+```
 
-See [docs/superpowers.md](docs/superpowers.md) for details.
+An explicitly requested integration failure returns nonzero while leaving the
+standalone core installed. Missing optional methodology is normal and does not
+degrade the harness.
+
+See [docs/superpowers.md](docs/superpowers.md) for optional integration details.
 
 ## Verify
 
@@ -154,9 +164,10 @@ Run the repository verification:
 scripts/verify.sh
 ```
 
-This validates plugin metadata and skill frontmatter, runs Rust formatting,
-tests, optional clippy, builds `harnessctl`, runs the token-effectiveness task,
-and runs prompt plus ledger smoke tests.
+This validates plugin metadata, the standalone invariant constitution,
+installer behavior, and public documentation; runs Rust formatting, tests, and
+optional clippy; builds `harnessctl`; runs both benchmark suites; and exercises
+prompt plus ledger smoke tests.
 
 GitHub Actions runs the same release verification on push and pull request.
 
