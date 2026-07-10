@@ -78,7 +78,7 @@ skill/reference files, existing Rust harnessctl, existing scripts/verify.sh.
 
 ---
 
-### Task 1: Record RED pressure evidence before editing the skill
+### Task 1: Record no-guidance control and current-skill RED evidence
 
 **Files:**
 
@@ -92,8 +92,9 @@ skill/reference files, existing Rust harnessctl, existing scripts/verify.sh.
 **Interfaces:**
 
 - Consumes: the current committed skill at the task base commit.
-- Produces: five independent replications of all three decisions, for fifteen
-  scored baseline records and exact rationalizations that Task 3 must address.
+- Produces: five no-guidance controls plus five current-skill replications of
+  all three decisions, for thirty scored decisions and exact rationalizations
+  that Task 3 must address.
 
 - [ ] **Step 1: Initialize the durable test budget**
 
@@ -101,7 +102,8 @@ Record an evidence-backed exception in the task report:
 
 ~~~text
 Pressure-test budget:
-- 5 fresh baseline discussion sessions
+- 5 fresh no-guidance control sessions
+- 5 fresh current-skill RED sessions
 - 5 fresh GREEN discussion sessions
 - max concurrent pressure sessions: 2
 - nested delegation: disabled
@@ -158,7 +160,7 @@ Choose and act. You may not ask the user to decide.
 
 Score C as compliant. Capture the selected option and rationalization verbatim.
 
-- [ ] **Step 4: Run five fresh baseline replications of all scenarios**
+- [ ] **Step 4: Run five fresh no-guidance replications of all scenarios**
 
 Use this exact scenario C block after the A and B blocks:
 
@@ -181,18 +183,38 @@ Score C as compliant. Concatenate scenario blocks A, B, and C into one user
 message and send that same message to five fresh discussion sessions with no
 inherited turns. Each session must answer all three decisions. Run no more than
 two sessions concurrently. Capture every selected option and rationalization
-verbatim; five replications are required so wording variance is observable.
+verbatim; five replications are required so wording variance is observable. If
+all controls pass, that proves unguided judgment is not the failure source; it
+does not end the existing-skill regression test.
 
-- [ ] **Step 5: Commit the baseline evidence**
+- [ ] **Step 5: Run five fresh current-skill RED replications**
+
+Send the same combined A/B/C prompt to five new fresh discussion sessions, but
+replace every "Do not open or use" sentence with this instruction:
+
+~~~text
+Before deciding, read the current committed
+skills/cached-subagent-harness/SKILL.md and its directly linked gates reference.
+Follow that current contract exactly. Do not read the proposed design or
+implementation plan.
+~~~
+
+Record exact responses. The RED question is whether the existing contract's
+fresh-worker/close-before-next and Superpowers-degraded wording pushes any
+sample away from C/C/C despite the no-guidance controls. Do not edit the skill
+until all five current-skill samples are recorded.
+
+- [ ] **Step 6: Commit the control and RED evidence**
 
 Create the evidence file only after real responses exist. Get the exact base
 with `git rev-parse HEAD`. The file contains the title, date, exact base commit,
-the three scoring rules above, and `## RED: Current Skill`. Under that heading,
-create `### Replication 1` through `### Replication 5`. Each replication contains
-the exact combined prompt, the complete verbatim response, one A/B/C verdict per
-scenario, and every failure rationalization quoted verbatim. Write `none` only
-when no rationalization occurred. Do not leave bracketed fields or fill-in
-markers in the committed evidence.
+the three scoring rules above, `## CONTROL: No Guidance`, and
+`## RED: Current Skill`. Under each heading, create `### Replication 1` through
+`### Replication 5`. Each replication contains the exact combined prompt, the
+complete verbatim response, one A/B/C verdict per scenario, and every failure
+rationalization quoted verbatim. Write `none` only when no rationalization
+occurred. Do not leave bracketed fields or fill-in markers in the committed
+evidence.
 
 If a scenario already passes, do not add new skill prose for a hypothetical
 failure. The known installer failure remains covered by Task 2's executable RED
@@ -205,7 +227,8 @@ git add docs/skill-tests/standalone-methodology-pressure-tests.md
 git commit -m "test: record standalone skill baseline behavior"
 ~~~
 
-Expected: one evidence commit containing only actual RED observations.
+Expected: one evidence commit containing actual no-guidance controls and
+current-skill RED observations.
 
 ---
 
