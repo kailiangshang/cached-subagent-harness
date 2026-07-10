@@ -5,14 +5,15 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 codex_home="${CODEX_HOME:-"$HOME/.codex"}"
 superpowers_ref="${SUPERPOWERS_REF:-main}"
 force=0
-skip_superpowers=0
+with_superpowers=0
 skip_build=0
 
 usage() {
   cat <<'USAGE'
-usage: scripts/install.sh [--codex-home PATH] [--force] [--skip-superpowers] [--skip-build]
+usage: scripts/install.sh [--codex-home PATH] [--force] [--skip-build] [--with-superpowers] [--skip-superpowers]
 
-Installs cached-subagent-harness into $CODEX_HOME/skills and checks Superpowers.
+Installs cached-subagent-harness into $CODEX_HOME/skills as a standalone skill by default.
+Use --with-superpowers to install the optional Superpowers integration.
 
 Environment:
   SUPERPOWERS_REF  Branch, tag, or commit to install from obra/superpowers. Defaults to main.
@@ -29,8 +30,12 @@ while [ "$#" -gt 0 ]; do
       force=1
       shift
       ;;
+    --with-superpowers)
+      with_superpowers=1
+      shift
+      ;;
     --skip-superpowers)
-      skip_superpowers=1
+      echo "warning: --skip-superpowers is deprecated and is now a no-op; standalone is the default" >&2
       shift
       ;;
     --skip-build)
@@ -84,21 +89,25 @@ install_superpowers() {
     echo "superpowers detected"
     return 0
   fi
-  if [ "$skip_superpowers" -eq 1 ]; then
-    echo "warning: superpowers not detected; continuing because --skip-superpowers was set" >&2
-    return 0
-  fi
   if ! command -v git >/dev/null 2>&1; then
     echo "error: superpowers not detected and git is unavailable" >&2
     echo "install superpowers from https://github.com/obra/superpowers, then rerun this script" >&2
-    exit 1
+    return 1
   fi
   mkdir -p "$codex_home"
   if [ ! -d "$codex_home/superpowers/.git" ]; then
-    git clone --depth 1 --branch "$superpowers_ref" https://github.com/obra/superpowers "$codex_home/superpowers"
+    if ! git clone --depth 1 --branch "$superpowers_ref" \
+      https://github.com/obra/superpowers "$codex_home/superpowers"; then
+      return 1
+    fi
   else
-    git -C "$codex_home/superpowers" fetch --depth 1 origin "$superpowers_ref"
-    git -C "$codex_home/superpowers" checkout --detach FETCH_HEAD
+    if ! git -C "$codex_home/superpowers" fetch --depth 1 origin \
+      "$superpowers_ref"; then
+      return 1
+    fi
+    if ! git -C "$codex_home/superpowers" checkout --detach FETCH_HEAD; then
+      return 1
+    fi
   fi
   copy_superpowers_skills "$codex_home/superpowers"
 }
@@ -129,8 +138,14 @@ build_harnessctl() {
   fi
 }
 
-install_superpowers
 install_cached_skill
 build_harnessctl
+
+if [ "$with_superpowers" -eq 1 ]; then
+  if ! install_superpowers; then
+    echo "error: optional Superpowers integration failed; standalone core remains installed" >&2
+    exit 1
+  fi
+fi
 
 echo "done. Restart your CLI runtime to pick up the installed skill."
