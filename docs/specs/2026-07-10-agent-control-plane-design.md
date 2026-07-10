@@ -1324,6 +1324,28 @@ coarse lifecycle state and semantic progress remains unknown.
 
 The dashboard has four coordinated views.
 
+#### Visual language
+
+Use a restrained liquid-glass system that preserves the original high-density,
+at-a-glance requirement. Translucency, backdrop blur, edge highlights, and
+layered depth communicate navigation, grouping, and temporary overlays; dense
+data tables, status text, and evidence surfaces become sufficiently opaque to
+keep contrast and scanning speed high. Do not stack decorative glass layers or
+place continuously animated material behind operational data.
+
+Use a cool neutral base, one restrained accent family, and invariant semantic
+colors for ready, active, blocked, failed, and complete states. Typography uses
+a clear system sans face for hierarchy and a monospace face only for IDs,
+models, token values, and timestamps. Spacing follows a compact 4/8-pixel
+rhythm, with generous separation between work regions rather than oversized
+cards.
+
+The dashboard must remain legible when `backdrop-filter` is unavailable, when
+transparency or reduced-motion preferences are enabled, and at WCAG AA contrast.
+Motion reflects lifecycle events only. Before dashboard implementation, produce
+a small token sheet and representative Work Map/Agent Dock mockup for user
+review; visual approval is a gate for delivery increment 5.
+
 #### Work map
 
 Lead with the work-package dependency graph rather than the agent topology.
@@ -1609,6 +1631,9 @@ escalations, reviews, and fixes are included.
 - Web and CLI status views are projections of the same durable facts.
 - The Web leads with work-package progress and exposes session topology as a
   secondary resource view.
+- The liquid-glass visual system keeps dense operational content legible, meets
+  WCAG AA contrast, honors reduced-motion/transparency preferences, and has a
+  usable no-`backdrop-filter` fallback.
 - The dashboard remains useful with no observer agent.
 - Default installation performs no Superpowers clone, fetch, checkout, or skill
   copy, and standalone mode passes the complete development gates.
