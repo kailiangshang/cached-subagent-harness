@@ -70,18 +70,45 @@ has_superpowers() {
 
 copy_superpowers_skills() {
   local source_dir="$1"
-  mkdir -p "$skills_dir"
+  local usable_skills=0
+  if [ ! -d "$source_dir/skills" ]; then
+    echo "error: optional Superpowers checkout is missing its skills directory" >&2
+    return 1
+  fi
+  if ! mkdir -p "$skills_dir"; then
+    return 1
+  fi
   for skill_path in "$source_dir"/skills/*; do
     [ -d "$skill_path" ] || continue
     local name
-    name="$(basename "$skill_path")"
+    name="${skill_path##*/}"
+    if [ ! -f "$skill_path/SKILL.md" ]; then
+      echo "error: optional Superpowers skill has invalid layout: $name" >&2
+      return 1
+    fi
     if [ -e "$skills_dir/$name" ]; then
+      if [ ! -f "$skills_dir/$name/SKILL.md" ]; then
+        echo "error: existing optional skill has invalid layout: $name" >&2
+        return 1
+      fi
       echo "superpowers skill already exists, keeping: $name"
     else
-      cp -a "$skill_path" "$skills_dir/"
+      if ! cp -a "$skill_path" "$skills_dir/"; then
+        return 1
+      fi
+      if [ ! -f "$skills_dir/$name/SKILL.md" ]; then
+        echo "error: copied optional skill has invalid layout: $name" >&2
+        return 1
+      fi
       echo "installed superpowers skill: $name"
     fi
+    usable_skills=$((usable_skills + 1))
   done
+  if [ "$usable_skills" -eq 0 ]; then
+    echo "error: optional Superpowers checkout contains no usable skills" >&2
+    return 1
+  fi
+  return 0
 }
 
 install_superpowers() {
@@ -94,7 +121,9 @@ install_superpowers() {
     echo "install superpowers from https://github.com/obra/superpowers, then rerun this script" >&2
     return 1
   fi
-  mkdir -p "$codex_home"
+  if ! mkdir -p "$codex_home"; then
+    return 1
+  fi
   if [ ! -d "$codex_home/superpowers/.git" ]; then
     if ! git clone --depth 1 --branch "$superpowers_ref" \
       https://github.com/obra/superpowers "$codex_home/superpowers"; then
@@ -109,7 +138,14 @@ install_superpowers() {
       return 1
     fi
   fi
-  copy_superpowers_skills "$codex_home/superpowers"
+  if [ ! -d "$codex_home/superpowers/.git" ]; then
+    echo "error: optional Superpowers checkout has invalid repository layout" >&2
+    return 1
+  fi
+  if ! copy_superpowers_skills "$codex_home/superpowers"; then
+    return 1
+  fi
+  return 0
 }
 
 install_cached_skill() {

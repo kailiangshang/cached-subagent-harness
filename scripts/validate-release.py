@@ -12,6 +12,10 @@ from typing import Any
 
 PLUGIN_NAME = "cached-subagent-harness"
 SKILL_NAME = "cached-subagent-harness"
+DESIGN_RELATIVE = "docs/specs/2026-07-10-agent-control-plane-design.md"
+INVARIANT_HEADING = "## Non-negotiable Invariants"
+SKILL_INVARIANT_END = "\n## Controller Loop"
+DESIGN_INVARIANT_END = "\n### Existing-contract disposition map"
 SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$")
 SKILL_NAME_RE = re.compile(r"^[a-z0-9-]+$")
 REQUIRED_PLUGIN_FIELDS = {
@@ -31,27 +35,38 @@ REQUIRED_INTERFACE_FIELDS = {
     "capabilities",
     "defaultPrompt",
 }
-EXPECTED_INVARIANTS = [
-    "Harness first",
-    "PSOC first",
-    "Complete development",
-    "Explicit write scope",
-    "Protect the control plane",
-    "Independent gates",
-    "Evidence before completion",
-    "Durable state is authoritative",
-    "Read-heavy parallel, write-heavy serial",
-    "Close deliberately",
-    "No uncontrolled fan-out",
-    "Budget every session",
-    "Information density first",
-    "Stable prompt prefixes",
-    "Subagents are investments",
-    "Quality-constrained optimization",
-    "Requested is not actual",
-    "Unknown is honest",
-    "Facts do not depend on an LLM",
-    "Stable names, no version suffixes",
+REQUIRED_METHOD_HEADINGS = [
+    "## PSOC Loop",
+    "## Work Packages and Compatible Batching",
+    "## Quality-Constrained Routing",
+    "## Test and Harness Gate",
+    "## Independent Review",
+    "## Optional Methodology Adapters",
+    "## Quick Reference",
+    "## Red Flags",
+]
+REQUIRED_METHOD_SEMANTICS = [
+    "When the runtime cannot prove lease-aware follow-up, place compatible "
+    "assignments in one bounded worker brief and report reuse as unsupported.",
+    "Never emulate reuse with an unrestricted permanent role pool.",
+    "Set role, risk, uncertainty, and quality floors before choosing a model "
+    "or reasoning profile.",
+    "Security-sensitive, destructive, and control-plane changes require deep.",
+    "Strong tests and retry capacity do not lower that floor.",
+    "Behavior changes are test-first.",
+    "The controller waits, consumes the report, runs focused tests and the "
+    "project harness, and records the commit checkpoint before acceptance or "
+    "another writer assignment.",
+    "Architecture boundaries, workflow or service contracts, shared data "
+    "models, connectors or repositories, phase-end work, and whole-branch "
+    "work require an independent reviewer.",
+    "A writer or fixer cannot review its own work.",
+    "Batch all Critical and Important findings into one fixer pass, then "
+    "re-review.",
+    "Standalone is complete without another methodology.",
+    "Adapter absence when not requested is normal.",
+    "An explicitly requested adapter failure is visible, but it does not make "
+    "the standalone core degraded.",
 ]
 
 
@@ -81,6 +96,16 @@ def reject_todos(value: Any, path: str) -> None:
     elif isinstance(value, dict):
         for key, item in value.items():
             reject_todos(item, f"{path}.{key}")
+
+
+def extract_section(text: str, start: str, end: str, source: str) -> str:
+    start_index = text.find(start)
+    if start_index < 0:
+        fail(f"{source} missing section start: {start}")
+    end_index = text.find(end, start_index)
+    if end_index < 0:
+        fail(f"{source} missing section end: {end.strip()}")
+    return text[start_index:end_index]
 
 
 def validate_plugin(repo: Path) -> None:
@@ -148,18 +173,6 @@ def validate_skill(repo: Path) -> None:
     if len(description) > 1024:
         fail("skill description is too long")
 
-    matches = re.findall(r"(?m)^(\d+)\. \*\*(.+?)\.\*\*", text)
-    numbers = [int(number) for number, _ in matches]
-    names = [name for _, name in matches]
-    if numbers != list(range(1, 21)) or names != EXPECTED_INVARIANTS:
-        fail("SKILL.md must contain the complete ordered invariant constitution")
-    if "## Non-negotiable Invariants" not in text:
-        fail("SKILL.md missing invariant heading")
-    if "Standalone is the normal operating mode" not in text:
-        fail("SKILL.md must declare standalone normal mode")
-    if "## Superpowers Relationship" in text:
-        fail("SKILL.md must not make Superpowers a core relationship")
-
     required_files = [
         "references/standalone-methodology.md",
         "references/gates.md",
@@ -171,6 +184,40 @@ def validate_skill(repo: Path) -> None:
     for relative in required_files:
         if not (skill_root / relative).is_file():
             fail(f"missing skill file: {relative}")
+
+    design_path = repo / DESIGN_RELATIVE
+    if not design_path.is_file():
+        fail(f"missing canonical design file: {DESIGN_RELATIVE}")
+    design = design_path.read_text(encoding="utf-8")
+    actual_invariants = extract_section(
+        text,
+        INVARIANT_HEADING,
+        SKILL_INVARIANT_END,
+        "SKILL.md",
+    )
+    canonical_invariants = extract_section(
+        design,
+        INVARIANT_HEADING,
+        DESIGN_INVARIANT_END,
+        DESIGN_RELATIVE,
+    )
+    if actual_invariants != canonical_invariants:
+        fail("SKILL.md invariant block must exactly match the approved design")
+    if "Standalone is the normal operating mode" not in text:
+        fail("SKILL.md must declare standalone normal mode")
+    if "## Superpowers Relationship" in text:
+        fail("SKILL.md must not make Superpowers a core relationship")
+
+    method = (skill_root / "references/standalone-methodology.md").read_text(
+        encoding="utf-8"
+    )
+    for heading in REQUIRED_METHOD_HEADINGS:
+        if heading not in method:
+            fail(f"standalone methodology missing heading: {heading}")
+    normalized_method = " ".join(method.split())
+    for required in REQUIRED_METHOD_SEMANTICS:
+        if required not in normalized_method:
+            fail(f"standalone methodology missing binding contract: {required}")
 
 
 def main() -> None:

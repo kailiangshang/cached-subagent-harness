@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -20,6 +21,39 @@ class InstallScriptTests(unittest.TestCase):
         self.fake_bin = self.root / "bin"
         self.fake_bin.mkdir()
         self.git_log = self.root / "git.log"
+        self.cp_log = self.root / "cp.log"
+        self.find_log = self.root / "find.log"
+        self.real_cp = shutil.which("cp")
+        self.real_find = shutil.which("find")
+        self.assertIsNotNone(self.real_cp)
+        self.assertIsNotNone(self.real_find)
+
+        fake_cp = self.fake_bin / "cp"
+        fake_cp.write_text(
+            """#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "$FAKE_CP_LOG"
+if [ "${FAKE_CP_MODE:-success}" = "fail_optional" ] \
+  && [[ "$*" == *"/superpowers/skills/"* ]]; then
+  exit 74
+fi
+exec "$REAL_CP" "$@"
+""",
+            encoding="utf-8",
+        )
+        fake_cp.chmod(0o755)
+
+        fake_find = self.fake_bin / "find"
+        fake_find.write_text(
+            """#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "$FAKE_FIND_LOG"
+exec "$REAL_FIND" "$@"
+""",
+            encoding="utf-8",
+        )
+        fake_find.chmod(0o755)
+
         fake_git = self.fake_bin / "git"
         fake_git.write_text(
             """#!/usr/bin/env bash
@@ -43,12 +77,20 @@ fi
         self.tempdir.cleanup()
 
     def run_install(
-        self, *extra_args: str, git_mode: str = "success"
+        self,
+        *extra_args: str,
+        git_mode: str = "success",
+        cp_mode: str = "success",
     ) -> subprocess.CompletedProcess[str]:
         env = os.environ.copy()
         env["PATH"] = f"{self.fake_bin}:{env['PATH']}"
         env["FAKE_GIT_LOG"] = str(self.git_log)
         env["FAKE_GIT_MODE"] = git_mode
+        env["FAKE_CP_LOG"] = str(self.cp_log)
+        env["FAKE_CP_MODE"] = cp_mode
+        env["FAKE_FIND_LOG"] = str(self.find_log)
+        env["REAL_CP"] = str(self.real_cp)
+        env["REAL_FIND"] = str(self.real_find)
         return subprocess.run(
             [
                 "bash",
@@ -66,6 +108,18 @@ fi
         )
 
     def test_default_install_never_invokes_superpowers_git(self) -> None:
+        marker = (
+            self.codex_home
+            / "plugins"
+            / "cache"
+            / "sentinel"
+            / "skills"
+            / "using-superpowers"
+            / "SKILL.md"
+        )
+        marker.parent.mkdir(parents=True)
+        marker.write_text("---\nname: using-superpowers\n---\n", encoding="utf-8")
+
         result = self.run_install()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(
@@ -77,6 +131,11 @@ fi
             ).is_file()
         )
         self.assertFalse(self.git_log.exists())
+        self.assertFalse(self.find_log.exists())
+        self.assertNotIn(
+            "/superpowers/skills/",
+            self.cp_log.read_text(encoding="utf-8"),
+        )
         self.assertFalse((self.codex_home / "superpowers").exists())
 
     def test_with_superpowers_is_explicit_and_copies_optional_skills(self) -> None:
@@ -103,6 +162,34 @@ fi
                 / "cached-subagent-harness"
                 / "SKILL.md"
             ).is_file()
+        )
+
+    def test_optional_copy_failure_is_visible_and_preserves_core(self) -> None:
+        result = self.run_install(
+            "--with-superpowers",
+            cp_mode="fail_optional",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("optional Superpowers integration failed", result.stderr)
+        self.assertTrue(
+            (
+                self.codex_home
+                / "skills"
+                / "cached-subagent-harness"
+                / "SKILL.md"
+            ).is_file()
+        )
+        self.assertFalse(
+            (
+                self.codex_home
+                / "skills"
+                / "using-superpowers"
+                / "SKILL.md"
+            ).exists()
+        )
+        self.assertIn(
+            "/superpowers/skills/using-superpowers",
+            self.cp_log.read_text(encoding="utf-8"),
         )
 
     def test_legacy_skip_flag_is_a_deprecated_noop(self) -> None:
