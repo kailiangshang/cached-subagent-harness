@@ -1346,6 +1346,11 @@ Motion reflects lifecycle events only. Before dashboard implementation, produce
 a small token sheet and representative Work Map/Agent Dock mockup for user
 review; visual approval is a gate for delivery increment 5.
 
+The visual gate was approved on 2026-07-12. Delivery increment 5 uses the
+Command Grid layout, Moonlight Indigo palette, system sans-serif typography,
+the larger compact type scale, and complete zh-CN / en-US localization defined
+in docs/specs/2026-07-12-dashboard-visual-baseline.md.
+
 #### Work map
 
 Lead with the work-package dependency graph rather than the agent topology.
