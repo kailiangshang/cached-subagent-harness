@@ -1,4 +1,7 @@
+mod schema;
+
 use rusqlite::{Connection, OptionalExtension, params};
+use schema::open_db;
 use std::collections::HashMap;
 use std::env;
 use std::fs;
@@ -396,65 +399,6 @@ fn render_prompt_full(options: &RenderOptions) -> Result<String, String> {
     ));
     lines.push(format!("ALLOWED_WRITE_PATHS={write_scope}"));
     Ok(format!("{}\n", lines.join("\n")))
-}
-
-fn ensure_schema(conn: &Connection) -> rusqlite::Result<()> {
-    conn.execute_batch(
-        r#"
-        CREATE TABLE IF NOT EXISTS harness_meta (
-            key TEXT PRIMARY KEY,
-            value TEXT NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS agent_ledger (
-            handle TEXT PRIMARY KEY,
-            role TEXT NOT NULL,
-            task TEXT NOT NULL DEFAULT '',
-            status TEXT NOT NULL,
-            report_path TEXT NOT NULL DEFAULT '',
-            spawned_at TEXT NOT NULL DEFAULT '',
-            waited INTEGER NOT NULL DEFAULT 0,
-            closed INTEGER NOT NULL DEFAULT 0,
-            write_scope TEXT NOT NULL DEFAULT 'none',
-            token_risk TEXT NOT NULL DEFAULT '',
-            final_reason TEXT NOT NULL DEFAULT '',
-            next_action TEXT NOT NULL DEFAULT '',
-            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-        );
-        "#,
-    )?;
-    ensure_agent_ledger_column(conn, "final_reason", "TEXT NOT NULL DEFAULT ''")?;
-    Ok(())
-}
-
-fn ensure_agent_ledger_column(
-    conn: &Connection,
-    name: &str,
-    definition: &str,
-) -> rusqlite::Result<()> {
-    let mut stmt = conn.prepare("PRAGMA table_info(agent_ledger)")?;
-    let columns = stmt.query_map([], |row| row.get::<_, String>(1))?;
-    for column in columns {
-        if column? == name {
-            return Ok(());
-        }
-    }
-    conn.execute(
-        &format!("ALTER TABLE agent_ledger ADD COLUMN {name} {definition}"),
-        [],
-    )?;
-    Ok(())
-}
-
-fn open_db(path: &str) -> Result<Connection, String> {
-    let db_path = Path::new(path);
-    if let Some(parent) = db_path.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    }
-    let conn = Connection::open(db_path).map_err(|error| error.to_string())?;
-    ensure_schema(&conn).map_err(|error| error.to_string())?;
-    Ok(conn)
 }
 
 fn set_meta(conn: &Connection, key: &str, value: &str) -> Result<(), String> {
@@ -957,8 +901,8 @@ ALLOWED_WRITE_PATHS=issue_feedback_agent/tests
 
     #[test]
     fn final_audit_rejects_unclosed_reported_agent() {
-        let conn = Connection::open_in_memory().unwrap();
-        ensure_schema(&conn).unwrap();
+        let mut conn = Connection::open_in_memory().unwrap();
+        schema::initialize_connection(&mut conn, false).unwrap();
         ledger_add(
             &conn,
             &AgentInput {
@@ -988,8 +932,8 @@ ALLOWED_WRITE_PATHS=issue_feedback_agent/tests
 
     #[test]
     fn final_audit_accepts_closed_agent() {
-        let conn = Connection::open_in_memory().unwrap();
-        ensure_schema(&conn).unwrap();
+        let mut conn = Connection::open_in_memory().unwrap();
+        schema::initialize_connection(&mut conn, false).unwrap();
         ledger_add(
             &conn,
             &AgentInput {
@@ -1014,8 +958,8 @@ ALLOWED_WRITE_PATHS=issue_feedback_agent/tests
 
     #[test]
     fn final_audit_rejects_failed_agent_without_reason() {
-        let conn = Connection::open_in_memory().unwrap();
-        ensure_schema(&conn).unwrap();
+        let mut conn = Connection::open_in_memory().unwrap();
+        schema::initialize_connection(&mut conn, false).unwrap();
         ledger_add(
             &conn,
             &AgentInput {
