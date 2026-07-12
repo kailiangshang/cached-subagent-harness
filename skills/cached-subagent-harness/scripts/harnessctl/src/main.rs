@@ -1,3 +1,4 @@
+mod event_store;
 mod ledger;
 mod schema;
 
