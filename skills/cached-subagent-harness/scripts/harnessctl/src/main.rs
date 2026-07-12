@@ -1,6 +1,10 @@
+mod ledger;
 mod schema;
 
-use rusqlite::{Connection, OptionalExtension, params};
+use ledger::{
+    AgentInput, AgentPatch, get_meta_usize, ledger_add, ledger_audit, ledger_update, parse_bool,
+    set_meta,
+};
 use schema::open_db;
 use std::collections::HashMap;
 use std::env;
@@ -23,18 +27,6 @@ const DYNAMIC_FIELDS: &[&str] = &[
 const READ_ONLY_ROLES: &[&str] = &["discussion", "explorer", "reviewer"];
 const WRITE_ROLES: &[&str] = &["worker", "fixer"];
 const ALL_ROLES: &[&str] = &["discussion", "explorer", "worker", "reviewer", "fixer"];
-const EXCEPTION_FINAL_STATUSES: &[&str] = &["failed", "abandoned", "externally-unknown"];
-const ALL_STATUSES: &[&str] = &[
-    "planned",
-    "spawned",
-    "running",
-    "reported",
-    "closed",
-    "failed",
-    "abandoned",
-    "externally-unknown",
-];
-
 const STABLE_PREFIX: &str = r#"Use the cached-subagent-harness skill for this dispatch.
 
 Stable operating rules:
@@ -72,21 +64,6 @@ struct RenderOptions {
     contexts: Vec<String>,
     harness_command: Option<String>,
     allowed_write_paths: Vec<String>,
-}
-
-struct AgentInput {
-    handle: String,
-    role: String,
-    task: String,
-    status: String,
-    report_path: String,
-    spawned_at: String,
-    waited: bool,
-    closed: bool,
-    write_scope: String,
-    token_risk: String,
-    final_reason: String,
-    next_action: String,
 }
 
 fn parse_args(args: &[String]) -> Result<ParsedArgs, String> {
@@ -145,14 +122,6 @@ fn validate_role(role: &str) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!("unknown role: {role}"))
-    }
-}
-
-fn validate_status(status: &str) -> Result<(), String> {
-    if ALL_STATUSES.contains(&status) {
-        Ok(())
-    } else {
-        Err(format!("unknown status: {status}"))
     }
 }
 
@@ -401,219 +370,6 @@ fn render_prompt_full(options: &RenderOptions) -> Result<String, String> {
     Ok(format!("{}\n", lines.join("\n")))
 }
 
-fn set_meta(conn: &Connection, key: &str, value: &str) -> Result<(), String> {
-    conn.execute(
-        "INSERT INTO harness_meta(key, value) VALUES(?1, ?2)
-         ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-        params![key, value],
-    )
-    .map_err(|error| error.to_string())?;
-    Ok(())
-}
-
-fn get_meta_usize(conn: &Connection, key: &str, default_value: usize) -> Result<usize, String> {
-    let value: Option<String> = conn
-        .query_row(
-            "SELECT value FROM harness_meta WHERE key=?1",
-            params![key],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(|error| error.to_string())?;
-    match value {
-        Some(text) => text
-            .parse::<usize>()
-            .map_err(|error| format!("invalid {key} value {text}: {error}")),
-        None => Ok(default_value),
-    }
-}
-
-fn ledger_add(conn: &Connection, input: &AgentInput) -> Result<(), String> {
-    validate_status(&input.status)?;
-    validate_write_scope(&input.role, &input.write_scope)?;
-    conn.execute(
-        r#"
-        INSERT INTO agent_ledger(
-            handle, role, task, status, report_path, spawned_at, waited, closed,
-            write_scope, token_risk, final_reason, next_action, updated_at
-        )
-        VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, datetime('now'))
-        "#,
-        params![
-            input.handle,
-            input.role,
-            input.task,
-            input.status,
-            input.report_path,
-            input.spawned_at,
-            input.waited as i64,
-            input.closed as i64,
-            input.write_scope,
-            input.token_risk,
-            input.final_reason,
-            input.next_action
-        ],
-    )
-    .map_err(|error| error.to_string())?;
-    Ok(())
-}
-
-fn update_field(conn: &Connection, handle: &str, column: &str, value: &str) -> Result<(), String> {
-    let sql =
-        format!("UPDATE agent_ledger SET {column}=?1, updated_at=datetime('now') WHERE handle=?2");
-    let changed = conn
-        .execute(&sql, params![value, handle])
-        .map_err(|error| error.to_string())?;
-    if changed == 0 {
-        Err(format!("unknown handle: {handle}"))
-    } else {
-        Ok(())
-    }
-}
-
-fn update_bool_field(
-    conn: &Connection,
-    handle: &str,
-    column: &str,
-    value: bool,
-) -> Result<(), String> {
-    let sql =
-        format!("UPDATE agent_ledger SET {column}=?1, updated_at=datetime('now') WHERE handle=?2");
-    let changed = conn
-        .execute(&sql, params![value as i64, handle])
-        .map_err(|error| error.to_string())?;
-    if changed == 0 {
-        Err(format!("unknown handle: {handle}"))
-    } else {
-        Ok(())
-    }
-}
-
-fn parse_bool(value: &str) -> Result<bool, String> {
-    match value {
-        "1" | "true" | "yes" => Ok(true),
-        "0" | "false" | "no" => Ok(false),
-        _ => Err(format!("invalid boolean: {value}")),
-    }
-}
-
-fn ledger_update(conn: &Connection, handle: &str, parsed: &ParsedArgs) -> Result<(), String> {
-    let current: Option<(String, String)> = conn
-        .query_row(
-            "SELECT role, write_scope FROM agent_ledger WHERE handle=?1",
-            params![handle],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .optional()
-        .map_err(|error| error.to_string())?;
-    let Some((role, current_write_scope)) = current else {
-        return Err(format!("unknown handle: {handle}"));
-    };
-
-    if let Some(status) = flag_one(parsed, "status") {
-        validate_status(&status)?;
-        update_field(conn, handle, "status", &status)?;
-        if status == "closed" && flag_one(parsed, "closed").is_none() {
-            update_bool_field(conn, handle, "closed", true)?;
-        }
-    }
-    if let Some(report_path) = flag_one(parsed, "report-path") {
-        update_field(conn, handle, "report_path", &report_path)?;
-    }
-    if let Some(waited) = flag_one(parsed, "waited") {
-        update_bool_field(conn, handle, "waited", parse_bool(&waited)?)?;
-    }
-    if let Some(closed) = flag_one(parsed, "closed") {
-        update_bool_field(conn, handle, "closed", parse_bool(&closed)?)?;
-    }
-    if let Some(write_scope) = flag_one(parsed, "write-scope") {
-        validate_write_scope(&role, &write_scope)?;
-        update_field(conn, handle, "write_scope", &write_scope)?;
-    } else {
-        validate_write_scope(&role, &current_write_scope)?;
-    }
-    if let Some(token_risk) = flag_one(parsed, "token-risk") {
-        update_field(conn, handle, "token_risk", &token_risk)?;
-    }
-    if let Some(final_reason) = flag_one(parsed, "reason") {
-        update_field(conn, handle, "final_reason", &final_reason)?;
-    }
-    if let Some(next_action) = flag_one(parsed, "next-action") {
-        update_field(conn, handle, "next_action", &next_action)?;
-    }
-    Ok(())
-}
-
-fn ledger_audit(
-    conn: &Connection,
-    mode: &str,
-    max_concurrent: usize,
-    max_total: usize,
-) -> Result<Vec<String>, String> {
-    let mut errors = Vec::new();
-    let total: usize = conn
-        .query_row("SELECT COUNT(*) FROM agent_ledger", [], |row| row.get(0))
-        .map_err(|error| error.to_string())?;
-    let active: usize = conn
-        .query_row(
-            r#"
-            SELECT COUNT(*) FROM agent_ledger
-            WHERE status IN ('planned', 'spawned', 'running', 'reported') AND closed=0
-            "#,
-            [],
-            |row| row.get(0),
-        )
-        .map_err(|error| error.to_string())?;
-    if active > max_concurrent {
-        errors.push(format!(
-            "active agents {active} exceed max_concurrent {max_concurrent}"
-        ));
-    }
-    if total > max_total {
-        errors.push(format!("total agents {total} exceed max_total {max_total}"));
-    }
-
-    match mode {
-        "budget" => {}
-        "final" => {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT handle, status, closed, final_reason FROM agent_ledger ORDER BY handle",
-                )
-                .map_err(|error| error.to_string())?;
-            let rows = stmt
-                .query_map([], |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, i64>(2)?,
-                        row.get::<_, String>(3)?,
-                    ))
-                })
-                .map_err(|error| error.to_string())?;
-            for row in rows {
-                let (handle, status, closed, final_reason) =
-                    row.map_err(|error| error.to_string())?;
-                if status == "closed" {
-                    if closed != 1 {
-                        errors.push(format!("agent {handle} is not final: {status}"));
-                    }
-                } else if EXCEPTION_FINAL_STATUSES.contains(&status.as_str()) {
-                    if final_reason.trim().is_empty() {
-                        errors.push(format!(
-                            "agent {handle} is {status} but missing final reason"
-                        ));
-                    }
-                } else {
-                    errors.push(format!("agent {handle} is not final: {status}"));
-                }
-            }
-        }
-        _ => return Err(format!("unknown audit mode: {mode}")),
-    }
-    Ok(errors)
-}
-
 fn cmd_render_prompt(args: &[String]) -> Result<(), String> {
     let parsed = parse_args(args)?;
     let role = required_flag(&parsed, "role")?;
@@ -659,9 +415,9 @@ fn cmd_ledger_init(args: &[String]) -> Result<(), String> {
     let db = required_flag(&parsed, "db")?;
     let max_concurrent = flag_one(&parsed, "max-concurrent").unwrap_or_else(|| "2".to_string());
     let max_total = flag_one(&parsed, "max-total").unwrap_or_else(|| "4".to_string());
-    let conn = open_db(&db)?;
-    set_meta(&conn, "max_concurrent", &max_concurrent)?;
-    set_meta(&conn, "max_total", &max_total)?;
+    let mut conn = open_db(&db)?;
+    set_meta(&mut conn, "max_concurrent", &max_concurrent)?;
+    set_meta(&mut conn, "max_total", &max_total)?;
     println!("OK: ledger initialized at {db}");
     Ok(())
 }
@@ -691,8 +447,8 @@ fn cmd_ledger_add(args: &[String]) -> Result<(), String> {
         final_reason: flag_one(&parsed, "reason").unwrap_or_default(),
         next_action: flag_one(&parsed, "next-action").unwrap_or_default(),
     };
-    let conn = open_db(&db)?;
-    ledger_add(&conn, &input)?;
+    let mut conn = open_db(&db)?;
+    ledger_add(&mut conn, &input)?;
     println!("OK: ledger row added for {}", input.handle);
     Ok(())
 }
@@ -701,8 +457,22 @@ fn cmd_ledger_update(args: &[String]) -> Result<(), String> {
     let parsed = parse_args(args)?;
     let db = required_flag(&parsed, "db")?;
     let handle = required_flag(&parsed, "handle")?;
-    let conn = open_db(&db)?;
-    ledger_update(&conn, &handle, &parsed)?;
+    let patch = AgentPatch {
+        status: flag_one(&parsed, "status"),
+        report_path: flag_one(&parsed, "report-path"),
+        waited: flag_one(&parsed, "waited")
+            .map(|value| parse_bool(&value))
+            .transpose()?,
+        closed: flag_one(&parsed, "closed")
+            .map(|value| parse_bool(&value))
+            .transpose()?,
+        write_scope: flag_one(&parsed, "write-scope"),
+        token_risk: flag_one(&parsed, "token-risk"),
+        final_reason: flag_one(&parsed, "reason"),
+        next_action: flag_one(&parsed, "next-action"),
+    };
+    let mut conn = open_db(&db)?;
+    ledger_update(&mut conn, &handle, &patch)?;
     println!("OK: ledger row updated for {handle}");
     Ok(())
 }
@@ -897,93 +667,5 @@ ALLOWED_WRITE_PATHS=issue_feedback_agent/tests
         assert!(role_pos > marker);
         assert!(brief_pos > marker);
         assert!(write_pos > marker);
-    }
-
-    #[test]
-    fn final_audit_rejects_unclosed_reported_agent() {
-        let mut conn = Connection::open_in_memory().unwrap();
-        schema::initialize_connection(&mut conn, false).unwrap();
-        ledger_add(
-            &conn,
-            &AgentInput {
-                handle: "agent-1".to_string(),
-                role: "explorer".to_string(),
-                task: "inspect".to_string(),
-                status: "reported".to_string(),
-                report_path: "/tmp/report.md".to_string(),
-                spawned_at: String::new(),
-                waited: true,
-                closed: false,
-                write_scope: "none".to_string(),
-                token_risk: "low".to_string(),
-                final_reason: String::new(),
-                next_action: "close".to_string(),
-            },
-        )
-        .unwrap();
-        let errors = ledger_audit(&conn, "final", 2, 4).unwrap();
-        assert!(
-            errors
-                .iter()
-                .any(|error| error.contains("agent agent-1 is not final")),
-            "{errors:?}"
-        );
-    }
-
-    #[test]
-    fn final_audit_accepts_closed_agent() {
-        let mut conn = Connection::open_in_memory().unwrap();
-        schema::initialize_connection(&mut conn, false).unwrap();
-        ledger_add(
-            &conn,
-            &AgentInput {
-                handle: "agent-1".to_string(),
-                role: "explorer".to_string(),
-                task: "inspect".to_string(),
-                status: "closed".to_string(),
-                report_path: "/tmp/report.md".to_string(),
-                spawned_at: String::new(),
-                waited: true,
-                closed: true,
-                write_scope: "none".to_string(),
-                token_risk: "low".to_string(),
-                final_reason: String::new(),
-                next_action: "done".to_string(),
-            },
-        )
-        .unwrap();
-        let errors = ledger_audit(&conn, "final", 2, 4).unwrap();
-        assert!(errors.is_empty(), "{errors:?}");
-    }
-
-    #[test]
-    fn final_audit_rejects_failed_agent_without_reason() {
-        let mut conn = Connection::open_in_memory().unwrap();
-        schema::initialize_connection(&mut conn, false).unwrap();
-        ledger_add(
-            &conn,
-            &AgentInput {
-                handle: "agent-1".to_string(),
-                role: "explorer".to_string(),
-                task: "inspect".to_string(),
-                status: "failed".to_string(),
-                report_path: "/tmp/report.md".to_string(),
-                spawned_at: String::new(),
-                waited: true,
-                closed: false,
-                write_scope: "none".to_string(),
-                token_risk: "low".to_string(),
-                final_reason: String::new(),
-                next_action: String::new(),
-            },
-        )
-        .unwrap();
-        let errors = ledger_audit(&conn, "final", 2, 4).unwrap();
-        assert!(
-            errors
-                .iter()
-                .any(|error| error.contains("missing final reason")),
-            "{errors:?}"
-        );
     }
 }
