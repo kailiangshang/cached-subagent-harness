@@ -839,6 +839,12 @@ correctly profiled session or demonstrably sufficient main execution path.
 
 ## Observability Data Model
 
+Increment 2 physical storage, migration, idempotency, conflict-resolution, and
+transition details are closed by
+[`2026-07-12-observability-schema-delta.md`](2026-07-12-observability-schema-delta.md).
+That delta refines this logical model without authorizing later runtime or UI
+increments.
+
 ### Entity projections
 
 Do not equate a task with an agent row. Project the event stream into separate
