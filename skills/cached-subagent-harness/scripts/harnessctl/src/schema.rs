@@ -55,8 +55,8 @@ CREATE TABLE work_packages (
     model_floor TEXT NOT NULL CHECK(model_floor IN ('light','standard','deep')),
     risk_floor TEXT NOT NULL CHECK(risk_floor IN ('low','medium','high','critical')),
     write_scope TEXT NOT NULL CHECK(json_valid(write_scope) AND json_type(write_scope)='object' AND json(write_scope)=write_scope),
-    review_policy TEXT NOT NULL CHECK(review_policy IN ('none','deterministic','independent')),
-    independence_policy TEXT NOT NULL CHECK(independence_policy IN ('none','different-session','different-role-and-session')),
+    review_policy TEXT NOT NULL CHECK(json_valid(review_policy) AND json_type(review_policy)='object' AND json(review_policy)=review_policy),
+    independence_policy TEXT NOT NULL CHECK(json_valid(independence_policy) AND json_type(independence_policy)='object' AND json(independence_policy)=independence_policy),
     status TEXT NOT NULL CHECK(status IN ('planned','ready','active','review','complete','blocked','cancelled')),
     blocker TEXT,
     next_action TEXT,
@@ -423,6 +423,7 @@ enum UnversionedLayout {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum JsonTopLevel {
     Object,
+    #[allow(dead_code)]
     Array,
 }
 
@@ -937,6 +938,17 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
+    type HonestSessionTuple = (
+        Option<String>,
+        Option<String>,
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+        String,
+        Option<i64>,
+        Option<String>,
+    );
 
     struct TempDb {
         path: PathBuf,
@@ -1225,17 +1237,7 @@ mod tests {
             expected.len() as i64
         );
         for row in expected {
-            let actual: (
-                Option<String>,
-                Option<String>,
-                String,
-                String,
-                Option<String>,
-                Option<String>,
-                String,
-                Option<i64>,
-                Option<String>,
-            ) = conn
+            let actual: HonestSessionTuple = conn
                 .query_row(
                     r#"
                     SELECT run_id,handle,role,status,spawned_at,final_reason,
@@ -1324,7 +1326,7 @@ mod tests {
         assert_eq!(row_count(&conn, "control_plane_events"), 0);
 
         let bad_child = conn.execute(
-            "INSERT INTO work_packages(package_id,run_id,title,role_floor,model_floor,risk_floor,write_scope,review_policy,independence_policy,status) VALUES('p-bad','missing','bad','worker','standard','medium','{\"v\":1,\"paths\":[]}','deterministic','different-session','planned')",
+            "INSERT INTO work_packages(package_id,run_id,title,role_floor,model_floor,risk_floor,write_scope,review_policy,independence_policy,status) VALUES('p-bad','missing','bad','worker','standard','medium','{\"v\":1,\"paths\":[]}','{\"v\":1,\"kind\":\"deterministic\"}','{\"v\":1,\"kind\":\"different-session\"}','planned')",
             [],
         );
         assert!(bad_child.is_err());
@@ -1345,7 +1347,7 @@ mod tests {
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO work_packages(package_id,run_id,title,role_floor,model_floor,risk_floor,write_scope,review_policy,independence_policy,status) VALUES('package-1','run-1','package','worker','standard','medium','{\"v\":1,\"paths\":[]}','deterministic','different-session','planned')",
+            "INSERT INTO work_packages(package_id,run_id,title,role_floor,model_floor,risk_floor,write_scope,review_policy,independence_policy,status) VALUES('package-1','run-1','package','worker','standard','medium','{\"v\":1,\"paths\":[]}','{\"v\":1,\"kind\":\"deterministic\"}','{\"v\":1,\"kind\":\"different-session\"}','planned')",
             [],
         )
         .unwrap();

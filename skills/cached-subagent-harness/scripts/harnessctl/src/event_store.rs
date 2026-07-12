@@ -605,11 +605,11 @@ fn event_rule(name: &str) -> Result<&'static EventRule, String> {
 }
 
 fn reference_mask(event: &EventInput) -> u8 {
-    u8::from(event.package_id.is_some()) * PACKAGE
-        | u8::from(event.assignment_id.is_some()) * ASSIGNMENT
-        | u8::from(event.attempt_id.is_some()) * ATTEMPT
-        | u8::from(event.session_id.is_some()) * SESSION
-        | u8::from(event.lease_id.is_some()) * LEASE
+    (u8::from(event.package_id.is_some()) * PACKAGE)
+        | (u8::from(event.assignment_id.is_some()) * ASSIGNMENT)
+        | (u8::from(event.attempt_id.is_some()) * ATTEMPT)
+        | (u8::from(event.session_id.is_some()) * SESSION)
+        | (u8::from(event.lease_id.is_some()) * LEASE)
 }
 
 fn validate_common(conn: &Connection, event: &EventInput) -> Result<&'static EventRule, String> {
@@ -891,6 +891,11 @@ fn validate_identity_chain(
             }
             if let Some(event_session) = &event.session_id
                 && session.as_deref() != Some(event_session.as_str())
+                && !(session.is_none()
+                    && matches!(
+                        event.event_type.as_str(),
+                        "session_planned" | "session_running"
+                    ))
             {
                 return Err(format!(
                     "attempt {attempt_id} does not belong to session {event_session}"
@@ -898,6 +903,7 @@ fn validate_identity_chain(
             }
             if let Some(event_lease) = &event.lease_id
                 && lease.as_deref() != Some(event_lease.as_str())
+                && !(lease.is_none() && matches!(event.event_type.as_str(), "session_running"))
             {
                 return Err(format!(
                     "attempt {attempt_id} does not belong to lease {event_lease}"
@@ -1103,11 +1109,7 @@ pub(crate) fn append_event(
         )
         .map_err(|error| error.to_string())?;
 
-    if rule.name == "run_planned" {
-        reduce_run_planned(&transaction, event)?;
-    } else {
-        return Err(format!("event_reducer_unavailable: {}", rule.name));
-    }
+    reduce_event(&transaction, event, sequence)?;
     transaction.commit().map_err(|error| error.to_string())?;
     Ok(AppendResult {
         event_id: event.event_id.clone(),
@@ -1172,12 +1174,2352 @@ fn reduce_run_planned(transaction: &Transaction<'_>, event: &EventInput) -> Resu
     Ok(())
 }
 
+fn payload_text(
+    transaction: &Transaction<'_>,
+    event: &EventInput,
+    key: &str,
+) -> Result<String, String> {
+    required_json_text(transaction, &event.payload_json, key)
+}
+
+fn payload_optional_text(
+    transaction: &Transaction<'_>,
+    event: &EventInput,
+    key: &str,
+) -> Result<Option<String>, String> {
+    json_text(transaction, &event.payload_json, key)
+}
+
+fn payload_integer(
+    transaction: &Transaction<'_>,
+    event: &EventInput,
+    key: &str,
+) -> Result<i64, String> {
+    json_i64(transaction, &event.payload_json, key)?
+        .ok_or_else(|| format!("{}.{key} must be an integer", event.event_type))
+}
+
+fn payload_boolean(
+    transaction: &Transaction<'_>,
+    event: &EventInput,
+    key: &str,
+) -> Result<bool, String> {
+    let path = format!("$.{key}");
+    let (value_type, value): (Option<String>, Option<i64>) = transaction
+        .query_row(
+            "SELECT json_type(?1,?2),json_extract(?1,?2)",
+            params![event.payload_json, path],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|error| error.to_string())?;
+    if !matches!(value_type.as_deref(), Some("true" | "false")) {
+        return Err(format!("{}.{key} must be boolean", event.event_type));
+    }
+    Ok(value == Some(1))
+}
+
+fn payload_json_value(
+    transaction: &Transaction<'_>,
+    event: &EventInput,
+    key: &str,
+) -> Result<Option<String>, String> {
+    let path = format!("$.{key}");
+    transaction
+        .query_row(
+            "SELECT CASE WHEN json_type(?1,?2) IN ('object','array') THEN json_extract(?1,?2) END",
+            params![event.payload_json, path],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())
+}
+
+fn required_reference<'a>(value: &'a Option<String>, name: &str) -> Result<&'a str, String> {
+    value
+        .as_deref()
+        .ok_or_else(|| format!("missing required event reference: {name}"))
+}
+
+fn current_status(
+    transaction: &Transaction<'_>,
+    table: &str,
+    id_column: &str,
+    id: &str,
+) -> Result<String, String> {
+    transaction
+        .query_row(
+            &format!("SELECT status FROM {table} WHERE {id_column}=?1"),
+            [id],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())
+}
+
+fn require_state(
+    transaction: &Transaction<'_>,
+    table: &str,
+    id_column: &str,
+    id: &str,
+    event_type: &str,
+    allowed: &[&str],
+) -> Result<String, String> {
+    let state = current_status(transaction, table, id_column, id)?;
+    if allowed.contains(&state.as_str()) {
+        Ok(state)
+    } else {
+        Err(format!(
+            "illegal transition {event_type} from {table} state {state}"
+        ))
+    }
+}
+
+fn reduce_event(
+    transaction: &Transaction<'_>,
+    event: &EventInput,
+    sequence: i64,
+) -> Result<(), String> {
+    let result = match event.event_type.as_str() {
+        "run_planned" => reduce_run_planned(transaction, event),
+        "run_started" => reduce_run_started(transaction, event),
+        "run_blocked" => reduce_run_blocked(transaction, event),
+        "run_unblocked" => reduce_run_unblocked(transaction, event),
+        "run_completed" => reduce_run_completed(transaction, event),
+        "run_cancelled" => reduce_run_cancelled(transaction, event),
+        name if name.starts_with("package_") => reduce_package(transaction, event),
+        name if name.starts_with("assignment_") => reduce_assignment(transaction, event),
+        name if name.starts_with("attempt_") => reduce_attempt(transaction, event),
+        name if name.starts_with("dispatch_") => {
+            let attempt_id = required_reference(&event.attempt_id, "attempt_id")?;
+            require_state(
+                transaction,
+                "assignment_attempts",
+                "attempt_id",
+                attempt_id,
+                name,
+                &["planned"],
+            )?;
+            Ok(())
+        }
+        name if name.starts_with("route_") => reduce_route(transaction, event),
+        name if name.starts_with("session_") => reduce_session(transaction, event),
+        name if name.starts_with("lease_") => reduce_lease(transaction, event),
+        "usage_observed" => reduce_usage(transaction, event, sequence),
+        "quality_gate_passed" | "quality_gate_failed" => {
+            reduce_quality_gate(transaction, event, sequence)
+        }
+        _ => Err(format!("event_reducer_unavailable: {}", event.event_type)),
+    };
+    let _ = sequence;
+    result
+}
+
+fn reduce_run_started(transaction: &Transaction<'_>, event: &EventInput) -> Result<(), String> {
+    require_state(
+        transaction,
+        "runs",
+        "run_id",
+        &event.run_id,
+        &event.event_type,
+        &["planned"],
+    )?;
+    transaction
+        .execute(
+            "UPDATE runs SET status='active',psoc_revision=?2,started_at=?3,next_action=?4 WHERE run_id=?1",
+            params![event.run_id, payload_text(transaction,event,"psoc_revision")?, payload_text(transaction,event,"started_at")?, payload_text(transaction,event,"next_action")?],
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn reduce_run_blocked(transaction: &Transaction<'_>, event: &EventInput) -> Result<(), String> {
+    require_state(
+        transaction,
+        "runs",
+        "run_id",
+        &event.run_id,
+        &event.event_type,
+        &["active"],
+    )?;
+    transaction
+        .execute(
+            "UPDATE runs SET status='blocked',next_action=?2 WHERE run_id=?1",
+            params![
+                event.run_id,
+                payload_text(transaction, event, "next_action")?
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+    payload_text(transaction, event, "blocker")?;
+    Ok(())
+}
+
+fn reduce_run_unblocked(transaction: &Transaction<'_>, event: &EventInput) -> Result<(), String> {
+    require_state(
+        transaction,
+        "runs",
+        "run_id",
+        &event.run_id,
+        &event.event_type,
+        &["blocked"],
+    )?;
+    payload_text(transaction, event, "resolution")?;
+    transaction
+        .execute(
+            "UPDATE runs SET status='active',next_action=?2 WHERE run_id=?1",
+            params![
+                event.run_id,
+                payload_text(transaction, event, "next_action")?
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn reduce_run_completed(transaction: &Transaction<'_>, event: &EventInput) -> Result<(), String> {
+    require_state(
+        transaction,
+        "runs",
+        "run_id",
+        &event.run_id,
+        &event.event_type,
+        &["active"],
+    )?;
+    transaction
+        .execute(
+            "UPDATE runs SET status='complete',completed_at=?2,ended_at=?3,next_action=NULL WHERE run_id=?1",
+            params![event.run_id, payload_text(transaction,event,"completed_at")?, payload_text(transaction,event,"ended_at")?],
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn reduce_run_cancelled(transaction: &Transaction<'_>, event: &EventInput) -> Result<(), String> {
+    require_state(
+        transaction,
+        "runs",
+        "run_id",
+        &event.run_id,
+        &event.event_type,
+        &["planned", "active", "blocked"],
+    )?;
+    payload_text(transaction, event, "reason")?;
+    transaction
+        .execute(
+            "UPDATE runs SET status='cancelled',ended_at=?2,next_action=?3 WHERE run_id=?1",
+            params![
+                event.run_id,
+                payload_text(transaction, event, "ended_at")?,
+                payload_text(transaction, event, "next_action")?
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn dependency_would_cycle(
+    conn: &Connection,
+    package_id: &str,
+    depends_on_package_id: &str,
+) -> Result<bool, String> {
+    conn.query_row(
+        r#"
+        WITH RECURSIVE reachable(package_id) AS (
+            SELECT ?2
+            UNION
+            SELECT d.depends_on_package_id
+            FROM work_package_dependencies d
+            JOIN reachable r ON d.package_id=r.package_id
+        )
+        SELECT EXISTS(SELECT 1 FROM reachable WHERE package_id=?1)
+        "#,
+        params![package_id, depends_on_package_id],
+        |row| row.get(0),
+    )
+    .map_err(|error| error.to_string())
+}
+
+fn policy_envelope(
+    transaction: &Transaction<'_>,
+    event: &EventInput,
+    key: &str,
+    registry: &[&str],
+) -> Result<String, String> {
+    let policy = payload_json_value(transaction, event, key)?
+        .ok_or_else(|| format!("{}.{key} must be a policy object", event.event_type))?;
+    if object_keys(transaction, &policy)? != ["v", "kind"] {
+        return Err(format!(
+            "{}.{key} has an invalid policy envelope",
+            event.event_type
+        ));
+    }
+    let (version, kind): (i64, String) = transaction
+        .query_row(
+            "SELECT json_extract(?1,'$.v'),json_extract(?1,'$.kind')",
+            [&policy],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|error| error.to_string())?;
+    if version != 1 || !registry.contains(&kind.as_str()) {
+        return Err(format!(
+            "{}.{key} contains an unknown policy",
+            event.event_type
+        ));
+    }
+    Ok(policy)
+}
+
+fn scope_envelope(
+    transaction: &Transaction<'_>,
+    event: &EventInput,
+    key: &str,
+) -> Result<String, String> {
+    let scope = payload_json_value(transaction, event, key)?
+        .ok_or_else(|| format!("{}.{key} must be a scope object", event.event_type))?;
+    if object_keys(transaction, &scope)? != ["v", "paths"] {
+        return Err(format!(
+            "{}.{key} has an invalid scope envelope",
+            event.event_type
+        ));
+    }
+    let version: i64 = transaction
+        .query_row("SELECT json_extract(?1,'$.v')", [&scope], |row| row.get(0))
+        .map_err(|error| error.to_string())?;
+    if version != 1 {
+        return Err(format!("{}.{key} requires v=1", event.event_type));
+    }
+    let paths_type: String = transaction
+        .query_row("SELECT json_type(?1,'$.paths')", [&scope], |row| row.get(0))
+        .map_err(|error| error.to_string())?;
+    if paths_type != "array" {
+        return Err(format!("{}.{key}.paths must be an array", event.event_type));
+    }
+    let mut statement = transaction
+        .prepare("SELECT type,value FROM json_each(?1,'$.paths') ORDER BY key")
+        .map_err(|error| error.to_string())?;
+    let paths: Vec<(String, String)> = statement
+        .query_map([&scope], |row| Ok((row.get(0)?, row.get(1)?)))
+        .map_err(|error| error.to_string())?
+        .collect::<Result<_, _>>()
+        .map_err(|error| error.to_string())?;
+    if paths
+        .iter()
+        .any(|(value_type, value)| value_type != "text" || value.is_empty())
+        || paths.windows(2).any(|pair| pair[0].1 >= pair[1].1)
+    {
+        return Err(format!(
+            "{}.{key}.paths must be sorted, nonempty strings without duplicates",
+            event.event_type
+        ));
+    }
+    Ok(scope)
+}
+
+fn evidence_envelope(
+    transaction: &Transaction<'_>,
+    event: &EventInput,
+    key: &str,
+) -> Result<String, String> {
+    let evidence = payload_json_value(transaction, event, key)?
+        .ok_or_else(|| format!("{}.{key} must be an evidence object", event.event_type))?;
+    if object_keys(transaction, &evidence)? != ["v", "items"] {
+        return Err(format!(
+            "{}.{key} has an invalid evidence envelope",
+            event.event_type
+        ));
+    }
+    let (version, items_type): (i64, String) = transaction
+        .query_row(
+            "SELECT json_extract(?1,'$.v'),json_type(?1,'$.items')",
+            [&evidence],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|error| error.to_string())?;
+    if version != 1 || items_type != "array" {
+        return Err(format!("{}.{key} has invalid v/items", event.event_type));
+    }
+    let mut statement = transaction
+        .prepare("SELECT value FROM json_each(?1,'$.items') ORDER BY key")
+        .map_err(|error| error.to_string())?;
+    let items: Vec<String> = statement
+        .query_map([&evidence], |row| row.get(0))
+        .map_err(|error| error.to_string())?
+        .collect::<Result<_, _>>()
+        .map_err(|error| error.to_string())?;
+    for item in items {
+        if object_keys(transaction, &item)? != ["kind", "ref", "result"] {
+            return Err(format!(
+                "{}.{key} contains an invalid evidence item",
+                event.event_type
+            ));
+        }
+        let (kind, reference, result): (String, String, String) = transaction
+            .query_row(
+                "SELECT json_extract(?1,'$.kind'),json_extract(?1,'$.ref'),json_extract(?1,'$.result')",
+                [&item],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .map_err(|error| error.to_string())?;
+        if kind.is_empty() || reference.is_empty() || result.is_empty() {
+            return Err(format!(
+                "{}.{key} evidence strings must be nonempty",
+                event.event_type
+            ));
+        }
+    }
+    Ok(evidence)
+}
+
+fn reduce_package(transaction: &Transaction<'_>, event: &EventInput) -> Result<(), String> {
+    let package_id = required_reference(&event.package_id, "package_id")?;
+    match event.event_type.as_str() {
+        "package_planned" => {
+            let dependencies = payload_json_value(transaction, event, "dependencies")?
+                .ok_or_else(|| "package_planned.dependencies must be an array".to_string())?;
+            let write_scope = scope_envelope(transaction, event, "write_scope")?;
+            transaction
+                .execute(
+                    r#"
+                    INSERT INTO work_packages(
+                        package_id,run_id,title,role_floor,model_floor,risk_floor,
+                        write_scope,review_policy,independence_policy,status,next_action
+                    ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,'planned',?10)
+                    "#,
+                    params![
+                        package_id,
+                        event.run_id,
+                        payload_text(transaction, event, "title")?,
+                        payload_text(transaction, event, "role_floor")?,
+                        payload_text(transaction, event, "model_floor")?,
+                        payload_text(transaction, event, "risk_floor")?,
+                        write_scope,
+                        policy_envelope(
+                            transaction,
+                            event,
+                            "review_policy",
+                            &["none", "deterministic", "independent"]
+                        )?,
+                        policy_envelope(
+                            transaction,
+                            event,
+                            "independence_policy",
+                            &["none", "different-session", "different-role-and-session"]
+                        )?,
+                        payload_text(transaction, event, "next_action")?,
+                    ],
+                )
+                .map_err(|error| error.to_string())?;
+            let mut statement = transaction
+                .prepare("SELECT value FROM json_each(?1) ORDER BY value")
+                .map_err(|error| error.to_string())?;
+            let values: Vec<String> = statement
+                .query_map([dependencies], |row| row.get(0))
+                .map_err(|error| error.to_string())?
+                .collect::<Result<_, _>>()
+                .map_err(|error| error.to_string())?;
+            if values.windows(2).any(|pair| pair[0] >= pair[1]) {
+                return Err("package dependencies must be sorted and duplicate-free".into());
+            }
+            for dependency in values {
+                if dependency == package_id {
+                    return Err("package cannot depend on itself".into());
+                }
+                let owner: Option<String> = transaction
+                    .query_row(
+                        "SELECT run_id FROM work_packages WHERE package_id=?1",
+                        [&dependency],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(|error| error.to_string())?;
+                if owner.as_deref() != Some(event.run_id.as_str()) {
+                    return Err(format!(
+                        "dependency {dependency} does not belong to run {}",
+                        event.run_id
+                    ));
+                }
+                if dependency_would_cycle(transaction, package_id, &dependency)? {
+                    return Err(format!(
+                        "package dependency {package_id}->{dependency} would create a cycle"
+                    ));
+                }
+                transaction
+                    .execute(
+                        "INSERT INTO work_package_dependencies(package_id,depends_on_package_id) VALUES(?1,?2)",
+                        params![package_id, dependency],
+                    )
+                    .map_err(|error| error.to_string())?;
+            }
+        }
+        "package_ready" => {
+            require_state(
+                transaction,
+                "work_packages",
+                "package_id",
+                package_id,
+                &event.event_type,
+                &["planned"],
+            )?;
+            let incomplete: i64 = transaction
+                .query_row(
+                    r#"
+                    SELECT COUNT(*) FROM work_package_dependencies d
+                    JOIN work_packages p ON p.package_id=d.depends_on_package_id
+                    WHERE d.package_id=?1 AND p.status<>'complete'
+                    "#,
+                    [package_id],
+                    |row| row.get(0),
+                )
+                .map_err(|error| error.to_string())?;
+            if incomplete != 0 {
+                return Err("package dependencies are not complete".into());
+            }
+            transaction
+                .execute(
+                    "UPDATE work_packages SET status='ready',next_action=?2 WHERE package_id=?1",
+                    params![package_id, payload_text(transaction, event, "next_action")?],
+                )
+                .map_err(|error| error.to_string())?;
+        }
+        "package_active" => {
+            require_state(
+                transaction,
+                "work_packages",
+                "package_id",
+                package_id,
+                &event.event_type,
+                &["ready"],
+            )?;
+            transaction
+                .execute(
+                    "UPDATE work_packages SET status='active',next_action=?2 WHERE package_id=?1",
+                    params![package_id, payload_text(transaction, event, "next_action")?],
+                )
+                .map_err(|error| error.to_string())?;
+        }
+        "package_blocked" => {
+            let state = require_state(
+                transaction,
+                "work_packages",
+                "package_id",
+                package_id,
+                &event.event_type,
+                &["ready", "active", "review"],
+            )?;
+            let resume = payload_text(transaction, event, "resume_status")?;
+            if resume != state {
+                return Err(format!(
+                    "package_blocked resume_status {resume} does not match {state}"
+                ));
+            }
+            transaction.execute("UPDATE work_packages SET status='blocked',blocker=?2,next_action=?3 WHERE package_id=?1",params![package_id,payload_text(transaction,event,"blocker")?,payload_text(transaction,event,"next_action")?]).map_err(|error| error.to_string())?;
+        }
+        "package_unblocked" => {
+            require_state(
+                transaction,
+                "work_packages",
+                "package_id",
+                package_id,
+                &event.event_type,
+                &["blocked"],
+            )?;
+            payload_text(transaction, event, "resolution")?;
+            let resume = payload_text(transaction, event, "resume_status")?;
+            if !["ready", "active", "review"].contains(&resume.as_str()) {
+                return Err("invalid package resume_status".into());
+            }
+            let prior: Option<String> = transaction.query_row(
+                "SELECT json_extract(payload_json,'$.resume_status') FROM control_plane_events WHERE package_id=?1 AND event_type='package_blocked' AND sequence < (SELECT sequence FROM control_plane_events WHERE event_id=?2) ORDER BY sequence DESC LIMIT 1",
+                params![package_id,event.event_id], |row| row.get(0)).optional().map_err(|error| error.to_string())?;
+            if prior.as_deref() != Some(resume.as_str()) {
+                return Err("package_unblocked resume_status does not match blocker event".into());
+            }
+            transaction.execute("UPDATE work_packages SET status=?2,blocker=NULL,next_action=?3 WHERE package_id=?1",params![package_id,resume,payload_text(transaction,event,"next_action")?]).map_err(|error| error.to_string())?;
+        }
+        "package_review_started" => {
+            require_state(
+                transaction,
+                "work_packages",
+                "package_id",
+                package_id,
+                &event.event_type,
+                &["active"],
+            )?;
+            let review_id = payload_text(transaction, event, "review_assignment_id")?;
+            let owner: Option<String>=transaction.query_row("SELECT package_id FROM assignments WHERE assignment_id=?1 AND assignment_kind='review'",[&review_id],|row|row.get(0)).optional().map_err(|error| error.to_string())?;
+            if owner.as_deref() != Some(package_id) {
+                return Err("review assignment does not belong to package".into());
+            }
+            transaction
+                .execute(
+                    "UPDATE work_packages SET status='review',next_action=?2 WHERE package_id=?1",
+                    params![package_id, payload_text(transaction, event, "next_action")?],
+                )
+                .map_err(|error| error.to_string())?;
+        }
+        "package_review_completed" => {
+            require_state(
+                transaction,
+                "work_packages",
+                "package_id",
+                package_id,
+                &event.event_type,
+                &["review"],
+            )?;
+            let verdict = payload_text(transaction, event, "verdict")?;
+            let evidence = evidence_envelope(transaction, event, "review_evidence")?;
+            let _ = evidence;
+            let target = match verdict.as_str() {
+                "accepted" => "review",
+                "changes_required" => "active",
+                _ => return Err("invalid package review verdict".into()),
+            };
+            transaction
+                .execute(
+                    "UPDATE work_packages SET status=?2,next_action=?3 WHERE package_id=?1",
+                    params![
+                        package_id,
+                        target,
+                        payload_text(transaction, event, "next_action")?
+                    ],
+                )
+                .map_err(|error| error.to_string())?;
+        }
+        "package_completed" => {
+            let state = current_status(transaction, "work_packages", "package_id", package_id)?;
+            if state == "active" {
+                let policy:String=transaction.query_row("SELECT json_extract(review_policy,'$.kind') FROM work_packages WHERE package_id=?1",[package_id],|row|row.get(0)).map_err(|error|error.to_string())?;
+                if policy != "none" {
+                    return Err("package requires review before completion".into());
+                }
+            } else if state == "review" {
+                let verdict:Option<String>=transaction.query_row("SELECT json_extract(payload_json,'$.verdict') FROM control_plane_events WHERE package_id=?1 AND event_type='package_review_completed' ORDER BY sequence DESC LIMIT 1",[package_id],|row|row.get(0)).optional().map_err(|error|error.to_string())?;
+                if verdict.as_deref() != Some("accepted") {
+                    return Err("package review is not accepted".into());
+                }
+            } else {
+                return Err(format!(
+                    "illegal transition package_completed from work_packages state {state}"
+                ));
+            }
+            transaction.execute("UPDATE work_packages SET status='complete',ended_at=?2,next_action=NULL,blocker=NULL WHERE package_id=?1",params![package_id,payload_text(transaction,event,"ended_at")?]).map_err(|error|error.to_string())?;
+        }
+        "package_cancelled" => {
+            require_state(
+                transaction,
+                "work_packages",
+                "package_id",
+                package_id,
+                &event.event_type,
+                &["planned", "ready", "active", "review", "blocked"],
+            )?;
+            payload_text(transaction, event, "reason")?;
+            transaction.execute("UPDATE work_packages SET status='cancelled',ended_at=?2,next_action=?3 WHERE package_id=?1",params![package_id,payload_text(transaction,event,"ended_at")?,payload_text(transaction,event,"next_action")?]).map_err(|error|error.to_string())?;
+        }
+        _ => return Err(format!("event_reducer_unavailable: {}", event.event_type)),
+    }
+    Ok(())
+}
+
+fn reduce_assignment(transaction: &Transaction<'_>, event: &EventInput) -> Result<(), String> {
+    let assignment_id = required_reference(&event.assignment_id, "assignment_id")?;
+    let package_id = required_reference(&event.package_id, "package_id")?;
+    match event.event_type.as_str() {
+        "assignment_planned" => {
+            let write_scope = scope_envelope(transaction, event, "write_scope")?;
+            let sequence = payload_integer(transaction, event, "sequence")?;
+            if sequence < 1 {
+                return Err("assignment sequence must be positive".into());
+            }
+            let kind = payload_text(transaction, event, "assignment_kind")?;
+            let role = payload_text(transaction, event, "required_role")?;
+            let compatible = matches!(
+                (kind.as_str(), role.as_str()),
+                ("discussion", "discussion")
+                    | ("exploration", "explorer")
+                    | ("implementation", "worker")
+                    | ("review", "reviewer")
+                    | ("fix", "fixer")
+            );
+            if !compatible {
+                return Err(format!(
+                    "assignment kind {kind} is incompatible with role {role}"
+                ));
+            }
+            transaction
+                .execute(
+                    r#"
+                    INSERT INTO assignments(
+                        assignment_id,package_id,title,sequence,assignment_kind,required_role,
+                        model_floor,risk_class,write_scope,base_revision,
+                        independence_boundary_id,current_attempt_id,attempt_count,status,next_action
+                    ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,NULL,0,'planned',?12)
+                    "#,
+                    params![
+                        assignment_id,
+                        package_id,
+                        payload_text(transaction, event, "title")?,
+                        sequence,
+                        kind,
+                        role,
+                        payload_text(transaction, event, "model_floor")?,
+                        payload_text(transaction, event, "risk_class")?,
+                        write_scope,
+                        payload_optional_text(transaction, event, "base_revision")?,
+                        payload_optional_text(transaction, event, "independence_boundary_id")?,
+                        payload_text(transaction, event, "next_action")?,
+                    ],
+                )
+                .map_err(|error| error.to_string())?;
+        }
+        "assignment_queued" => {
+            require_state(
+                transaction,
+                "assignments",
+                "assignment_id",
+                assignment_id,
+                &event.event_type,
+                &["planned"],
+            )?;
+            transaction
+                .execute(
+                    "UPDATE assignments SET status='queued',next_action=?2 WHERE assignment_id=?1",
+                    params![
+                        assignment_id,
+                        payload_text(transaction, event, "next_action")?
+                    ],
+                )
+                .map_err(|error| error.to_string())?;
+        }
+        "assignment_started" => {
+            require_state(
+                transaction,
+                "assignments",
+                "assignment_id",
+                assignment_id,
+                &event.event_type,
+                &["queued"],
+            )?;
+            let attempt = payload_text(transaction, event, "attempt_id")?;
+            if event.attempt_id.as_deref() != Some(attempt.as_str()) {
+                return Err("assignment_started attempt_id does not match event".into());
+            }
+            let current: Option<String> = transaction
+                .query_row(
+                    "SELECT current_attempt_id FROM assignments WHERE assignment_id=?1",
+                    [assignment_id],
+                    |row| row.get(0),
+                )
+                .map_err(|error| error.to_string())?;
+            if current.as_deref() != Some(attempt.as_str()) {
+                return Err("assignment_started attempt is not current".into());
+            }
+            require_state(
+                transaction,
+                "assignment_attempts",
+                "attempt_id",
+                &attempt,
+                &event.event_type,
+                &["running"],
+            )?;
+            transaction.execute("UPDATE assignments SET status='running',started_at=?2,current_step=?3,next_action=NULL WHERE assignment_id=?1",params![assignment_id,payload_text(transaction,event,"started_at")?,payload_text(transaction,event,"current_step")?]).map_err(|error|error.to_string())?;
+        }
+        "assignment_step_changed" => {
+            require_state(
+                transaction,
+                "assignments",
+                "assignment_id",
+                assignment_id,
+                &event.event_type,
+                &["running"],
+            )?;
+            transaction
+                .execute(
+                    "UPDATE assignments SET current_step=?2 WHERE assignment_id=?1",
+                    params![
+                        assignment_id,
+                        payload_text(transaction, event, "current_step")?
+                    ],
+                )
+                .map_err(|error| error.to_string())?;
+        }
+        "assignment_blocked" => {
+            require_state(
+                transaction,
+                "assignments",
+                "assignment_id",
+                assignment_id,
+                &event.event_type,
+                &["queued", "running", "reported", "validated"],
+            )?;
+            transaction
+                .execute(
+                    "UPDATE assignments SET blocker=?2,next_action=?3 WHERE assignment_id=?1",
+                    params![
+                        assignment_id,
+                        payload_text(transaction, event, "blocker")?,
+                        payload_text(transaction, event, "next_action")?
+                    ],
+                )
+                .map_err(|error| error.to_string())?;
+        }
+        "assignment_unblocked" => {
+            require_state(
+                transaction,
+                "assignments",
+                "assignment_id",
+                assignment_id,
+                &event.event_type,
+                &["queued", "running", "reported", "validated"],
+            )?;
+            let blocker: Option<String> = transaction
+                .query_row(
+                    "SELECT blocker FROM assignments WHERE assignment_id=?1",
+                    [assignment_id],
+                    |row| row.get(0),
+                )
+                .map_err(|error| error.to_string())?;
+            if blocker.is_none() {
+                return Err("assignment is not blocked".into());
+            }
+            payload_text(transaction, event, "resolution")?;
+            transaction
+                .execute(
+                    "UPDATE assignments SET blocker=NULL,next_action=?2 WHERE assignment_id=?1",
+                    params![
+                        assignment_id,
+                        payload_text(transaction, event, "next_action")?
+                    ],
+                )
+                .map_err(|error| error.to_string())?;
+        }
+        "assignment_reported" => {
+            require_state(
+                transaction,
+                "assignments",
+                "assignment_id",
+                assignment_id,
+                &event.event_type,
+                &["running"],
+            )?;
+            transaction.execute("UPDATE assignments SET status='reported',report_path=?2,reported_at=?3,next_action=?4 WHERE assignment_id=?1",params![assignment_id,payload_text(transaction,event,"report_path")?,payload_text(transaction,event,"reported_at")?,payload_text(transaction,event,"next_action")?]).map_err(|error|error.to_string())?;
+        }
+        "assignment_validated" => {
+            require_state(
+                transaction,
+                "assignments",
+                "assignment_id",
+                assignment_id,
+                &event.event_type,
+                &["reported"],
+            )?;
+            let evidence = evidence_envelope(transaction, event, "test_evidence")?;
+            transaction.execute("UPDATE assignments SET status='validated',test_evidence=?2,validated_at=?3,next_action=?4 WHERE assignment_id=?1",params![assignment_id,evidence,payload_text(transaction,event,"validated_at")?,payload_text(transaction,event,"next_action")?]).map_err(|error|error.to_string())?;
+        }
+        "assignment_accepted" => {
+            require_state(
+                transaction,
+                "assignments",
+                "assignment_id",
+                assignment_id,
+                &event.event_type,
+                &["validated"],
+            )?;
+            let evidence = evidence_envelope(transaction, event, "review_evidence")?;
+            transaction.execute("UPDATE assignments SET status='accepted',review_evidence=?2,accepted_at=?3,ended_at=?4,next_action=NULL,blocker=NULL WHERE assignment_id=?1",params![assignment_id,evidence,payload_text(transaction,event,"accepted_at")?,payload_text(transaction,event,"ended_at")?]).map_err(|error|error.to_string())?;
+        }
+        "assignment_requeued" => {
+            require_state(
+                transaction,
+                "assignments",
+                "assignment_id",
+                assignment_id,
+                &event.event_type,
+                &["queued", "running", "reported", "validated"],
+            )?;
+            let current: Option<String> = transaction
+                .query_row(
+                    "SELECT current_attempt_id FROM assignments WHERE assignment_id=?1",
+                    [assignment_id],
+                    |row| row.get(0),
+                )
+                .map_err(|error| error.to_string())?;
+            let current = current.ok_or_else(|| "assignment has no current attempt".to_string())?;
+            require_state(
+                transaction,
+                "assignment_attempts",
+                "attempt_id",
+                &current,
+                &event.event_type,
+                &["failed"],
+            )?;
+            payload_text(transaction, event, "reason")?;
+            transaction.execute("UPDATE assignments SET status='queued',blocker=NULL,next_action=?2 WHERE assignment_id=?1",params![assignment_id,payload_text(transaction,event,"next_action")?]).map_err(|error|error.to_string())?;
+        }
+        "assignment_failed" => {
+            require_state(
+                transaction,
+                "assignments",
+                "assignment_id",
+                assignment_id,
+                &event.event_type,
+                &["queued", "running", "reported", "validated"],
+            )?;
+            if !payload_boolean(transaction, event, "policy_exhausted")? {
+                return Err("assignment_failed requires policy_exhausted=true".into());
+            }
+            transaction.execute("UPDATE assignments SET status='failed',final_reason=?2,ended_at=?3,next_action=?4 WHERE assignment_id=?1",params![assignment_id,payload_text(transaction,event,"final_reason")?,payload_text(transaction,event,"ended_at")?,payload_text(transaction,event,"next_action")?]).map_err(|error|error.to_string())?;
+        }
+        "assignment_cancelled" => {
+            require_state(
+                transaction,
+                "assignments",
+                "assignment_id",
+                assignment_id,
+                &event.event_type,
+                &["planned", "queued", "running", "reported", "validated"],
+            )?;
+            transaction.execute("UPDATE assignments SET status='cancelled',final_reason=?2,ended_at=?3,next_action=?4 WHERE assignment_id=?1",params![assignment_id,payload_text(transaction,event,"final_reason")?,payload_text(transaction,event,"ended_at")?,payload_text(transaction,event,"next_action")?]).map_err(|error|error.to_string())?;
+        }
+        _ => return Err(format!("event_reducer_unavailable: {}", event.event_type)),
+    }
+    Ok(())
+}
+
+fn reduce_attempt(transaction: &Transaction<'_>, event: &EventInput) -> Result<(), String> {
+    let attempt_id = required_reference(&event.attempt_id, "attempt_id")?;
+    let assignment_id = required_reference(&event.assignment_id, "assignment_id")?;
+    match event.event_type.as_str() {
+        "attempt_planned" => {
+            require_state(
+                transaction,
+                "assignments",
+                "assignment_id",
+                assignment_id,
+                &event.event_type,
+                &["planned", "queued"],
+            )?;
+            let attempt_sequence = payload_integer(transaction, event, "attempt_sequence")?;
+            let count: i64 = transaction
+                .query_row(
+                    "SELECT attempt_count FROM assignments WHERE assignment_id=?1",
+                    [assignment_id],
+                    |row| row.get(0),
+                )
+                .map_err(|error| error.to_string())?;
+            if attempt_sequence != count + 1 {
+                return Err(format!(
+                    "attempt sequence must be {}, got {attempt_sequence}",
+                    count + 1
+                ));
+            }
+            transaction.execute(
+                "INSERT INTO assignment_attempts(attempt_id,assignment_id,session_id,lease_id,attempt_sequence,status,next_action) VALUES(?1,?2,?3,?4,?5,'planned',?6)",
+                params![attempt_id,assignment_id,event.session_id,event.lease_id,attempt_sequence,payload_text(transaction,event,"next_action")?]
+            ).map_err(|error|error.to_string())?;
+            transaction.execute("UPDATE assignments SET current_attempt_id=?2,attempt_count=attempt_count+1 WHERE assignment_id=?1",params![assignment_id,attempt_id]).map_err(|error|error.to_string())?;
+        }
+        "attempt_started" => {
+            require_state(
+                transaction,
+                "assignment_attempts",
+                "attempt_id",
+                attempt_id,
+                &event.event_type,
+                &["planned"],
+            )?;
+            transaction.execute("UPDATE assignment_attempts SET status='running',started_at=?2,next_action=?3 WHERE attempt_id=?1",params![attempt_id,payload_text(transaction,event,"started_at")?,payload_text(transaction,event,"next_action")?]).map_err(|error|error.to_string())?;
+        }
+        "attempt_reported" => {
+            require_state(
+                transaction,
+                "assignment_attempts",
+                "attempt_id",
+                attempt_id,
+                &event.event_type,
+                &["running"],
+            )?;
+            transaction.execute("UPDATE assignment_attempts SET status='reported',reported_at=?2,next_action=?3 WHERE attempt_id=?1",params![attempt_id,payload_text(transaction,event,"reported_at")?,payload_text(transaction,event,"next_action")?]).map_err(|error|error.to_string())?;
+        }
+        "attempt_validated" => {
+            require_state(
+                transaction,
+                "assignment_attempts",
+                "attempt_id",
+                attempt_id,
+                &event.event_type,
+                &["reported"],
+            )?;
+            transaction.execute("UPDATE assignment_attempts SET status='validated',validated_at=?2,next_action=?3 WHERE attempt_id=?1",params![attempt_id,payload_text(transaction,event,"validated_at")?,payload_text(transaction,event,"next_action")?]).map_err(|error|error.to_string())?;
+        }
+        "attempt_accepted" => {
+            require_state(
+                transaction,
+                "assignment_attempts",
+                "attempt_id",
+                attempt_id,
+                &event.event_type,
+                &["validated"],
+            )?;
+            transaction.execute("UPDATE assignment_attempts SET status='accepted',accepted_at=?2,ended_at=?3,next_action=NULL WHERE attempt_id=?1",params![attempt_id,payload_text(transaction,event,"accepted_at")?,payload_text(transaction,event,"ended_at")?]).map_err(|error|error.to_string())?;
+        }
+        "attempt_failed" => {
+            require_state(
+                transaction,
+                "assignment_attempts",
+                "attempt_id",
+                attempt_id,
+                &event.event_type,
+                &["planned", "running", "reported", "validated"],
+            )?;
+            transaction.execute("UPDATE assignment_attempts SET status='failed',outcome_reason=?2,ended_at=?3,next_action=?4 WHERE attempt_id=?1",params![attempt_id,payload_text(transaction,event,"outcome_reason")?,payload_text(transaction,event,"ended_at")?,payload_text(transaction,event,"next_action")?]).map_err(|error|error.to_string())?;
+        }
+        "attempt_cancelled" => {
+            require_state(
+                transaction,
+                "assignment_attempts",
+                "attempt_id",
+                attempt_id,
+                &event.event_type,
+                &["planned", "running", "reported", "validated"],
+            )?;
+            transaction.execute("UPDATE assignment_attempts SET status='cancelled',outcome_reason=?2,ended_at=?3,next_action=?4 WHERE attempt_id=?1",params![attempt_id,payload_text(transaction,event,"outcome_reason")?,payload_text(transaction,event,"ended_at")?,payload_text(transaction,event,"next_action")?]).map_err(|error|error.to_string())?;
+        }
+        _ => return Err(format!("event_reducer_unavailable: {}", event.event_type)),
+    }
+    Ok(())
+}
+
+fn current_route_id(transaction: &Transaction<'_>, attempt_id: &str) -> Result<String, String> {
+    transaction
+        .query_row(
+            "SELECT route_id FROM assignment_attempts WHERE attempt_id=?1",
+            [attempt_id],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("attempt {attempt_id} has no current route"))
+}
+
+fn require_route_status(
+    transaction: &Transaction<'_>,
+    route_id: &str,
+    event_type: &str,
+    allowed: &[&str],
+) -> Result<String, String> {
+    let status: String = transaction
+        .query_row(
+            "SELECT routing_status FROM routing_decisions WHERE route_id=?1",
+            [route_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    if allowed.contains(&status.as_str()) {
+        Ok(status)
+    } else {
+        Err(format!(
+            "illegal transition {event_type} from routing state {status}"
+        ))
+    }
+}
+
+fn reduce_route(transaction: &Transaction<'_>, event: &EventInput) -> Result<(), String> {
+    let attempt_id = required_reference(&event.attempt_id, "attempt_id")?;
+    match event.event_type.as_str() {
+        "route_requested" => {
+            require_state(
+                transaction,
+                "assignment_attempts",
+                "attempt_id",
+                attempt_id,
+                &event.event_type,
+                &["planned"],
+            )?;
+            let route_id = payload_text(transaction, event, "route_id")?;
+            let escalated = payload_optional_text(transaction, event, "escalated_from_route_id")?;
+            if let Some(previous) = &escalated {
+                let owner: Option<String> = transaction
+                    .query_row(
+                        "SELECT attempt_id FROM routing_decisions WHERE route_id=?1",
+                        [previous],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(|error| error.to_string())?;
+                if owner.as_deref() != Some(attempt_id) {
+                    return Err("escalated route does not belong to attempt".into());
+                }
+            }
+            transaction
+                .execute(
+                    r#"
+                INSERT INTO routing_decisions(
+                    route_id,attempt_id,required_profile,requested_model,requested_reasoning,
+                    routing_status,eligibility_status,escalated_from_route_id,next_action,decided_at
+                ) VALUES(?1,?2,?3,?4,?5,'requested','unknown',?6,?7,?8)
+                "#,
+                    params![
+                        route_id,
+                        attempt_id,
+                        payload_text(transaction, event, "required_profile")?,
+                        payload_optional_text(transaction, event, "requested_model")?,
+                        payload_optional_text(transaction, event, "requested_reasoning")?,
+                        escalated,
+                        payload_text(transaction, event, "next_action")?,
+                        payload_text(transaction, event, "decided_at")?
+                    ],
+                )
+                .map_err(|error| error.to_string())?;
+            transaction
+                .execute(
+                    "UPDATE assignment_attempts SET route_id=?2 WHERE attempt_id=?1",
+                    params![attempt_id, route_id],
+                )
+                .map_err(|error| error.to_string())?;
+        }
+        "route_applied" => {
+            let route_id = current_route_id(transaction, attempt_id)?;
+            require_route_status(
+                transaction,
+                &route_id,
+                &event.event_type,
+                &["requested", "degraded"],
+            )?;
+            let status = payload_text(transaction, event, "routing_status")?;
+            if !["applied", "inherited"].contains(&status.as_str()) {
+                return Err("route_applied requires applied or inherited status".into());
+            }
+            let evidence = evidence_envelope(transaction, event, "eligibility_evidence")?;
+            let actual_model = payload_optional_text(transaction, event, "actual_model")?;
+            let actual_reasoning = payload_optional_text(transaction, event, "actual_reasoning")?;
+            transaction.execute("UPDATE routing_decisions SET routing_status=?2,eligibility_status='eligible',actual_model=?3,actual_reasoning=?4,eligibility_evidence=?5,next_action=NULL,decided_at=?6 WHERE route_id=?1",params![route_id,status,actual_model,actual_reasoning,evidence,payload_text(transaction,event,"decided_at")?]).map_err(|error|error.to_string())?;
+            if let Some(session_id) = &event.session_id {
+                transaction.execute("UPDATE agent_sessions SET routing_status=?2,actual_model=?3,actual_reasoning=?4 WHERE session_id=?1",params![session_id,status,actual_model,actual_reasoning]).map_err(|error|error.to_string())?;
+            }
+        }
+        "route_degraded" => {
+            let route_id = current_route_id(transaction, attempt_id)?;
+            require_route_status(transaction, &route_id, &event.event_type, &["requested"])?;
+            let eligibility = payload_text(transaction, event, "eligibility_status")?;
+            if !["eligible", "rejected", "unknown"].contains(&eligibility.as_str()) {
+                return Err("invalid route eligibility".into());
+            }
+            let evidence = evidence_envelope(transaction, event, "eligibility_evidence")?;
+            payload_text(transaction, event, "reason")?;
+            transaction.execute("UPDATE routing_decisions SET routing_status='degraded',eligibility_status=?2,actual_model=?3,actual_reasoning=?4,eligibility_evidence=?5,next_action=?6,decided_at=?7 WHERE route_id=?1",params![route_id,eligibility,payload_optional_text(transaction,event,"actual_model")?,payload_optional_text(transaction,event,"actual_reasoning")?,evidence,payload_text(transaction,event,"next_action")?,payload_text(transaction,event,"decided_at")?]).map_err(|error|error.to_string())?;
+        }
+        "route_rejected" => {
+            let route_id = current_route_id(transaction, attempt_id)?;
+            require_route_status(
+                transaction,
+                &route_id,
+                &event.event_type,
+                &["requested", "degraded"],
+            )?;
+            payload_text(transaction, event, "reason")?;
+            let evidence = evidence_envelope(transaction, event, "eligibility_evidence")?;
+            transaction.execute("UPDATE routing_decisions SET routing_status='rejected',eligibility_status='rejected',eligibility_evidence=?2,next_action=?3,decided_at=?4 WHERE route_id=?1",params![route_id,evidence,payload_text(transaction,event,"next_action")?,payload_text(transaction,event,"decided_at")?]).map_err(|error|error.to_string())?;
+        }
+        _ => return Err(format!("event_reducer_unavailable: {}", event.event_type)),
+    }
+    Ok(())
+}
+
+fn nested_object(
+    transaction: &Transaction<'_>,
+    event: &EventInput,
+    key: &str,
+) -> Result<String, String> {
+    payload_json_value(transaction, event, key)?
+        .ok_or_else(|| format!("{}.{key} must be an object", event.event_type))
+}
+
+fn object_keys(transaction: &Transaction<'_>, json: &str) -> Result<Vec<String>, String> {
+    ordered_json_keys(transaction, json)
+}
+
+fn reduce_session(transaction: &Transaction<'_>, event: &EventInput) -> Result<(), String> {
+    let session_id = required_reference(&event.session_id, "session_id")?;
+    match event.event_type.as_str() {
+        "session_planned" => {
+            let assignment_id = required_reference(&event.assignment_id, "assignment_id")?;
+            let role: String = transaction
+                .query_row(
+                    "SELECT required_role FROM assignments WHERE assignment_id=?1",
+                    [assignment_id],
+                    |row| row.get(0),
+                )
+                .map_err(|error| error.to_string())?;
+            let auth = payload_text(transaction, event, "authorization_ref")?;
+            if auth == session_id {
+                return Err("session authorization cannot authorize itself".into());
+            }
+            payload_text(transaction, event, "budget_reason")?;
+            let max_open = payload_integer(transaction, event, "run_max_open")?;
+            let max_total = payload_integer(transaction, event, "run_max_total")?;
+            let (stored_open,stored_total):(i64,i64)=transaction.query_row("SELECT json_extract(session_budget,'$.max_open'),json_extract(session_budget,'$.max_total') FROM runs WHERE run_id=?1",[&event.run_id],|row|Ok((row.get(0)?,row.get(1)?))).map_err(|error|error.to_string())?;
+            if (max_open, max_total) != (stored_open, stored_total) {
+                return Err("session authorization budget does not match run budget".into());
+            }
+            let token = nested_object(transaction, event, "session_token_budget")?;
+            if object_keys(transaction, &token)? != ["mode", "tokens"] {
+                return Err("invalid session_token_budget envelope".into());
+            }
+            let mode: String = transaction
+                .query_row("SELECT json_extract(?1,'$.mode')", [&token], |row| {
+                    row.get(0)
+                })
+                .map_err(|error| error.to_string())?;
+            let tokens:Option<i64>=transaction.query_row("SELECT CASE WHEN json_type(?1,'$.tokens')='integer' THEN json_extract(?1,'$.tokens') END",[&token],|row|row.get(0)).map_err(|error|error.to_string())?;
+            let valid_token_budget = match (mode.as_str(), tokens) {
+                ("bounded", Some(value)) => value >= 0,
+                ("unbounded", None) => true,
+                _ => false,
+            };
+            if !valid_token_budget {
+                return Err("invalid session token budget".into());
+            }
+            let delegation = nested_object(transaction, event, "nested_delegation")?;
+            if object_keys(transaction, &delegation)? != ["allowed", "authority_ref"] {
+                return Err("invalid nested_delegation envelope".into());
+            }
+            let allowed: i64 = transaction
+                .query_row(
+                    "SELECT json_extract(?1,'$.allowed')",
+                    [&delegation],
+                    |row| row.get(0),
+                )
+                .map_err(|error| error.to_string())?;
+            let authority: Option<String> = transaction
+                .query_row(
+                    "SELECT json_extract(?1,'$.authority_ref')",
+                    [&delegation],
+                    |row| row.get(0),
+                )
+                .map_err(|error| error.to_string())?;
+            let parent = payload_optional_text(transaction, event, "parent_session_id")?;
+            if allowed == 1 {
+                if authority.as_deref().is_none_or(str::is_empty)
+                    || parent.as_deref().is_none_or(str::is_empty)
+                {
+                    return Err(
+                        "nested delegation requires authority_ref and parent_session_id".into(),
+                    );
+                }
+                let parent_run: Option<String> = transaction
+                    .query_row(
+                        "SELECT run_id FROM agent_sessions WHERE session_id=?1",
+                        [parent.as_deref().unwrap()],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(|error| error.to_string())?
+                    .flatten();
+                if parent_run.as_deref() != Some(event.run_id.as_str()) {
+                    return Err("parent session does not belong to run".into());
+                }
+                let run_authority:Option<String>=transaction.query_row("SELECT json_extract(session_budget,'$.override_reason') FROM runs WHERE run_id=?1",[&event.run_id],|row|row.get(0)).map_err(|error|error.to_string())?;
+                if run_authority.as_deref().is_none_or(str::is_empty) {
+                    return Err(
+                        "nested delegation authority is not recorded in the run budget".into(),
+                    );
+                }
+            } else if authority.is_some() || parent.is_some() {
+                return Err("disabled nested delegation requires null authority and parent".into());
+            }
+            let profile = payload_text(transaction, event, "requested_profile")?;
+            transaction.execute(
+                "INSERT INTO agent_sessions(session_id,run_id,role,host_id,requested_profile,requested_model,requested_reasoning,token_budget,token_budget_mode,status) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,'planned')",
+                params![session_id,event.run_id,role,payload_optional_text(transaction,event,"requested_host")?,profile,payload_optional_text(transaction,event,"requested_model")?,payload_optional_text(transaction,event,"requested_reasoning")?,tokens,mode]
+            ).map_err(|error|error.to_string())?;
+        }
+        "session_spawned" => {
+            require_state(
+                transaction,
+                "agent_sessions",
+                "session_id",
+                session_id,
+                &event.event_type,
+                &["planned"],
+            )?;
+            transaction.execute("UPDATE agent_sessions SET status='spawned',handle=?2,host_id=?3,spawned_at=?4,next_action=?5 WHERE session_id=?1",params![session_id,payload_text(transaction,event,"handle")?,payload_text(transaction,event,"host_id")?,payload_text(transaction,event,"spawned_at")?,payload_text(transaction,event,"next_action")?]).map_err(|error|error.to_string())?;
+        }
+        "session_running" => {
+            let prior = require_state(
+                transaction,
+                "agent_sessions",
+                "session_id",
+                session_id,
+                &event.event_type,
+                &["spawned", "reported"],
+            )?;
+            let attempt = payload_text(transaction, event, "attempt_id")?;
+            let lease = payload_text(transaction, event, "lease_id")?;
+            if event.attempt_id.as_deref() != Some(attempt.as_str())
+                || event.lease_id.as_deref() != Some(lease.as_str())
+            {
+                return Err("session_running payload identity mismatch".into());
+            }
+            if prior == "reported"
+                && (payload_optional_text(transaction, event, "prior_report_ref")?.is_none()
+                    || evidence_envelope(transaction, event, "gate_evidence").is_err())
+            {
+                return Err(
+                    "reported session reuse requires consumed report and gate evidence".into(),
+                );
+            }
+            let lease_owner: (String, String) = transaction
+                .query_row(
+                    "SELECT session_id,package_id FROM session_leases WHERE lease_id=?1",
+                    [&lease],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .map_err(|error| error.to_string())?;
+            if lease_owner.0 != session_id {
+                return Err("lease does not belong to session".into());
+            }
+            transaction.execute("UPDATE assignment_attempts SET session_id=?2,lease_id=?3 WHERE attempt_id=?1 AND (session_id IS NULL OR session_id=?2) AND (lease_id IS NULL OR lease_id=?3)",params![attempt,session_id,lease]).map_err(|error|error.to_string())?;
+            transaction
+                .execute(
+                    "UPDATE session_leases SET current_attempt_id=?2 WHERE lease_id=?1",
+                    params![lease, attempt],
+                )
+                .map_err(|error| error.to_string())?;
+            transaction.execute("UPDATE agent_sessions SET status='running',last_activity_at=?2,next_action=?3 WHERE session_id=?1",params![session_id,payload_text(transaction,event,"started_or_resumed_at")?,payload_text(transaction,event,"next_action")?]).map_err(|error|error.to_string())?;
+        }
+        "session_heartbeat" => {
+            require_state(
+                transaction,
+                "agent_sessions",
+                "session_id",
+                session_id,
+                &event.event_type,
+                &["spawned", "running", "reported"],
+            )?;
+            transaction
+                .execute(
+                    "UPDATE agent_sessions SET last_activity_at=?2 WHERE session_id=?1",
+                    params![
+                        session_id,
+                        payload_text(transaction, event, "last_activity_at")?
+                    ],
+                )
+                .map_err(|error| error.to_string())?;
+        }
+        "session_blocked" => {
+            require_state(
+                transaction,
+                "agent_sessions",
+                "session_id",
+                session_id,
+                &event.event_type,
+                &["spawned", "running", "reported"],
+            )?;
+            payload_text(transaction, event, "blocker")?;
+            transaction
+                .execute(
+                    "UPDATE agent_sessions SET next_action=?2 WHERE session_id=?1",
+                    params![session_id, payload_text(transaction, event, "next_action")?],
+                )
+                .map_err(|error| error.to_string())?;
+        }
+        "session_unblocked" => {
+            require_state(
+                transaction,
+                "agent_sessions",
+                "session_id",
+                session_id,
+                &event.event_type,
+                &["spawned", "running", "reported"],
+            )?;
+            payload_text(transaction, event, "resolution")?;
+            transaction
+                .execute(
+                    "UPDATE agent_sessions SET next_action=?2 WHERE session_id=?1",
+                    params![session_id, payload_text(transaction, event, "next_action")?],
+                )
+                .map_err(|error| error.to_string())?;
+        }
+        "session_reported" => {
+            require_state(
+                transaction,
+                "agent_sessions",
+                "session_id",
+                session_id,
+                &event.event_type,
+                &["running"],
+            )?;
+            let assignment = payload_text(transaction, event, "assignment_id")?;
+            let attempt = payload_text(transaction, event, "attempt_id")?;
+            if event.assignment_id.as_deref() != Some(assignment.as_str())
+                || event.attempt_id.as_deref() != Some(attempt.as_str())
+            {
+                return Err("session_reported identity mismatch".into());
+            }
+            transaction.execute("UPDATE agent_sessions SET status='reported',last_reported_at=?2,next_action=?3 WHERE session_id=?1",params![session_id,payload_text(transaction,event,"last_reported_at")?,payload_text(transaction,event,"next_action")?]).map_err(|error|error.to_string())?;
+        }
+        "session_waited" => {
+            require_state(
+                transaction,
+                "agent_sessions",
+                "session_id",
+                session_id,
+                &event.event_type,
+                &["reported", "failed", "abandoned", "externally-unknown"],
+            )?;
+            let report = payload_optional_text(transaction, event, "consumed_report_ref")?;
+            let terminal = payload_optional_text(transaction, event, "terminal_observation")?;
+            if report.is_none() == terminal.is_none() {
+                return Err(
+                    "session_waited requires exactly one report or terminal observation".into(),
+                );
+            }
+            transaction
+                .execute(
+                    "UPDATE agent_sessions SET last_waited_at=?2 WHERE session_id=?1",
+                    params![
+                        session_id,
+                        payload_text(transaction, event, "last_waited_at")?
+                    ],
+                )
+                .map_err(|error| error.to_string())?;
+        }
+        "session_failed" | "session_abandoned" | "session_externally_unknown" => {
+            require_state(
+                transaction,
+                "agent_sessions",
+                "session_id",
+                session_id,
+                &event.event_type,
+                &["planned", "spawned", "running", "reported"],
+            )?;
+            let (status, outcome) = match event.event_type.as_str() {
+                "session_failed" => ("failed", "failure"),
+                "session_abandoned" => ("abandoned", "abandonment"),
+                _ => ("externally-unknown", "unknown"),
+            };
+            transaction.execute("UPDATE agent_sessions SET status=?2,outcome=?3,final_reason=?4,ended_at=?5,next_action=?6 WHERE session_id=?1",params![session_id,status,outcome,payload_text(transaction,event,"final_reason")?,payload_text(transaction,event,"ended_at")?,payload_text(transaction,event,"next_action")?]).map_err(|error|error.to_string())?;
+        }
+        "session_interrupted" => {
+            require_state(
+                transaction,
+                "agent_sessions",
+                "session_id",
+                session_id,
+                &event.event_type,
+                &["spawned", "running", "reported"],
+            )?;
+            transaction.execute("UPDATE agent_sessions SET interrupted_at=?2,interruption_reason=?3,outcome='unknown',next_action=?4 WHERE session_id=?1",params![session_id,payload_text(transaction,event,"interrupted_at")?,payload_text(transaction,event,"interruption_reason")?,payload_text(transaction,event,"next_action")?]).map_err(|error|error.to_string())?;
+        }
+        "session_close_requested" => {
+            let state = current_status(transaction, "agent_sessions", "session_id", session_id)?;
+            if state == "closed" {
+                return Err("session already closed".into());
+            }
+            transaction.execute("UPDATE agent_sessions SET close_disposition='requested',close_requested_at=?2,next_action=?3 WHERE session_id=?1",params![session_id,payload_text(transaction,event,"close_requested_at")?,payload_text(transaction,event,"next_action")?]).map_err(|error|error.to_string())?;
+        }
+        "session_closed" => {
+            let state = current_status(transaction, "agent_sessions", "session_id", session_id)?;
+            if state == "closed" {
+                return Err("session already closed".into());
+            }
+            transaction.execute("UPDATE agent_sessions SET status='closed',outcome=?2,close_disposition=?3,closed_at=?4,ended_at=?5,next_action=NULL WHERE session_id=?1",params![session_id,payload_text(transaction,event,"outcome")?,payload_text(transaction,event,"close_disposition")?,payload_text(transaction,event,"closed_at")?,payload_text(transaction,event,"ended_at")?]).map_err(|error|error.to_string())?;
+        }
+        "session_superseded" => {
+            let state = current_status(transaction, "agent_sessions", "session_id", session_id)?;
+            if state == "closed" {
+                return Err("session already closed".into());
+            }
+            let replacement = payload_text(transaction, event, "superseded_by_session_id")?;
+            if replacement == session_id {
+                return Err("session cannot supersede itself".into());
+            }
+            let owner: Option<String> = transaction
+                .query_row(
+                    "SELECT run_id FROM agent_sessions WHERE session_id=?1",
+                    [&replacement],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|error| error.to_string())?
+                .flatten();
+            if owner.as_deref() != Some(event.run_id.as_str()) {
+                return Err("replacement session does not belong to run".into());
+            }
+            payload_text(transaction, event, "reason")?;
+            transaction.execute("UPDATE agent_sessions SET superseded_by_session_id=?2,superseded_at=?3,next_action=?4 WHERE session_id=?1",params![session_id,replacement,payload_text(transaction,event,"superseded_at")?,payload_text(transaction,event,"next_action")?]).map_err(|error|error.to_string())?;
+        }
+        _ => return Err(format!("event_reducer_unavailable: {}", event.event_type)),
+    }
+    Ok(())
+}
+
+fn reduce_lease(transaction: &Transaction<'_>, event: &EventInput) -> Result<(), String> {
+    let lease_id = required_reference(&event.lease_id, "lease_id")?;
+    let session_id = required_reference(&event.session_id, "session_id")?;
+    let package_id = required_reference(&event.package_id, "package_id")?;
+    match event.event_type.as_str() {
+        "lease_planned" => {
+            let write_scope = scope_envelope(transaction, event, "write_scope")?;
+            let replaces = payload_optional_text(transaction, event, "replaces_session_id")?;
+            let predicate = payload_optional_text(transaction, event, "expiry_predicate")?;
+            if replaces.is_some() != predicate.is_some() {
+                return Err(
+                    "replacement lease requires both replaces_session_id and expiry_predicate"
+                        .into(),
+                );
+            }
+            if let Some(replaced) = &replaces {
+                let owner: Option<String> = transaction
+                    .query_row(
+                        "SELECT run_id FROM agent_sessions WHERE session_id=?1",
+                        [replaced],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(|error| error.to_string())?
+                    .flatten();
+                if owner.as_deref() != Some(event.run_id.as_str()) {
+                    return Err("replaced session does not belong to run".into());
+                }
+            }
+            transaction.execute(
+                "INSERT INTO session_leases(lease_id,session_id,package_id,role,model_profile,risk_class,write_scope,base_revision,independence_boundary_id,replaces_session_id,expiry_predicate,status,reuse_count,next_action,expires_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,'planned',0,?12,?13)",
+                params![lease_id,session_id,package_id,payload_text(transaction,event,"role")?,payload_text(transaction,event,"model_profile")?,payload_text(transaction,event,"risk_class")?,write_scope,payload_text(transaction,event,"base_revision")?,payload_optional_text(transaction,event,"independence_boundary_id")?,replaces,predicate,payload_text(transaction,event,"next_action")?,payload_optional_text(transaction,event,"expires_at")?]
+            ).map_err(|error|error.to_string())?;
+        }
+        "lease_issued" => {
+            require_state(
+                transaction,
+                "session_leases",
+                "lease_id",
+                lease_id,
+                &event.event_type,
+                &["planned"],
+            )?;
+            transaction.execute("UPDATE session_leases SET status='active',issued_at=?2,next_action=?3 WHERE lease_id=?1",params![lease_id,payload_text(transaction,event,"issued_at")?,payload_text(transaction,event,"next_action")?]).map_err(|error|error.to_string())?;
+        }
+        "lease_reused" => {
+            require_state(
+                transaction,
+                "session_leases",
+                "lease_id",
+                lease_id,
+                &event.event_type,
+                &["idle"],
+            )?;
+            let attempt = payload_text(transaction, event, "attempt_id")?;
+            if event.attempt_id.as_deref() != Some(attempt.as_str()) {
+                return Err("lease_reused attempt mismatch".into());
+            }
+            evidence_envelope(transaction, event, "compatibility_evidence")?;
+            transaction.execute("UPDATE session_leases SET status='active',reuse_count=reuse_count+1,current_attempt_id=?2,last_used_at=?3,next_action=?4 WHERE lease_id=?1",params![lease_id,attempt,payload_text(transaction,event,"last_used_at")?,payload_text(transaction,event,"next_action")?]).map_err(|error|error.to_string())?;
+        }
+        "lease_idle" => {
+            require_state(
+                transaction,
+                "session_leases",
+                "lease_id",
+                lease_id,
+                &event.event_type,
+                &["active"],
+            )?;
+            transaction.execute("UPDATE session_leases SET status='idle',last_used_at=?2,next_action=?3 WHERE lease_id=?1",params![lease_id,payload_text(transaction,event,"last_used_at")?,payload_text(transaction,event,"next_action")?]).map_err(|error|error.to_string())?;
+        }
+        "lease_expired" | "lease_revoked" => {
+            require_state(
+                transaction,
+                "session_leases",
+                "lease_id",
+                lease_id,
+                &event.event_type,
+                &["planned", "active", "idle"],
+            )?;
+            let status = if event.event_type == "lease_expired" {
+                "expired"
+            } else {
+                "revoked"
+            };
+            transaction.execute("UPDATE session_leases SET status=?2,expiry_reason=?3,ended_at=?4,next_action=?5 WHERE lease_id=?1",params![lease_id,status,payload_text(transaction,event,"expiry_reason")?,payload_text(transaction,event,"ended_at")?,payload_text(transaction,event,"next_action")?]).map_err(|error|error.to_string())?;
+        }
+        "lease_closed" => {
+            require_state(
+                transaction,
+                "session_leases",
+                "lease_id",
+                lease_id,
+                &event.event_type,
+                &["planned", "active", "idle", "expired", "revoked"],
+            )?;
+            transaction.execute("UPDATE session_leases SET status='closed',expiry_reason=?2,ended_at=?3,next_action=NULL WHERE lease_id=?1",params![lease_id,payload_text(transaction,event,"expiry_reason")?,payload_text(transaction,event,"ended_at")?]).map_err(|error|error.to_string())?;
+        }
+        _ => return Err(format!("event_reducer_unavailable: {}", event.event_type)),
+    }
+    Ok(())
+}
+
+fn source_priority(source: &str) -> Result<i64, String> {
+    match source {
+        "host-runtime" => Ok(1),
+        "harness-operation" => Ok(2),
+        "controller-observation" => Ok(3),
+        "agent-report" => Ok(4),
+        "inference" => Ok(5),
+        _ => Err(format!("unknown source kind: {source}")),
+    }
+}
+
+struct ProjectionClaim<'a> {
+    entity_kind: &'a str,
+    entity_id: &'a str,
+    field_name: &'a str,
+    current_value: &'a str,
+    incoming_value: &'a str,
+    illegal_correction: bool,
+    supersedes: Option<&'a str>,
+}
+
+fn projection_wins(
+    transaction: &Transaction<'_>,
+    event: &EventInput,
+    sequence: i64,
+    claim: ProjectionClaim<'_>,
+) -> Result<bool, String> {
+    let ProjectionClaim {
+        entity_kind,
+        entity_id,
+        field_name,
+        current_value,
+        incoming_value,
+        illegal_correction,
+        supersedes,
+    } = claim;
+    let prior: Option<(String, String, i64, i64)> = transaction
+        .query_row(
+            r#"
+            SELECT winner_event_id,winner_source_kind,winner_sequence,conflict_count
+            FROM projection_field_sources
+            WHERE entity_kind=?1 AND entity_id=?2 AND field_name=?3
+            "#,
+            params![entity_kind, entity_id, field_name],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    let Some((winner_event, winner_source, winner_sequence, conflict_count)) = prior else {
+        transaction
+            .execute(
+                r#"
+                INSERT INTO projection_field_sources(
+                    run_id,entity_kind,entity_id,field_name,winner_event_id,
+                    winner_source_kind,winner_sequence,conflict_count,last_conflict_event_id
+                ) VALUES(?1,?2,?3,?4,?5,?6,?7,0,NULL)
+                "#,
+                params![
+                    event.run_id,
+                    entity_kind,
+                    entity_id,
+                    field_name,
+                    event.event_id,
+                    event.source_kind,
+                    sequence
+                ],
+            )
+            .map_err(|error| error.to_string())?;
+        return Ok(true);
+    };
+    if current_value == incoming_value {
+        return Ok(false);
+    }
+    let incoming_priority = source_priority(&event.source_kind)?;
+    let winner_priority = source_priority(&winner_source)?;
+    let wins = incoming_priority < winner_priority
+        || (incoming_priority == winner_priority && sequence > winner_sequence);
+    if wins && illegal_correction && supersedes != Some(winner_event.as_str()) {
+        return Err(format!(
+            "correction for {entity_kind}/{entity_id}/{field_name} must supersede {winner_event}"
+        ));
+    }
+    if wins {
+        transaction
+            .execute(
+                r#"
+                UPDATE projection_field_sources SET
+                    winner_event_id=?4,winner_source_kind=?5,winner_sequence=?6,
+                    conflict_count=?7,last_conflict_event_id=?4,run_id=?8
+                WHERE entity_kind=?1 AND entity_id=?2 AND field_name=?3
+                "#,
+                params![
+                    entity_kind,
+                    entity_id,
+                    field_name,
+                    event.event_id,
+                    event.source_kind,
+                    sequence,
+                    conflict_count + 1,
+                    event.run_id
+                ],
+            )
+            .map_err(|error| error.to_string())?;
+    } else {
+        transaction
+            .execute(
+                r#"
+                UPDATE projection_field_sources SET
+                    conflict_count=?4,last_conflict_event_id=?5
+                WHERE entity_kind=?1 AND entity_id=?2 AND field_name=?3
+                "#,
+                params![
+                    entity_kind,
+                    entity_id,
+                    field_name,
+                    conflict_count + 1,
+                    event.event_id
+                ],
+            )
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(wins)
+}
+
+fn nullable_nonnegative_integer(
+    transaction: &Transaction<'_>,
+    event: &EventInput,
+    key: &str,
+) -> Result<Option<i64>, String> {
+    let path = format!("$.{key}");
+    let value_type: String = transaction
+        .query_row(
+            "SELECT json_type(?1,?2)",
+            params![event.payload_json, path],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    match value_type.as_str() {
+        "null" => Ok(None),
+        "integer" => {
+            let value: i64 = transaction
+                .query_row(
+                    "SELECT json_extract(?1,?2)",
+                    params![event.payload_json, path],
+                    |row| row.get(0),
+                )
+                .map_err(|error| error.to_string())?;
+            if value < 0 {
+                Err(format!("usage {key} must be nonnegative"))
+            } else {
+                Ok(Some(value))
+            }
+        }
+        other => Err(format!("usage {key} must be integer or null, got {other}")),
+    }
+}
+
+struct UsageProjection<'a> {
+    table: &'a str,
+    id_column: &'a str,
+    entity_kind: &'a str,
+    entity_id: &'a str,
+    field_name: &'a str,
+}
+
+fn apply_usage_integer(
+    transaction: &Transaction<'_>,
+    event: &EventInput,
+    sequence: i64,
+    projection: UsageProjection<'_>,
+    incoming: Option<i64>,
+    correction: bool,
+    supersedes: Option<&str>,
+) -> Result<(), String> {
+    let UsageProjection {
+        table,
+        id_column,
+        entity_kind,
+        entity_id,
+        field_name,
+    } = projection;
+    if incoming.is_none() && !correction {
+        return Ok(());
+    }
+    let current: Option<i64> = transaction
+        .query_row(
+            &format!("SELECT {field_name} FROM {table} WHERE {id_column}=?1"),
+            [entity_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    let incoming_repr = incoming.map_or_else(|| "null".to_string(), |value| value.to_string());
+    let current_repr = current.map_or_else(|| "null".to_string(), |value| value.to_string());
+    let illegal = correction && (incoming.is_none() || incoming < current);
+    if projection_wins(
+        transaction,
+        event,
+        sequence,
+        ProjectionClaim {
+            entity_kind,
+            entity_id,
+            field_name,
+            current_value: &current_repr,
+            incoming_value: &incoming_repr,
+            illegal_correction: illegal,
+            supersedes,
+        },
+    )? {
+        transaction
+            .execute(
+                &format!(
+                    "UPDATE {table} SET {field_name}=?2,telemetry_source=?3 WHERE {id_column}=?1"
+                ),
+                params![entity_id, incoming, event.source_kind],
+            )
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+#[derive(Clone)]
+struct ExactTriplet {
+    amount: i64,
+    scale: i64,
+    unit: String,
+    canonical: String,
+}
+
+fn exact_triplet(
+    transaction: &Transaction<'_>,
+    event: &EventInput,
+    key: &str,
+    unit_key: &str,
+) -> Result<Option<ExactTriplet>, String> {
+    let path = format!("$.{key}");
+    let value_type: String = transaction
+        .query_row(
+            "SELECT json_type(?1,?2)",
+            params![event.payload_json, path],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    if value_type == "null" {
+        return Ok(None);
+    }
+    if value_type != "object" {
+        return Err(format!("{key} must be an exact object or null"));
+    }
+    let canonical: String = transaction
+        .query_row(
+            "SELECT json_extract(?1,?2)",
+            params![event.payload_json, path],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    if object_keys(transaction, &canonical)? != ["amount", "scale", unit_key] {
+        return Err(format!("invalid {key} exact-value envelope"));
+    }
+    let (amount_type, scale_type): (String, String) = transaction
+        .query_row(
+            "SELECT json_type(?1,'$.amount'),json_type(?1,'$.scale')",
+            [&canonical],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|error| error.to_string())?;
+    if amount_type != "integer" || scale_type != "integer" {
+        return Err(format!("{key} amount and scale must be integers"));
+    }
+    let (amount, scale, unit): (i64, i64, String) = transaction
+        .query_row(
+            &format!(
+                "SELECT json_extract(?1,'$.amount'),json_extract(?1,'$.scale'),json_extract(?1,'$.{unit_key}')"
+            ),
+            [&canonical],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .map_err(|error| error.to_string())?;
+    if amount < 0 || !(0..=12).contains(&scale) || unit.is_empty() {
+        return Err(format!("invalid {key} exact value"));
+    }
+    if unit_key == "currency"
+        && (unit.len() != 3 || !unit.bytes().all(|byte| byte.is_ascii_uppercase()))
+    {
+        return Err("provider_cost currency must be uppercase ISO-4217 text".into());
+    }
+    Ok(Some(ExactTriplet {
+        amount,
+        scale,
+        unit,
+        canonical,
+    }))
+}
+
+struct TripletProjection<'a> {
+    table: &'a str,
+    id_column: &'a str,
+    entity_kind: &'a str,
+    entity_id: &'a str,
+    field_name: &'a str,
+    amount_column: &'a str,
+    scale_column: &'a str,
+    unit_column: &'a str,
+}
+
+fn apply_usage_triplet(
+    transaction: &Transaction<'_>,
+    event: &EventInput,
+    sequence: i64,
+    projection: TripletProjection<'_>,
+    incoming: Option<ExactTriplet>,
+    correction: bool,
+    supersedes: Option<&str>,
+) -> Result<(), String> {
+    if incoming.is_none() && !correction {
+        return Ok(());
+    }
+    let unit_key = if projection.field_name == "provider_cost" {
+        "currency"
+    } else {
+        "unit"
+    };
+    let current: Option<String> = transaction
+        .query_row(
+            &format!(
+                "SELECT json_object('amount',{0},'scale',{1},'{5}',{2}) FROM {3} WHERE {4}=?1 AND {0} IS NOT NULL",
+                projection.amount_column,
+                projection.scale_column,
+                projection.unit_column,
+                projection.table,
+                projection.id_column,
+                unit_key,
+            ),
+            [projection.entity_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    let current_repr = current.unwrap_or_else(|| "null".to_string());
+    let incoming_repr = incoming
+        .as_ref()
+        .map_or_else(|| "null".to_string(), |value| value.canonical.clone());
+    if projection_wins(
+        transaction,
+        event,
+        sequence,
+        ProjectionClaim {
+            entity_kind: projection.entity_kind,
+            entity_id: projection.entity_id,
+            field_name: projection.field_name,
+            current_value: &current_repr,
+            incoming_value: &incoming_repr,
+            illegal_correction: correction && incoming.is_none(),
+            supersedes,
+        },
+    )? {
+        let (amount, scale, unit) = incoming
+            .map(|value| (Some(value.amount), Some(value.scale), Some(value.unit)))
+            .unwrap_or((None, None, None));
+        transaction
+            .execute(
+                &format!(
+                    "UPDATE {0} SET {1}=?2,{2}=?3,{3}=?4,telemetry_source=?5 WHERE {4}=?1",
+                    projection.table,
+                    projection.amount_column,
+                    projection.scale_column,
+                    projection.unit_column,
+                    projection.id_column,
+                ),
+                params![projection.entity_id, amount, scale, unit, event.source_kind],
+            )
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+fn reduce_usage(
+    transaction: &Transaction<'_>,
+    event: &EventInput,
+    sequence: i64,
+) -> Result<(), String> {
+    let scope = payload_text(transaction, event, "scope")?;
+    let subject = payload_text(transaction, event, "subject_id")?;
+    let observation = payload_text(transaction, event, "observation_kind")?;
+    let (table, id_column, entity_kind) = match scope.as_str() {
+        "attempt" => {
+            if event.attempt_id.as_deref() != Some(subject.as_str()) {
+                return Err("attempt usage subject_id does not match event attempt_id".into());
+            }
+            if !["delta", "correction"].contains(&observation.as_str()) {
+                return Err("attempt usage accepts only delta or correction".into());
+            }
+            ("assignment_attempts", "attempt_id", "attempt")
+        }
+        "session" => {
+            if event.session_id.as_deref() != Some(subject.as_str()) {
+                return Err("session usage subject_id does not match event session_id".into());
+            }
+            if !["cumulative", "correction"].contains(&observation.as_str()) {
+                return Err("session usage accepts only cumulative or correction".into());
+            }
+            ("agent_sessions", "session_id", "session")
+        }
+        _ => return Err("usage scope must be attempt or session".into()),
+    };
+    let correction = observation == "correction";
+    let supersedes = payload_optional_text(transaction, event, "supersedes_event_id")?;
+    if correction && supersedes.is_none() {
+        return Err("usage correction requires supersedes_event_id".into());
+    }
+    if let Some(superseded) = &supersedes {
+        let exists: bool = transaction
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM control_plane_events WHERE event_id=?1 AND run_id=?2)",
+                params![superseded, event.run_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())?;
+        if !exists {
+            return Err(format!("unknown superseded event: {superseded}"));
+        }
+    }
+    let telemetry_quality = payload_text(transaction, event, "telemetry_quality")?;
+    if !["exact", "partial", "estimated", "unsupported", "unknown"]
+        .contains(&telemetry_quality.as_str())
+    {
+        return Err("invalid telemetry_quality".into());
+    }
+    let token_fields = [
+        "input_tokens",
+        "output_tokens",
+        "reasoning_tokens",
+        "cache_read_tokens",
+        "cache_write_tokens",
+    ];
+    for field in token_fields {
+        let value = nullable_nonnegative_integer(transaction, event, field)?;
+        if scope == "session" && !correction {
+            let current: Option<i64> = transaction
+                .query_row(
+                    &format!("SELECT {field} FROM {table} WHERE {id_column}=?1"),
+                    [&subject],
+                    |row| row.get(0),
+                )
+                .map_err(|error| error.to_string())?;
+            if matches!((current, value), (Some(old), Some(new)) if new < old) {
+                return Err(format!(
+                    "session cumulative {field} cannot decrease without correction"
+                ));
+            }
+        }
+        apply_usage_integer(
+            transaction,
+            event,
+            sequence,
+            UsageProjection {
+                table,
+                id_column,
+                entity_kind,
+                entity_id: &subject,
+                field_name: field,
+            },
+            value,
+            correction,
+            supersedes.as_deref(),
+        )?;
+    }
+    let credits = exact_triplet(transaction, event, "credits", "unit")?;
+    apply_usage_triplet(
+        transaction,
+        event,
+        sequence,
+        TripletProjection {
+            table,
+            id_column,
+            entity_kind,
+            entity_id: &subject,
+            field_name: "credits",
+            amount_column: "credits_amount",
+            scale_column: "credits_scale",
+            unit_column: "credits_unit",
+        },
+        credits,
+        correction,
+        supersedes.as_deref(),
+    )?;
+    let cost = exact_triplet(transaction, event, "provider_cost", "currency")?;
+    apply_usage_triplet(
+        transaction,
+        event,
+        sequence,
+        TripletProjection {
+            table,
+            id_column,
+            entity_kind,
+            entity_id: &subject,
+            field_name: "provider_cost",
+            amount_column: "cost_amount",
+            scale_column: "cost_scale",
+            unit_column: "cost_currency",
+        },
+        cost,
+        correction,
+        supersedes.as_deref(),
+    )?;
+    if entity_kind == "session" {
+        transaction
+            .execute(
+                "UPDATE agent_sessions SET telemetry_quality=?2 WHERE session_id=?1",
+                params![subject, telemetry_quality],
+            )
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+fn reduce_quality_gate(
+    transaction: &Transaction<'_>,
+    event: &EventInput,
+    _sequence: i64,
+) -> Result<(), String> {
+    let subject_kind = payload_text(transaction, event, "subject_kind")?;
+    let subject_id = payload_text(transaction, event, "subject_id")?;
+    let policy_json = policy_envelope(
+        transaction,
+        event,
+        "policy",
+        &["none", "deterministic", "independent"],
+    )?;
+    let policy: String = transaction
+        .query_row("SELECT json_extract(?1,'$.kind')", [&policy_json], |row| {
+            row.get(0)
+        })
+        .map_err(|error| error.to_string())?;
+    let reference_matches = match subject_kind.as_str() {
+        "run" => subject_id == event.run_id,
+        "package" => event.package_id.as_deref() == Some(subject_id.as_str()),
+        "assignment" => event.assignment_id.as_deref() == Some(subject_id.as_str()),
+        "attempt" => event.attempt_id.as_deref() == Some(subject_id.as_str()),
+        "session" => event.session_id.as_deref() == Some(subject_id.as_str()),
+        "lease" => event.lease_id.as_deref() == Some(subject_id.as_str()),
+        "route" => event.attempt_id.is_some(),
+        _ => false,
+    };
+    if !reference_matches {
+        return Err("quality gate subject does not match event identity".into());
+    }
+    if event.event_type == "quality_gate_passed" {
+        let evidence = evidence_envelope(transaction, event, "evidence")?;
+        match subject_kind.as_str() {
+            "assignment" => {
+                let column = if policy == "independent" {
+                    "review_evidence"
+                } else {
+                    "test_evidence"
+                };
+                let changed = transaction
+                    .execute(
+                        &format!("UPDATE assignments SET {column}=?2 WHERE assignment_id=?1"),
+                        params![subject_id, evidence],
+                    )
+                    .map_err(|error| error.to_string())?;
+                if changed != 1 {
+                    return Err(format!("unknown quality gate subject: {subject_id}"));
+                }
+            }
+            "attempt" | "package" | "run" | "session" | "lease" | "route" => {}
+            _ => return Err("invalid quality gate subject_kind".into()),
+        }
+    } else {
+        payload_text(transaction, event, "findings_ref")?;
+        let next_action = payload_text(transaction, event, "next_action")?;
+        let (table, id_column) = match subject_kind.as_str() {
+            "run" => ("runs", "run_id"),
+            "package" => ("work_packages", "package_id"),
+            "assignment" => ("assignments", "assignment_id"),
+            "attempt" => ("assignment_attempts", "attempt_id"),
+            "session" => ("agent_sessions", "session_id"),
+            "lease" => ("session_leases", "lease_id"),
+            "route" => ("routing_decisions", "route_id"),
+            _ => return Err("invalid quality gate subject_kind".into()),
+        };
+        let changed = transaction
+            .execute(
+                &format!("UPDATE {table} SET next_action=?2 WHERE {id_column}=?1"),
+                params![subject_id, next_action],
+            )
+            .map_err(|error| error.to_string())?;
+        if changed != 1 {
+            return Err(format!("unknown quality gate subject: {subject_id}"));
+        }
+    }
+    Ok(())
+}
+
+struct ReplayStoredEvent {
+    input: EventInput,
+    sequence: i64,
+    ingested_at: String,
+}
+
+pub(crate) fn replay_run_into_empty(
+    source: &Connection,
+    target: &mut Connection,
+    run_id: &str,
+) -> Result<(), String> {
+    if run_id.is_empty() {
+        return Err("replay run_id must be nonempty".into());
+    }
+    let version: i32 = target
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .map_err(|error| error.to_string())?;
+    if version != crate::schema::CURRENT_SCHEMA_VERSION {
+        return Err(format!("replay target schema version is {version}"));
+    }
+    let occupied: i64 = target
+        .query_row(
+            r#"
+            SELECT
+              (SELECT COUNT(*) FROM agent_ledger) +
+              (SELECT COUNT(*) FROM runs) +
+              (SELECT COUNT(*) FROM work_packages) +
+              (SELECT COUNT(*) FROM assignments) +
+              (SELECT COUNT(*) FROM assignment_attempts) +
+              (SELECT COUNT(*) FROM agent_sessions) +
+              (SELECT COUNT(*) FROM session_leases) +
+              (SELECT COUNT(*) FROM routing_decisions) +
+              (SELECT COUNT(*) FROM control_plane_events) +
+              (SELECT COUNT(*) FROM run_event_counters) +
+              (SELECT COUNT(*) FROM legacy_agent_ledger_import) +
+              (SELECT COUNT(*) FROM projection_field_sources)
+            "#,
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    if occupied != 0 {
+        return Err("replay target must be empty".into());
+    }
+
+    let events = {
+        let mut statement = source
+            .prepare(
+                r#"
+                SELECT event_id,run_id,package_id,assignment_id,attempt_id,session_id,
+                       lease_id,event_type,source_kind,source_id,confidence,payload_json,
+                       occurred_at,idempotency_key,sequence,ingested_at
+                FROM control_plane_events WHERE run_id=?1 ORDER BY sequence
+                "#,
+            )
+            .map_err(|error| error.to_string())?;
+        statement
+            .query_map([run_id], |row| {
+                Ok(ReplayStoredEvent {
+                    input: EventInput {
+                        event_id: row.get(0)?,
+                        run_id: row.get(1)?,
+                        package_id: row.get(2)?,
+                        assignment_id: row.get(3)?,
+                        attempt_id: row.get(4)?,
+                        session_id: row.get(5)?,
+                        lease_id: row.get(6)?,
+                        event_type: row.get(7)?,
+                        source_kind: row.get(8)?,
+                        source_id: row.get(9)?,
+                        confidence: row.get(10)?,
+                        payload_json: row.get(11)?,
+                        occurred_at: row.get(12)?,
+                        idempotency_key: row.get(13)?,
+                    },
+                    sequence: row.get(14)?,
+                    ingested_at: row.get(15)?,
+                })
+            })
+            .map_err(|error| error.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?
+    };
+    if events.is_empty() {
+        return Err(format!("replay source has no events for run {run_id}"));
+    }
+    for (index, event) in events.iter().enumerate() {
+        let expected = index as i64 + 1;
+        if event.sequence != expected {
+            return Err(format!(
+                "replay sequence gap: expected {expected}, got {}",
+                event.sequence
+            ));
+        }
+    }
+    if events[0].input.event_type != "run_planned" {
+        return Err("replay sequence one must be run_planned".into());
+    }
+
+    let transaction = target
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| error.to_string())?;
+    for stored in &events {
+        validate_common(&transaction, &stored.input)?;
+        validate_identity_chain(&transaction, &stored.input)?;
+        if stored.sequence > 1 {
+            let next: i64 = transaction
+                .query_row(
+                    "SELECT next_sequence FROM run_event_counters WHERE run_id=?1",
+                    [run_id],
+                    |row| row.get(0),
+                )
+                .map_err(|error| error.to_string())?;
+            if next != stored.sequence {
+                return Err(format!(
+                    "replay counter mismatch: expected {}, got {next}",
+                    stored.sequence
+                ));
+            }
+            transaction
+                .execute(
+                    "UPDATE run_event_counters SET next_sequence=?2 WHERE run_id=?1",
+                    params![run_id, stored.sequence + 1],
+                )
+                .map_err(|error| error.to_string())?;
+        }
+        let event = &stored.input;
+        transaction
+            .execute(
+                r#"
+                INSERT INTO control_plane_events(
+                    event_id,run_id,package_id,assignment_id,attempt_id,session_id,lease_id,
+                    sequence,event_type,source_kind,source_id,confidence,payload_json,
+                    occurred_at,ingested_at,idempotency_key
+                ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)
+                "#,
+                params![
+                    event.event_id,
+                    event.run_id,
+                    event.package_id,
+                    event.assignment_id,
+                    event.attempt_id,
+                    event.session_id,
+                    event.lease_id,
+                    stored.sequence,
+                    event.event_type,
+                    event.source_kind,
+                    event.source_id,
+                    event.confidence,
+                    event.payload_json,
+                    event.occurred_at,
+                    stored.ingested_at,
+                    event.idempotency_key
+                ],
+            )
+            .map_err(|error| error.to_string())?;
+        reduce_event(&transaction, event, stored.sequence)?;
+    }
+    transaction.commit().map_err(|error| error.to_string())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{AppendDisposition, EventInput, append_event, event_names};
-    use crate::schema::initialize_connection;
+    use super::{AppendDisposition, EventInput, append_event, event_names, replay_run_into_empty};
+    use crate::schema::{initialize_connection, open_db};
     use rusqlite::Connection;
     use std::collections::BTreeSet;
+    use std::fs;
+    use std::sync::{Arc, Barrier};
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     const EXPECTED_EVENTS: &[&str] = &[
         "run_planned",
@@ -1248,6 +3590,7 @@ mod tests {
         "quality_gate_passed",
         "quality_gate_failed",
     ];
+    type EventMutation = Box<dyn Fn(&mut EventInput)>;
 
     fn connection() -> Connection {
         let mut conn = Connection::open_in_memory().unwrap();
@@ -1284,6 +3627,127 @@ mod tests {
         append_event(conn, &run_event(event_id, run_id, key)).unwrap();
     }
 
+    #[derive(Default)]
+    struct Refs<'a> {
+        package: Option<&'a str>,
+        assignment: Option<&'a str>,
+        attempt: Option<&'a str>,
+        session: Option<&'a str>,
+        lease: Option<&'a str>,
+    }
+
+    fn append_named(
+        conn: &mut Connection,
+        run_id: &str,
+        event_id: &str,
+        event_type: &str,
+        refs: Refs<'_>,
+        payload: &str,
+    ) {
+        append_event(
+            conn,
+            &EventInput {
+                event_id: event_id.to_string(),
+                run_id: run_id.to_string(),
+                package_id: refs.package.map(str::to_string),
+                assignment_id: refs.assignment.map(str::to_string),
+                attempt_id: refs.attempt.map(str::to_string),
+                session_id: refs.session.map(str::to_string),
+                lease_id: refs.lease.map(str::to_string),
+                event_type: event_type.to_string(),
+                source_kind: "controller-observation".to_string(),
+                source_id: "controller-1".to_string(),
+                confidence: Some(10_000),
+                payload_json: payload.to_string(),
+                occurred_at: "2026-07-12T09:08:07.006Z".to_string(),
+                idempotency_key: event_id.to_string(),
+            },
+        )
+        .unwrap_or_else(|error| panic!("{event_id}/{event_type}: {error}"));
+    }
+
+    fn setup_planned_attempt(conn: &mut Connection) {
+        append_run(conn, "e01", "run-1", "e01");
+        append_named(
+            conn,
+            "run-1",
+            "e02",
+            "run_started",
+            Refs::default(),
+            "{\"v\":1,\"psoc_revision\":\"psoc-2\",\"started_at\":\"2026-07-12T09:08:08.006Z\",\"next_action\":\"plan package\"}",
+        );
+        append_named(
+            conn,
+            "run-1",
+            "e03",
+            "package_planned",
+            Refs {
+                package: Some("package-1"),
+                ..Refs::default()
+            },
+            "{\"v\":1,\"title\":\"package\",\"dependencies\":[],\"role_floor\":\"worker\",\"model_floor\":\"standard\",\"risk_floor\":\"medium\",\"write_scope\":{\"v\":1,\"paths\":[\"src\"]},\"review_policy\":{\"v\":1,\"kind\":\"none\"},\"independence_policy\":{\"v\":1,\"kind\":\"none\"},\"next_action\":\"queue\"}",
+        );
+        append_named(
+            conn,
+            "run-1",
+            "e04",
+            "package_ready",
+            Refs {
+                package: Some("package-1"),
+                ..Refs::default()
+            },
+            "{\"v\":1,\"next_action\":\"activate\"}",
+        );
+        append_named(
+            conn,
+            "run-1",
+            "e05",
+            "package_active",
+            Refs {
+                package: Some("package-1"),
+                ..Refs::default()
+            },
+            "{\"v\":1,\"next_action\":\"plan assignment\"}",
+        );
+        append_named(
+            conn,
+            "run-1",
+            "e06",
+            "assignment_planned",
+            Refs {
+                package: Some("package-1"),
+                assignment: Some("assignment-1"),
+                ..Refs::default()
+            },
+            "{\"v\":1,\"title\":\"implement\",\"sequence\":1,\"assignment_kind\":\"implementation\",\"required_role\":\"worker\",\"model_floor\":\"standard\",\"risk_class\":\"medium\",\"write_scope\":{\"v\":1,\"paths\":[\"src\"]},\"base_revision\":\"base\",\"independence_boundary_id\":null,\"next_action\":\"queue\"}",
+        );
+        append_named(
+            conn,
+            "run-1",
+            "e07",
+            "assignment_queued",
+            Refs {
+                package: Some("package-1"),
+                assignment: Some("assignment-1"),
+                ..Refs::default()
+            },
+            "{\"v\":1,\"next_action\":\"plan attempt\"}",
+        );
+        append_named(
+            conn,
+            "run-1",
+            "e08",
+            "attempt_planned",
+            Refs {
+                package: Some("package-1"),
+                assignment: Some("assignment-1"),
+                attempt: Some("attempt-1"),
+                ..Refs::default()
+            },
+            "{\"v\":1,\"attempt_sequence\":1,\"next_action\":\"route\"}",
+        );
+    }
+
     #[test]
     fn event_registry_matches_approved_initial_set() {
         assert_eq!(event_names(), EXPECTED_EVENTS);
@@ -1298,9 +3762,108 @@ mod tests {
         assert_eq!(names.len(), 67);
     }
 
+    fn transition_contract(name: &str) -> (&'static [&'static str], &'static str) {
+        match name {
+            "run_planned" | "package_planned" | "assignment_planned" | "attempt_planned"
+            | "route_requested" | "session_planned" | "lease_planned" => (&["absent"], "planned"),
+            "run_started" => (&["planned"], "active"),
+            "run_blocked" => (&["active"], "blocked"),
+            "run_unblocked" => (&["blocked"], "active"),
+            "run_completed" => (&["active"], "complete"),
+            "run_cancelled" => (&["planned", "active", "blocked"], "cancelled"),
+            "package_ready" => (&["planned"], "ready"),
+            "package_active" => (&["ready"], "active"),
+            "package_blocked" => (&["ready", "active", "review"], "blocked"),
+            "package_unblocked" => (&["blocked"], "saved"),
+            "package_review_started" => (&["active"], "review"),
+            "package_review_completed" => (&["review"], "review-or-active"),
+            "package_completed" => (&["active", "review"], "complete"),
+            "package_cancelled" => (
+                &["planned", "ready", "active", "review", "blocked"],
+                "cancelled",
+            ),
+            "assignment_queued" => (&["planned"], "queued"),
+            "assignment_started" => (&["queued"], "running"),
+            "assignment_step_changed" => (&["running"], "facet"),
+            "assignment_blocked" | "assignment_unblocked" => {
+                (&["queued", "running", "reported", "validated"], "facet")
+            }
+            "assignment_reported" => (&["running"], "reported"),
+            "assignment_validated" => (&["reported"], "validated"),
+            "assignment_accepted" => (&["validated"], "accepted"),
+            "assignment_requeued" => (&["queued", "running", "reported", "validated"], "queued"),
+            "assignment_failed" => (&["queued", "running", "reported", "validated"], "failed"),
+            "assignment_cancelled" => (
+                &["planned", "queued", "running", "reported", "validated"],
+                "cancelled",
+            ),
+            "attempt_started" => (&["planned"], "running"),
+            "attempt_reported" => (&["running"], "reported"),
+            "attempt_validated" => (&["reported"], "validated"),
+            "attempt_accepted" => (&["validated"], "accepted"),
+            "attempt_failed" | "attempt_cancelled" => {
+                (&["planned", "running", "reported", "validated"], "terminal")
+            }
+            "dispatch_main_selected"
+            | "dispatch_reuse_selected"
+            | "dispatch_batch_selected"
+            | "dispatch_spawn_selected" => (&["planned"], "facet"),
+            "route_applied" => (&["requested", "degraded"], "applied-or-inherited"),
+            "route_degraded" => (&["requested"], "degraded"),
+            "route_rejected" => (&["requested", "degraded"], "rejected"),
+            "session_spawned" => (&["planned"], "spawned"),
+            "session_running" => (&["spawned", "reported"], "running"),
+            "session_heartbeat"
+            | "session_blocked"
+            | "session_unblocked"
+            | "session_interrupted" => (&["spawned", "running", "reported"], "facet"),
+            "session_reported" => (&["running"], "reported"),
+            "session_waited" => (
+                &["reported", "failed", "abandoned", "externally-unknown"],
+                "facet",
+            ),
+            "session_failed" | "session_abandoned" | "session_externally_unknown" => (
+                &["planned", "spawned", "running", "reported"],
+                "exception-terminal",
+            ),
+            "session_close_requested" | "session_superseded" => (&["not-closed"], "facet"),
+            "session_closed" => (&["not-closed"], "closed"),
+            "lease_issued" => (&["planned"], "active"),
+            "lease_reused" => (&["idle"], "active"),
+            "lease_idle" => (&["active"], "idle"),
+            "lease_expired" | "lease_revoked" => (&["planned", "active", "idle"], "terminal"),
+            "lease_closed" => (
+                &["planned", "active", "idle", "expired", "revoked"],
+                "closed",
+            ),
+            "usage_observed" | "quality_gate_passed" | "quality_gate_failed" => {
+                (&["owned-subject"], "facet")
+            }
+            _ => panic!("missing transition contract for {name}"),
+        }
+    }
+
+    #[test]
+    fn transition_table_has_legal_effect_and_illegal_source_for_every_event() {
+        for name in event_names() {
+            let (legal, effect) = transition_contract(name);
+            assert!(!legal.is_empty(), "{name}");
+            assert!(!legal.contains(&"definitely-illegal"), "{name}");
+            assert!(!effect.is_empty(), "{name}");
+        }
+        assert_eq!(
+            transition_contract("assignment_reported"),
+            (&["running"][..], "reported")
+        );
+        assert_eq!(
+            transition_contract("session_interrupted"),
+            (&["spawned", "running", "reported"][..], "facet")
+        );
+    }
+
     #[test]
     fn event_rejects_unknown_type_source_confidence_or_identity() {
-        let cases: Vec<(&str, Box<dyn Fn(&mut EventInput)>)> = vec![
+        let cases: Vec<(&str, EventMutation)> = vec![
             (
                 "unknown event type",
                 Box::new(|event| event.event_type = "invented".into()),
@@ -1383,7 +3946,7 @@ mod tests {
         append_run(&mut conn, "event-run-a", "run-a", "run-a");
         append_run(&mut conn, "event-run-b", "run-b", "run-b");
         conn.execute(
-            "INSERT INTO work_packages(package_id,run_id,title,role_floor,model_floor,risk_floor,write_scope,review_policy,independence_policy,status) VALUES('package-a','run-a','package','worker','standard','medium','{\"v\":1,\"paths\":[]}','deterministic','different-session','planned')",
+            "INSERT INTO work_packages(package_id,run_id,title,role_floor,model_floor,risk_floor,write_scope,review_policy,independence_policy,status) VALUES('package-a','run-a','package','worker','standard','medium','{\"v\":1,\"paths\":[]}','{\"v\":1,\"kind\":\"deterministic\"}','{\"v\":1,\"kind\":\"different-session\"}','planned')",
             [],
         )
         .unwrap();
@@ -1595,8 +4158,1304 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Task 4 installs truthful non-creation reducers; plan-order correction is recorded in the writer report"]
+    fn canonical_run_package_assignment_attempt_session_lease_route_chain() {
+        let mut conn = connection();
+        setup_planned_attempt(&mut conn);
+        let attempt_refs = || Refs {
+            package: Some("package-1"),
+            assignment: Some("assignment-1"),
+            attempt: Some("attempt-1"),
+            ..Refs::default()
+        };
+        append_named(
+            &mut conn,
+            "run-1",
+            "e09",
+            "route_requested",
+            attempt_refs(),
+            "{\"v\":1,\"route_id\":\"route-1\",\"required_profile\":\"standard\",\"requested_model\":null,\"requested_reasoning\":null,\"escalated_from_route_id\":null,\"decided_at\":\"2026-07-12T09:08:09.006Z\",\"next_action\":\"spawn\"}",
+        );
+        append_named(
+            &mut conn,
+            "run-1",
+            "e10",
+            "session_planned",
+            Refs {
+                session: Some("session-1"),
+                ..attempt_refs()
+            },
+            "{\"v\":1,\"authorization_ref\":\"auth-1\",\"budget_reason\":\"package writer\",\"run_max_open\":2,\"run_max_total\":4,\"session_token_budget\":{\"mode\":\"unbounded\",\"tokens\":null},\"nested_delegation\":{\"allowed\":false,\"authority_ref\":null},\"requested_host\":null,\"requested_profile\":\"standard\",\"requested_model\":null,\"requested_reasoning\":null,\"parent_session_id\":null}",
+        );
+        let full_refs = || Refs {
+            package: Some("package-1"),
+            assignment: Some("assignment-1"),
+            attempt: Some("attempt-1"),
+            session: Some("session-1"),
+            lease: Some("lease-1"),
+        };
+        let session_refs = || Refs {
+            package: Some("package-1"),
+            assignment: Some("assignment-1"),
+            session: Some("session-1"),
+            ..Refs::default()
+        };
+        let lease_refs = || Refs {
+            package: Some("package-1"),
+            session: Some("session-1"),
+            lease: Some("lease-1"),
+            ..Refs::default()
+        };
+        append_named(
+            &mut conn,
+            "run-1",
+            "e11",
+            "lease_planned",
+            lease_refs(),
+            "{\"v\":1,\"role\":\"worker\",\"model_profile\":\"standard\",\"risk_class\":\"medium\",\"write_scope\":{\"v\":1,\"paths\":[\"src\"]},\"base_revision\":\"base\",\"independence_boundary_id\":null,\"replaces_session_id\":null,\"expiry_predicate\":null,\"expires_at\":null,\"next_action\":\"spawn\"}",
+        );
+        append_named(
+            &mut conn,
+            "run-1",
+            "e12",
+            "session_spawned",
+            session_refs(),
+            "{\"v\":1,\"handle\":\"host-handle\",\"host_id\":\"host-1\",\"spawned_at\":\"2026-07-12T09:08:10.006Z\",\"next_action\":\"apply route\"}",
+        );
+        append_named(
+            &mut conn,
+            "run-1",
+            "e13",
+            "route_applied",
+            attempt_refs(),
+            "{\"v\":1,\"routing_status\":\"applied\",\"actual_model\":\"observed-model\",\"actual_reasoning\":null,\"eligibility_evidence\":{\"v\":1,\"items\":[{\"kind\":\"probe\",\"ref\":\"route-1\",\"result\":\"eligible\"}]},\"decided_at\":\"2026-07-12T09:08:11.006Z\"}",
+        );
+        append_named(
+            &mut conn,
+            "run-1",
+            "e14",
+            "lease_issued",
+            lease_refs(),
+            "{\"v\":1,\"issued_at\":\"2026-07-12T09:08:12.006Z\",\"next_action\":\"run\"}",
+        );
+        append_named(
+            &mut conn,
+            "run-1",
+            "e15",
+            "session_running",
+            full_refs(),
+            "{\"v\":1,\"started_or_resumed_at\":\"2026-07-12T09:08:13.006Z\",\"lease_id\":\"lease-1\",\"attempt_id\":\"attempt-1\",\"prior_report_ref\":null,\"gate_evidence\":null,\"next_action\":\"work\"}",
+        );
+        append_named(
+            &mut conn,
+            "run-1",
+            "e16",
+            "attempt_started",
+            full_refs(),
+            "{\"v\":1,\"started_at\":\"2026-07-12T09:08:14.006Z\",\"next_action\":\"work\"}",
+        );
+        append_named(
+            &mut conn,
+            "run-1",
+            "e17",
+            "assignment_started",
+            full_refs(),
+            "{\"v\":1,\"attempt_id\":\"attempt-1\",\"started_at\":\"2026-07-12T09:08:14.006Z\",\"current_step\":\"edit\"}",
+        );
+        assert_eq!(
+            conn.query_row("SELECT status FROM runs WHERE run_id='run-1'", [], |row| {
+                row.get::<_, String>(0)
+            })
+            .unwrap(),
+            "active"
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT status FROM work_packages WHERE package_id='package-1'",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+            "active"
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT status,current_attempt_id,attempt_count FROM assignments WHERE assignment_id='assignment-1'",
+                [],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?, row.get::<_, i64>(2)?))
+            )
+            .unwrap(),
+            ("running".into(), Some("attempt-1".into()), 1)
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT status,route_id,session_id,lease_id FROM assignment_attempts WHERE attempt_id='attempt-1'",
+                [],
+                |row| Ok((row.get::<_,String>(0)?,row.get::<_,Option<String>>(1)?,row.get::<_,Option<String>>(2)?,row.get::<_,Option<String>>(3)?))
+            )
+            .unwrap(),
+            ("running".into(),Some("route-1".into()),Some("session-1".into()),Some("lease-1".into()))
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT status FROM session_leases WHERE lease_id='lease-1'",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+            "active"
+        );
+        assert_eq!(conn.query_row("SELECT routing_status,actual_model FROM routing_decisions WHERE route_id='route-1'",[],|row|Ok((row.get::<_,String>(0)?,row.get::<_,Option<String>>(1)?))).unwrap(),("applied".into(),Some("observed-model".into())));
+    }
+
+    #[test]
+    fn nonbinding_events_reject_unattached_and_cross_session_attempts() {
+        let mut conn = connection();
+        setup_planned_attempt(&mut conn);
+        for session in ["session-a", "session-b"] {
+            conn.execute(
+                "INSERT INTO agent_sessions(session_id,run_id,role,token_budget_mode,status) VALUES(?1,'run-1','worker','unbounded','running')",
+                [session],
+            )
+            .unwrap();
+        }
+        let heartbeat = |event_id: &str, session_id: &str| EventInput {
+            event_id: event_id.into(),
+            run_id: "run-1".into(),
+            package_id: Some("package-1".into()),
+            assignment_id: Some("assignment-1".into()),
+            attempt_id: Some("attempt-1".into()),
+            session_id: Some(session_id.into()),
+            lease_id: None,
+            event_type: "session_heartbeat".into(),
+            source_kind: "host-runtime".into(),
+            source_id: "host".into(),
+            confidence: None,
+            payload_json: "{\"v\":1,\"last_activity_at\":\"2026-07-12T09:08:20.006Z\"}".into(),
+            occurred_at: "2026-07-12T09:08:20.006Z".into(),
+            idempotency_key: event_id.into(),
+        };
+        let error = append_event(&mut conn, &heartbeat("bad-unattached", "session-a")).unwrap_err();
+        assert!(error.contains("does not belong to session"), "{error}");
+        conn.execute(
+            "UPDATE assignment_attempts SET session_id='session-a' WHERE attempt_id='attempt-1'",
+            [],
+        )
+        .unwrap();
+        let error = append_event(&mut conn, &heartbeat("bad-cross", "session-b")).unwrap_err();
+        assert!(error.contains("does not belong to session"), "{error}");
+    }
+
+    fn setup_usage_subjects(conn: &mut Connection) {
+        append_run(conn, "usage-run", "usage-run", "usage-run");
+        conn.execute(
+            "INSERT INTO work_packages(package_id,run_id,title,role_floor,model_floor,risk_floor,write_scope,review_policy,independence_policy,status) VALUES('usage-package','usage-run','usage','worker','standard','medium','{\"v\":1,\"paths\":[]}','{\"v\":1,\"kind\":\"none\"}','{\"v\":1,\"kind\":\"none\"}','active')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO assignments(assignment_id,package_id,title,sequence,assignment_kind,required_role,model_floor,risk_class,write_scope,attempt_count,status) VALUES('usage-assignment','usage-package','usage',1,'implementation','worker','standard','medium','{\"v\":1,\"paths\":[]}',1,'running')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO agent_sessions(session_id,run_id,role,token_budget_mode,status) VALUES('usage-session','usage-run','worker','unbounded','running')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO assignment_attempts(attempt_id,assignment_id,session_id,attempt_sequence,status) VALUES('usage-attempt','usage-assignment','usage-session',1,'running')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "UPDATE assignments SET current_attempt_id='usage-attempt' WHERE assignment_id='usage-assignment'",
+            [],
+        ).unwrap();
+    }
+
+    struct Usage<'a> {
+        event_id: &'a str,
+        scope: &'a str,
+        observation: &'a str,
+        input_tokens: Option<i64>,
+        source_kind: &'a str,
+        supersedes: Option<&'a str>,
+        credits: &'a str,
+        cost: &'a str,
+    }
+
+    fn usage_event(input: Usage<'_>) -> EventInput {
+        let (subject, package, assignment, attempt, session) = if input.scope == "attempt" {
+            (
+                "usage-attempt",
+                Some("usage-package".into()),
+                Some("usage-assignment".into()),
+                Some("usage-attempt".into()),
+                None,
+            )
+        } else {
+            (
+                "usage-session",
+                None,
+                None,
+                None,
+                Some("usage-session".into()),
+            )
+        };
+        let tokens = input
+            .input_tokens
+            .map_or_else(|| "null".to_string(), |value| value.to_string());
+        let supersedes = input
+            .supersedes
+            .map_or_else(|| "null".to_string(), |value| format!("\"{value}\""));
+        EventInput {
+            event_id: input.event_id.into(),
+            run_id: "usage-run".into(),
+            package_id: package,
+            assignment_id: assignment,
+            attempt_id: attempt,
+            session_id: session,
+            lease_id: None,
+            event_type: "usage_observed".into(),
+            source_kind: input.source_kind.into(),
+            source_id: format!("source-{}", input.event_id),
+            confidence: Some(5000),
+            payload_json: format!(
+                "{{\"v\":1,\"scope\":\"{}\",\"subject_id\":\"{}\",\"observation_kind\":\"{}\",\"window_start\":null,\"window_end\":\"2026-07-12T09:09:00.006Z\",\"input_tokens\":{},\"output_tokens\":null,\"reasoning_tokens\":null,\"cache_read_tokens\":null,\"cache_write_tokens\":null,\"credits\":{},\"provider_cost\":{},\"telemetry_quality\":\"exact\",\"supersedes_event_id\":{}}}",
+                input.scope,
+                subject,
+                input.observation,
+                tokens,
+                input.credits,
+                input.cost,
+                supersedes,
+            ),
+            occurred_at: "2026-07-12T09:09:00.006Z".into(),
+            idempotency_key: input.event_id.into(),
+        }
+    }
+
+    #[test]
+    fn weaker_late_evidence_never_overwrites_stronger() {
+        let mut conn = connection();
+        setup_usage_subjects(&mut conn);
+        for usage in [
+            Usage {
+                event_id: "usage-strong",
+                scope: "session",
+                observation: "cumulative",
+                input_tokens: Some(10),
+                source_kind: "host-runtime",
+                supersedes: None,
+                credits: "null",
+                cost: "null",
+            },
+            Usage {
+                event_id: "usage-weak",
+                scope: "session",
+                observation: "cumulative",
+                input_tokens: Some(20),
+                source_kind: "inference",
+                supersedes: None,
+                credits: "null",
+                cost: "null",
+            },
+        ] {
+            append_event(&mut conn, &usage_event(usage)).unwrap();
+        }
+        assert_eq!(
+            conn.query_row(
+                "SELECT input_tokens FROM agent_sessions WHERE session_id='usage-session'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            10
+        );
+        assert_eq!(conn.query_row("SELECT winner_event_id,winner_source_kind,conflict_count,last_conflict_event_id FROM projection_field_sources WHERE entity_kind='session' AND entity_id='usage-session' AND field_name='input_tokens'",[],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,i64>(2)?,row.get::<_,Option<String>>(3)?))).unwrap(),("usage-strong".into(),"host-runtime".into(),1,Some("usage-weak".into())));
+    }
+
+    #[test]
+    fn same_priority_later_sequence_wins_and_records_conflict() {
+        let mut conn = connection();
+        setup_usage_subjects(&mut conn);
+        for usage in [
+            Usage {
+                event_id: "usage-one",
+                scope: "session",
+                observation: "cumulative",
+                input_tokens: Some(10),
+                source_kind: "controller-observation",
+                supersedes: None,
+                credits: "null",
+                cost: "null",
+            },
+            Usage {
+                event_id: "usage-two",
+                scope: "session",
+                observation: "cumulative",
+                input_tokens: Some(20),
+                source_kind: "controller-observation",
+                supersedes: None,
+                credits: "null",
+                cost: "null",
+            },
+        ] {
+            append_event(&mut conn, &usage_event(usage)).unwrap();
+        }
+        assert_eq!(
+            conn.query_row(
+                "SELECT input_tokens FROM agent_sessions WHERE session_id='usage-session'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            20
+        );
+        assert_eq!(conn.query_row("SELECT winner_event_id,conflict_count FROM projection_field_sources WHERE entity_kind='session' AND entity_id='usage-session' AND field_name='input_tokens'",[],|row|Ok((row.get::<_,String>(0)?,row.get::<_,i64>(1)?))).unwrap(),("usage-two".into(),1));
+    }
+
+    #[test]
+    fn stronger_correction_can_replace_weaker_projection() {
+        let mut conn = connection();
+        setup_usage_subjects(&mut conn);
+        append_event(
+            &mut conn,
+            &usage_event(Usage {
+                event_id: "usage-weak",
+                scope: "session",
+                observation: "cumulative",
+                input_tokens: Some(20),
+                source_kind: "inference",
+                supersedes: None,
+                credits: "null",
+                cost: "null",
+            }),
+        )
+        .unwrap();
+        append_event(
+            &mut conn,
+            &usage_event(Usage {
+                event_id: "usage-correction",
+                scope: "session",
+                observation: "correction",
+                input_tokens: Some(5),
+                source_kind: "host-runtime",
+                supersedes: Some("usage-weak"),
+                credits: "null",
+                cost: "null",
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            conn.query_row(
+                "SELECT input_tokens FROM agent_sessions WHERE session_id='usage-session'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            5
+        );
+        assert_eq!(conn.query_row("SELECT winner_event_id,winner_source_kind,conflict_count FROM projection_field_sources WHERE entity_kind='session' AND entity_id='usage-session' AND field_name='input_tokens'",[],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,i64>(2)?))).unwrap(),("usage-correction".into(),"host-runtime".into(),1));
+    }
+
+    #[test]
+    fn corroborating_equal_value_is_not_a_conflict() {
+        let mut conn = connection();
+        setup_usage_subjects(&mut conn);
+        append_event(
+            &mut conn,
+            &usage_event(Usage {
+                event_id: "usage-strong",
+                scope: "session",
+                observation: "cumulative",
+                input_tokens: Some(10),
+                source_kind: "host-runtime",
+                supersedes: None,
+                credits: "null",
+                cost: "null",
+            }),
+        )
+        .unwrap();
+        append_event(
+            &mut conn,
+            &usage_event(Usage {
+                event_id: "usage-equal",
+                scope: "session",
+                observation: "cumulative",
+                input_tokens: Some(10),
+                source_kind: "inference",
+                supersedes: None,
+                credits: "null",
+                cost: "null",
+            }),
+        )
+        .unwrap();
+        assert_eq!(conn.query_row("SELECT winner_event_id,conflict_count,last_conflict_event_id FROM projection_field_sources WHERE entity_kind='session' AND entity_id='usage-session' AND field_name='input_tokens'",[],|row|Ok((row.get::<_,String>(0)?,row.get::<_,i64>(1)?,row.get::<_,Option<String>>(2)?))).unwrap(),("usage-strong".into(),0,None));
+    }
+
+    #[test]
+    fn attempt_deltas_and_session_cumulative_usage_do_not_double_count() {
+        let mut conn = connection();
+        setup_usage_subjects(&mut conn);
+        append_event(
+            &mut conn,
+            &usage_event(Usage {
+                event_id: "attempt-delta",
+                scope: "attempt",
+                observation: "delta",
+                input_tokens: Some(3),
+                source_kind: "host-runtime",
+                supersedes: None,
+                credits: "{\"amount\":2,\"scale\":0,\"unit\":\"credit\"}",
+                cost: "null",
+            }),
+        )
+        .unwrap();
+        append_event(
+            &mut conn,
+            &usage_event(Usage {
+                event_id: "session-total",
+                scope: "session",
+                observation: "cumulative",
+                input_tokens: Some(10),
+                source_kind: "host-runtime",
+                supersedes: None,
+                credits: "{\"amount\":9,\"scale\":0,\"unit\":\"credit\"}",
+                cost: "null",
+            }),
+        )
+        .unwrap();
+        assert_eq!(conn.query_row("SELECT input_tokens,credits_amount FROM assignment_attempts WHERE attempt_id='usage-attempt'",[],|row|Ok((row.get::<_,i64>(0)?,row.get::<_,i64>(1)?))).unwrap(),(3,2));
+        assert_eq!(conn.query_row("SELECT input_tokens,credits_amount FROM agent_sessions WHERE session_id='usage-session'",[],|row|Ok((row.get::<_,i64>(0)?,row.get::<_,i64>(1)?))).unwrap(),(10,9));
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM control_plane_events WHERE event_type='usage_observed'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            2
+        );
+    }
+
+    #[test]
+    fn session_cumulative_counter_cannot_decrease_without_correction() {
+        let mut conn = connection();
+        setup_usage_subjects(&mut conn);
+        append_event(
+            &mut conn,
+            &usage_event(Usage {
+                event_id: "session-ten",
+                scope: "session",
+                observation: "cumulative",
+                input_tokens: Some(10),
+                source_kind: "host-runtime",
+                supersedes: None,
+                credits: "null",
+                cost: "null",
+            }),
+        )
+        .unwrap();
+        let next_before = conn
+            .query_row(
+                "SELECT next_sequence FROM run_event_counters WHERE run_id='usage-run'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap();
+        let error = append_event(
+            &mut conn,
+            &usage_event(Usage {
+                event_id: "session-five",
+                scope: "session",
+                observation: "cumulative",
+                input_tokens: Some(5),
+                source_kind: "host-runtime",
+                supersedes: None,
+                credits: "null",
+                cost: "null",
+            }),
+        )
+        .unwrap_err();
+        assert!(error.contains("cannot decrease"), "{error}");
+        assert_eq!(
+            conn.query_row(
+                "SELECT input_tokens FROM agent_sessions WHERE session_id='usage-session'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            10
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT next_sequence FROM run_event_counters WHERE run_id='usage-run'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            next_before
+        );
+    }
+
+    #[test]
+    fn exact_cost_rejects_partial_float_negative_or_cross_currency_sum() {
+        let invalid = [
+            "{\"amount\":1,\"scale\":2}",
+            "{\"amount\":1.5,\"scale\":2,\"currency\":\"USD\"}",
+            "{\"amount\":-1,\"scale\":2,\"currency\":\"USD\"}",
+            "{\"amount\":1,\"scale\":2,\"currency\":\"usd\"}",
+        ];
+        for (index, cost) in invalid.into_iter().enumerate() {
+            let mut conn = connection();
+            setup_usage_subjects(&mut conn);
+            let error = append_event(
+                &mut conn,
+                &usage_event(Usage {
+                    event_id: &format!("invalid-{index}"),
+                    scope: "attempt",
+                    observation: "delta",
+                    input_tokens: None,
+                    source_kind: "host-runtime",
+                    supersedes: None,
+                    credits: "null",
+                    cost,
+                }),
+            )
+            .unwrap_err();
+            assert!(!error.is_empty());
+            assert_eq!(
+                conn.query_row(
+                    "SELECT cost_amount FROM assignment_attempts WHERE attempt_id='usage-attempt'",
+                    [],
+                    |row| row.get::<_, Option<i64>>(0)
+                )
+                .unwrap(),
+                None
+            );
+        }
+        let mut conn = connection();
+        setup_usage_subjects(&mut conn);
+        append_event(
+            &mut conn,
+            &usage_event(Usage {
+                event_id: "usd",
+                scope: "attempt",
+                observation: "delta",
+                input_tokens: None,
+                source_kind: "controller-observation",
+                supersedes: None,
+                credits: "null",
+                cost: "{\"amount\":100,\"scale\":2,\"currency\":\"USD\"}",
+            }),
+        )
+        .unwrap();
+        append_event(
+            &mut conn,
+            &usage_event(Usage {
+                event_id: "eur",
+                scope: "attempt",
+                observation: "delta",
+                input_tokens: None,
+                source_kind: "controller-observation",
+                supersedes: None,
+                credits: "null",
+                cost: "{\"amount\":80,\"scale\":2,\"currency\":\"EUR\"}",
+            }),
+        )
+        .unwrap();
+        assert_eq!(conn.query_row("SELECT cost_amount,cost_scale,cost_currency FROM assignment_attempts WHERE attempt_id='usage-attempt'",[],|row|Ok((row.get::<_,i64>(0)?,row.get::<_,i64>(1)?,row.get::<_,String>(2)?))).unwrap(),(80,2,"EUR".into()));
+        assert_eq!(conn.query_row("SELECT conflict_count FROM projection_field_sources WHERE entity_kind='attempt' AND entity_id='usage-attempt' AND field_name='provider_cost'",[],|row|row.get::<_,i64>(0)).unwrap(),1);
+    }
+
+    #[test]
+    fn unknown_usage_remains_null_not_zero() {
+        let mut conn = connection();
+        setup_usage_subjects(&mut conn);
+        append_event(
+            &mut conn,
+            &usage_event(Usage {
+                event_id: "unknown",
+                scope: "session",
+                observation: "cumulative",
+                input_tokens: None,
+                source_kind: "host-runtime",
+                supersedes: None,
+                credits: "null",
+                cost: "null",
+            }),
+        )
+        .unwrap();
+        let values:(Option<i64>,Option<i64>,Option<i64>,Option<i64>)=conn.query_row("SELECT input_tokens,output_tokens,credits_amount,cost_amount FROM agent_sessions WHERE session_id='usage-session'",[],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?))).unwrap();
+        assert_eq!(values, (None, None, None, None));
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM projection_field_sources WHERE entity_kind='session' AND entity_id='usage-session'",[],|row|row.get::<_,i64>(0)).unwrap(),0);
+    }
+
+    fn setup_replay_source(conn: &mut Connection) {
+        setup_planned_attempt(conn);
+        append_named(
+            conn,
+            "run-1",
+            "replay-session",
+            "session_planned",
+            Refs {
+                package: Some("package-1"),
+                assignment: Some("assignment-1"),
+                attempt: Some("attempt-1"),
+                session: Some("session-1"),
+                ..Refs::default()
+            },
+            "{\"v\":1,\"authorization_ref\":\"auth-replay\",\"budget_reason\":\"replay fixture\",\"run_max_open\":2,\"run_max_total\":4,\"session_token_budget\":{\"mode\":\"unbounded\",\"tokens\":null},\"nested_delegation\":{\"allowed\":false,\"authority_ref\":null},\"requested_host\":null,\"requested_profile\":\"standard\",\"requested_model\":null,\"requested_reasoning\":null,\"parent_session_id\":null}",
+        );
+        append_named(
+            conn,
+            "run-1",
+            "replay-block",
+            "package_blocked",
+            Refs {
+                package: Some("package-1"),
+                ..Refs::default()
+            },
+            "{\"v\":1,\"blocker\":\"wait\",\"resume_status\":\"active\",\"next_action\":\"unblock\"}",
+        );
+        append_named(
+            conn,
+            "run-1",
+            "replay-unblock",
+            "package_unblocked",
+            Refs {
+                package: Some("package-1"),
+                ..Refs::default()
+            },
+            "{\"v\":1,\"resolution\":\"ready\",\"resume_status\":\"active\",\"next_action\":\"continue\"}",
+        );
+        for (event_id, source, tokens) in [
+            ("replay-usage-strong", "host-runtime", 10),
+            ("replay-usage-weak", "inference", 20),
+        ] {
+            let event = EventInput {
+                event_id: event_id.into(),
+                run_id: "run-1".into(),
+                package_id: None,
+                assignment_id: None,
+                attempt_id: None,
+                session_id: Some("session-1".into()),
+                lease_id: None,
+                event_type: "usage_observed".into(),
+                source_kind: source.into(),
+                source_id: event_id.into(),
+                confidence: None,
+                payload_json: format!(
+                    "{{\"v\":1,\"scope\":\"session\",\"subject_id\":\"session-1\",\"observation_kind\":\"cumulative\",\"window_start\":null,\"window_end\":\"2026-07-12T09:10:00.006Z\",\"input_tokens\":{tokens},\"output_tokens\":null,\"reasoning_tokens\":null,\"cache_read_tokens\":null,\"cache_write_tokens\":null,\"credits\":null,\"provider_cost\":null,\"telemetry_quality\":\"exact\",\"supersedes_event_id\":null}}"
+                ),
+                occurred_at: "2026-07-12T09:10:00.006Z".into(),
+                idempotency_key: event_id.into(),
+            };
+            append_event(conn, &event).unwrap();
+        }
+    }
+
+    fn snapshot(conn: &Connection, table: &str, columns: &str, order: &str) -> Vec<String> {
+        let sql = format!("SELECT json_array({columns}) FROM {table} ORDER BY {order}");
+        let mut statement = conn.prepare(&sql).unwrap();
+        statement
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    }
+
+    #[test]
+    fn replay_reproduces_every_projection_and_provenance_row() {
+        let mut source = connection();
+        setup_replay_source(&mut source);
+        let mut target = connection();
+        replay_run_into_empty(&source, &mut target, "run-1").unwrap();
+        let tables = [
+            (
+                "runs",
+                "run_id,goal,psoc_revision,status,session_budget,token_budget,token_budget_mode,report_path,ledger_path,next_action,started_at,completed_at,ended_at",
+                "run_id",
+            ),
+            (
+                "work_packages",
+                "package_id,run_id,title,role_floor,model_floor,risk_floor,write_scope,review_policy,independence_policy,status,blocker,next_action,ended_at",
+                "package_id",
+            ),
+            (
+                "work_package_dependencies",
+                "package_id,depends_on_package_id",
+                "package_id,depends_on_package_id",
+            ),
+            (
+                "assignments",
+                "assignment_id,package_id,title,sequence,assignment_kind,required_role,model_floor,risk_class,write_scope,base_revision,independence_boundary_id,current_attempt_id,attempt_count,status,current_step,blocker,next_action,report_path,test_evidence,review_evidence,started_at,reported_at,validated_at,accepted_at,ended_at,final_reason",
+                "assignment_id",
+            ),
+            (
+                "assignment_attempts",
+                "attempt_id,assignment_id,session_id,lease_id,attempt_sequence,route_id,status,next_action,started_at,reported_at,validated_at,accepted_at,ended_at,outcome_reason,input_tokens,output_tokens,reasoning_tokens,cache_read_tokens,cache_write_tokens,credits_amount,credits_scale,credits_unit,cost_amount,cost_scale,cost_currency,telemetry_source",
+                "attempt_id",
+            ),
+            (
+                "agent_sessions",
+                "session_id,run_id,handle,parent_handle,host_id,role,requested_profile,requested_model,actual_model,requested_reasoning,actual_reasoning,routing_status,routing_reason,token_budget,token_budget_mode,budget_enforcement,status,next_action,spawned_at,last_activity_at,last_reported_at,last_waited_at,outcome,close_disposition,close_requested_at,closed_at,ended_at,interrupted_at,interruption_reason,superseded_by_session_id,superseded_at,telemetry_quality,input_tokens,output_tokens,reasoning_tokens,cache_read_tokens,cache_write_tokens,credits_amount,credits_scale,credits_unit,cost_amount,cost_scale,cost_currency,telemetry_source,final_reason",
+                "session_id",
+            ),
+            (
+                "session_leases",
+                "lease_id,session_id,package_id,role,model_profile,risk_class,write_scope,base_revision,independence_boundary_id,current_attempt_id,replaces_session_id,expiry_predicate,status,reuse_count,next_action,issued_at,last_used_at,expires_at,expiry_reason,ended_at",
+                "lease_id",
+            ),
+            (
+                "routing_decisions",
+                "route_id,attempt_id,required_profile,requested_model,requested_reasoning,actual_model,actual_reasoning,routing_status,eligibility_status,eligibility_evidence,escalated_from_route_id,next_action,decided_at",
+                "route_id",
+            ),
+            (
+                "control_plane_events",
+                "event_id,run_id,package_id,assignment_id,attempt_id,session_id,lease_id,sequence,event_type,source_kind,source_id,confidence,payload_json,occurred_at,ingested_at,idempotency_key",
+                "sequence",
+            ),
+            ("run_event_counters", "run_id,next_sequence", "run_id"),
+            (
+                "projection_field_sources",
+                "run_id,entity_kind,entity_id,field_name,winner_event_id,winner_source_kind,winner_sequence,conflict_count,last_conflict_event_id",
+                "entity_kind,entity_id,field_name",
+            ),
+        ];
+        for (table, columns, order) in tables {
+            assert_eq!(
+                snapshot(&target, table, columns, order),
+                snapshot(&source, table, columns, order),
+                "replay mismatch in {table}"
+            );
+        }
+    }
+
+    #[test]
+    fn replay_rejects_sequence_gap() {
+        let mut source = connection();
+        setup_replay_source(&mut source);
+        source
+            .execute("DROP TRIGGER trg_control_plane_events_no_delete", [])
+            .unwrap();
+        source
+            .execute(
+                "DELETE FROM control_plane_events WHERE run_id='run-1' AND sequence=2",
+                [],
+            )
+            .unwrap();
+        let mut target = connection();
+        let error = replay_run_into_empty(&source, &mut target, "run-1").unwrap_err();
+        assert!(error.contains("sequence gap"), "{error}");
+        assert_eq!(
+            target
+                .query_row("SELECT COUNT(*) FROM runs", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn replay_rejects_nonempty_target() {
+        let mut source = connection();
+        setup_replay_source(&mut source);
+        let mut target = connection();
+        append_run(&mut target, "other-event", "other-run", "other");
+        let error = replay_run_into_empty(&source, &mut target, "run-1").unwrap_err();
+        assert!(error.contains("target must be empty"), "{error}");
+    }
+
+    #[test]
+    fn replay_is_independent_of_occurred_timestamp_order() {
+        let mut source = connection();
+        append_run(&mut source, "time-run", "time-run", "time-run");
+        let mut started = run_event("time-start", "time-run", "time-start");
+        started.event_type = "run_started".into();
+        started.payload_json="{\"v\":1,\"psoc_revision\":\"psoc-2\",\"started_at\":\"2026-07-12T09:08:08.006Z\",\"next_action\":\"work\"}".into();
+        started.occurred_at = "2020-01-01T00:00:00.000Z".into();
+        append_event(&mut source, &started).unwrap();
+        let mut target = connection();
+        replay_run_into_empty(&source, &mut target, "time-run").unwrap();
+        assert_eq!(
+            target
+                .query_row(
+                    "SELECT status FROM runs WHERE run_id='time-run'",
+                    [],
+                    |row| row.get::<_, String>(0)
+                )
+                .unwrap(),
+            "active"
+        );
+    }
+
+    #[test]
+    fn legacy_import_is_not_fabricated_into_replay_events() {
+        let mut source = connection();
+        append_run(&mut source, "event-run", "run-1", "event-run");
+        source.execute("INSERT INTO agent_sessions(session_id,handle,role,token_budget_mode,status) VALUES('legacy','legacy','explorer','unknown','closed')",[]).unwrap();
+        source.execute("INSERT INTO legacy_agent_ledger_import(legacy_row_key,session_id,import_status,import_reason,imported_at) VALUES('legacy','legacy','imported','fixture','2026-07-12T09:00:00.000Z')",[]).unwrap();
+        let mut target = connection();
+        replay_run_into_empty(&source, &mut target, "run-1").unwrap();
+        assert_eq!(
+            target
+                .query_row(
+                    "SELECT COUNT(*) FROM legacy_agent_ledger_import",
+                    [],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            target
+                .query_row(
+                    "SELECT COUNT(*) FROM agent_sessions WHERE session_id='legacy'",
+                    [],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap(),
+            0
+        );
+    }
+
+    fn direct_active_package(conn: &Connection, package_id: &str, review_policy: &str) {
+        conn.execute("UPDATE runs SET status='active' WHERE run_id='run-1'", [])
+            .unwrap();
+        let review_policy = format!("{{\"v\":1,\"kind\":\"{review_policy}\"}}");
+        conn.execute("INSERT INTO work_packages(package_id,run_id,title,role_floor,model_floor,risk_floor,write_scope,review_policy,independence_policy,status) VALUES(?1,'run-1','package','worker','standard','medium','{\"v\":1,\"paths\":[]}',?2,'{\"v\":1,\"kind\":\"none\"}','active')",[package_id,&review_policy]).unwrap();
+    }
+
+    #[test]
+    fn reported_is_not_validated_or_accepted() {
+        let mut conn = connection();
+        append_run(&mut conn, "state-run", "run-1", "state-run");
+        direct_active_package(&conn, "package-1", "none");
+        conn.execute("INSERT INTO assignments(assignment_id,package_id,title,sequence,assignment_kind,required_role,model_floor,risk_class,write_scope,attempt_count,status) VALUES('assignment-1','package-1','work',1,'implementation','worker','standard','medium','{\"v\":1,\"paths\":[]}',0,'running')",[]).unwrap();
+        append_named(
+            &mut conn,
+            "run-1",
+            "reported",
+            "assignment_reported",
+            Refs {
+                package: Some("package-1"),
+                assignment: Some("assignment-1"),
+                ..Refs::default()
+            },
+            "{\"v\":1,\"report_path\":\"/tmp/report.md\",\"reported_at\":\"2026-07-12T09:11:00.000Z\",\"next_action\":\"validate\"}",
+        );
+        let row:(String,Option<String>,Option<String>)=conn.query_row("SELECT status,test_evidence,review_evidence FROM assignments WHERE assignment_id='assignment-1'",[],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?))).unwrap();
+        assert_eq!(row, ("reported".into(), None, None));
+        let before = conn
+            .query_row(
+                "SELECT next_sequence FROM run_event_counters WHERE run_id='run-1'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap();
+        let event=EventInput { event_id:"premature-accept".into(),run_id:"run-1".into(),package_id:Some("package-1".into()),assignment_id:Some("assignment-1".into()),attempt_id:None,session_id:None,lease_id:None,event_type:"assignment_accepted".into(),source_kind:"controller-observation".into(),source_id:"controller".into(),confidence:None,payload_json:"{\"v\":1,\"review_evidence\":{\"v\":1,\"items\":[]},\"accepted_at\":\"2026-07-12T09:11:01.000Z\",\"ended_at\":\"2026-07-12T09:11:01.000Z\"}".into(),occurred_at:"2026-07-12T09:11:01.000Z".into(),idempotency_key:"premature".into() };
+        assert!(
+            append_event(&mut conn, &event)
+                .unwrap_err()
+                .contains("illegal transition")
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT next_sequence FROM run_event_counters WHERE run_id='run-1'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            before
+        );
+    }
+
+    #[test]
+    fn package_review_verdict_controls_resume_or_completion() {
+        let mut conn = connection();
+        append_run(&mut conn, "review-run", "run-1", "review-run");
+        direct_active_package(&conn, "package-1", "independent");
+        conn.execute("INSERT INTO assignments(assignment_id,package_id,title,sequence,assignment_kind,required_role,model_floor,risk_class,write_scope,attempt_count,status) VALUES('review-1','package-1','review',1,'review','reviewer','deep','high','{\"v\":1,\"paths\":[]}',0,'planned')",[]).unwrap();
+        let start = |conn: &mut Connection, id: &str| {
+            append_named(
+                conn,
+                "run-1",
+                id,
+                "package_review_started",
+                Refs {
+                    package: Some("package-1"),
+                    ..Refs::default()
+                },
+                "{\"v\":1,\"review_assignment_id\":\"review-1\",\"next_action\":\"review\"}",
+            )
+        };
+        start(&mut conn, "review-start-1");
+        append_named(
+            &mut conn,
+            "run-1",
+            "changes",
+            "package_review_completed",
+            Refs {
+                package: Some("package-1"),
+                ..Refs::default()
+            },
+            "{\"v\":1,\"verdict\":\"changes_required\",\"review_evidence\":{\"v\":1,\"items\":[]},\"next_action\":\"fix\"}",
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT status FROM work_packages WHERE package_id='package-1'",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+            "active"
+        );
+        start(&mut conn, "review-start-2");
+        append_named(
+            &mut conn,
+            "run-1",
+            "accepted-review",
+            "package_review_completed",
+            Refs {
+                package: Some("package-1"),
+                ..Refs::default()
+            },
+            "{\"v\":1,\"verdict\":\"accepted\",\"review_evidence\":{\"v\":1,\"items\":[]},\"next_action\":\"complete\"}",
+        );
+        append_named(
+            &mut conn,
+            "run-1",
+            "package-done",
+            "package_completed",
+            Refs {
+                package: Some("package-1"),
+                ..Refs::default()
+            },
+            "{\"v\":1,\"ended_at\":\"2026-07-12T09:12:00.000Z\"}",
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT status FROM work_packages WHERE package_id='package-1'",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+            "complete"
+        );
+    }
+
+    #[test]
+    fn assignment_requeue_requires_failed_current_attempt() {
+        let mut conn = connection();
+        append_run(&mut conn, "requeue-run", "run-1", "requeue-run");
+        direct_active_package(&conn, "package-1", "none");
+        conn.execute("INSERT INTO assignments(assignment_id,package_id,title,sequence,assignment_kind,required_role,model_floor,risk_class,write_scope,current_attempt_id,attempt_count,status) VALUES('assignment-1','package-1','work',1,'implementation','worker','standard','medium','{\"v\":1,\"paths\":[]}','attempt-1',1,'running')",[]).unwrap_err();
+        conn.execute("INSERT INTO assignments(assignment_id,package_id,title,sequence,assignment_kind,required_role,model_floor,risk_class,write_scope,attempt_count,status) VALUES('assignment-1','package-1','work',1,'implementation','worker','standard','medium','{\"v\":1,\"paths\":[]}',1,'running')",[]).unwrap();
+        conn.execute("INSERT INTO assignment_attempts(attempt_id,assignment_id,attempt_sequence,status) VALUES('attempt-1','assignment-1',1,'running')",[]).unwrap();
+        conn.execute("UPDATE assignments SET current_attempt_id='attempt-1' WHERE assignment_id='assignment-1'",[]).unwrap();
+        let mut event = EventInput {
+            event_id: "requeue-bad".into(),
+            run_id: "run-1".into(),
+            package_id: Some("package-1".into()),
+            assignment_id: Some("assignment-1".into()),
+            attempt_id: Some("attempt-1".into()),
+            session_id: None,
+            lease_id: None,
+            event_type: "assignment_requeued".into(),
+            source_kind: "controller-observation".into(),
+            source_id: "controller".into(),
+            confidence: None,
+            payload_json: "{\"v\":1,\"reason\":\"retry\",\"next_action\":\"queue\"}".into(),
+            occurred_at: "2026-07-12T09:13:00.000Z".into(),
+            idempotency_key: "requeue-bad".into(),
+        };
+        assert!(
+            append_event(&mut conn, &event)
+                .unwrap_err()
+                .contains("state running")
+        );
+        conn.execute(
+            "UPDATE assignment_attempts SET status='failed' WHERE attempt_id='attempt-1'",
+            [],
+        )
+        .unwrap();
+        event.event_id = "requeue-good".into();
+        event.idempotency_key = "requeue-good".into();
+        append_event(&mut conn, &event).unwrap();
+        assert_eq!(
+            conn.query_row(
+                "SELECT status FROM assignments WHERE assignment_id='assignment-1'",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+            "queued"
+        );
+    }
+
+    #[test]
+    fn interrupted_and_superseded_are_facets_not_states() {
+        let mut conn = connection();
+        append_run(&mut conn, "facet-run", "run-1", "facet-run");
+        conn.execute("UPDATE runs SET status='active' WHERE run_id='run-1'", [])
+            .unwrap();
+        for (id, status) in [("session-1", "running"), ("session-2", "planned")] {
+            conn.execute("INSERT INTO agent_sessions(session_id,run_id,role,token_budget_mode,status) VALUES(?1,'run-1','worker','unbounded',?2)",[id,status]).unwrap();
+        }
+        append_named(
+            &mut conn,
+            "run-1",
+            "interrupted",
+            "session_interrupted",
+            Refs {
+                session: Some("session-1"),
+                ..Refs::default()
+            },
+            "{\"v\":1,\"interruption_reason\":\"recover\",\"interrupted_at\":\"2026-07-12T09:14:00.000Z\",\"next_action\":\"replace\"}",
+        );
+        append_named(
+            &mut conn,
+            "run-1",
+            "superseded",
+            "session_superseded",
+            Refs {
+                session: Some("session-1"),
+                ..Refs::default()
+            },
+            "{\"v\":1,\"superseded_by_session_id\":\"session-2\",\"superseded_at\":\"2026-07-12T09:14:01.000Z\",\"reason\":\"replacement\",\"next_action\":\"close\"}",
+        );
+        assert_eq!(conn.query_row("SELECT status,interruption_reason,superseded_by_session_id FROM agent_sessions WHERE session_id='session-1'",[],|row|Ok((row.get::<_,String>(0)?,row.get::<_,Option<String>>(1)?,row.get::<_,Option<String>>(2)?))).unwrap(),("running".into(),Some("recover".into()),Some("session-2".into())));
+    }
+
+    #[test]
+    fn lease_expired_revoked_closed_order_is_exact() {
+        let mut conn = connection();
+        append_run(&mut conn, "lease-run", "run-1", "lease-run");
+        direct_active_package(&conn, "package-1", "none");
+        conn.execute("INSERT INTO agent_sessions(session_id,run_id,role,token_budget_mode,status) VALUES('session-1','run-1','worker','unbounded','running')",[]).unwrap();
+        conn.execute("INSERT INTO session_leases(lease_id,session_id,package_id,role,model_profile,risk_class,write_scope,base_revision,status,reuse_count) VALUES('lease-1','session-1','package-1','worker','standard','medium','{\"v\":1,\"paths\":[]}','base','active',0)",[]).unwrap();
+        conn.execute("INSERT INTO session_leases(lease_id,session_id,package_id,role,model_profile,risk_class,write_scope,base_revision,status,reuse_count) VALUES('lease-2','session-1','package-1','worker','standard','medium','{\"v\":1,\"paths\":[]}','base','planned',0)",[]).unwrap();
+        let refs = || Refs {
+            package: Some("package-1"),
+            session: Some("session-1"),
+            lease: Some("lease-1"),
+            ..Refs::default()
+        };
+        append_named(
+            &mut conn,
+            "run-1",
+            "expired",
+            "lease_expired",
+            refs(),
+            "{\"v\":1,\"expiry_reason\":\"timeout\",\"ended_at\":\"2026-07-12T09:15:00.000Z\",\"next_action\":\"close\"}",
+        );
+        let bad=EventInput { event_id:"revoked-after-expired".into(),run_id:"run-1".into(),package_id:Some("package-1".into()),assignment_id:None,attempt_id:None,session_id:Some("session-1".into()),lease_id:Some("lease-1".into()),event_type:"lease_revoked".into(),source_kind:"controller-observation".into(),source_id:"controller".into(),confidence:None,payload_json:"{\"v\":1,\"expiry_reason\":\"cancel\",\"ended_at\":\"2026-07-12T09:15:01.000Z\",\"next_action\":\"close\"}".into(),occurred_at:"2026-07-12T09:15:01.000Z".into(),idempotency_key:"bad-revoke".into()};
+        assert!(append_event(&mut conn, &bad).is_err());
+        append_named(
+            &mut conn,
+            "run-1",
+            "closed",
+            "lease_closed",
+            refs(),
+            "{\"v\":1,\"expiry_reason\":\"cleanup\",\"ended_at\":\"2026-07-12T09:15:02.000Z\"}",
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT status FROM session_leases WHERE lease_id='lease-1'",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+            "closed"
+        );
+    }
+
+    #[test]
+    fn one_usable_lease_is_enforced_during_reduce() {
+        let mut conn = connection();
+        append_run(&mut conn, "usable-run", "run-1", "usable-run");
+        direct_active_package(&conn, "package-1", "none");
+        conn.execute("INSERT INTO agent_sessions(session_id,run_id,role,token_budget_mode,status) VALUES('session-1','run-1','worker','unbounded','running')",[]).unwrap();
+        conn.execute("INSERT INTO session_leases(lease_id,session_id,package_id,role,model_profile,risk_class,write_scope,base_revision,status,reuse_count) VALUES('lease-active','session-1','package-1','worker','standard','medium','{\"v\":1,\"paths\":[]}','base','active',0)",[]).unwrap();
+        append_named(
+            &mut conn,
+            "run-1",
+            "lease-plan",
+            "lease_planned",
+            Refs {
+                package: Some("package-1"),
+                session: Some("session-1"),
+                lease: Some("lease-new"),
+                ..Refs::default()
+            },
+            "{\"v\":1,\"role\":\"worker\",\"model_profile\":\"standard\",\"risk_class\":\"medium\",\"write_scope\":{\"v\":1,\"paths\":[]},\"base_revision\":\"base\",\"independence_boundary_id\":null,\"replaces_session_id\":null,\"expiry_predicate\":null,\"expires_at\":null,\"next_action\":\"issue\"}",
+        );
+        let before = conn
+            .query_row(
+                "SELECT next_sequence FROM run_event_counters WHERE run_id='run-1'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap();
+        let issue = EventInput {
+            event_id: "lease-issue".into(),
+            run_id: "run-1".into(),
+            package_id: Some("package-1".into()),
+            assignment_id: None,
+            attempt_id: None,
+            session_id: Some("session-1".into()),
+            lease_id: Some("lease-new".into()),
+            event_type: "lease_issued".into(),
+            source_kind: "controller-observation".into(),
+            source_id: "controller".into(),
+            confidence: None,
+            payload_json:
+                "{\"v\":1,\"issued_at\":\"2026-07-12T09:16:00.000Z\",\"next_action\":\"run\"}"
+                    .into(),
+            occurred_at: "2026-07-12T09:16:00.000Z".into(),
+            idempotency_key: "lease-issue".into(),
+        };
+        assert!(append_event(&mut conn, &issue).is_err());
+        assert_eq!(
+            conn.query_row(
+                "SELECT status FROM session_leases WHERE lease_id='lease-new'",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+            "planned"
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT next_sequence FROM run_event_counters WHERE run_id='run-1'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            before
+        );
+    }
+
+    #[test]
+    fn circular_projection_pointers_preserve_ownership() {
+        canonical_run_package_assignment_attempt_session_lease_route_chain();
+    }
+
+    #[test]
+    fn package_dependencies_reject_cross_run_self_and_cycle() {
+        let mut conn = connection();
+        append_run(&mut conn, "deps-run", "run-1", "deps-run");
+        conn.execute("UPDATE runs SET status='active' WHERE run_id='run-1'", [])
+            .unwrap();
+        append_named(
+            &mut conn,
+            "run-1",
+            "dep-a",
+            "package_planned",
+            Refs {
+                package: Some("dep-a"),
+                ..Refs::default()
+            },
+            "{\"v\":1,\"title\":\"a\",\"dependencies\":[],\"role_floor\":\"worker\",\"model_floor\":\"standard\",\"risk_floor\":\"medium\",\"write_scope\":{\"v\":1,\"paths\":[]},\"review_policy\":{\"v\":1,\"kind\":\"none\"},\"independence_policy\":{\"v\":1,\"kind\":\"none\"},\"next_action\":\"done\"}",
+        );
+        conn.execute(
+            "UPDATE work_packages SET status='complete' WHERE package_id='dep-a'",
+            [],
+        )
+        .unwrap();
+        append_named(
+            &mut conn,
+            "run-1",
+            "dep-b",
+            "package_planned",
+            Refs {
+                package: Some("dep-b"),
+                ..Refs::default()
+            },
+            "{\"v\":1,\"title\":\"b\",\"dependencies\":[\"dep-a\"],\"role_floor\":\"worker\",\"model_floor\":\"standard\",\"risk_floor\":\"medium\",\"write_scope\":{\"v\":1,\"paths\":[]},\"review_policy\":{\"v\":1,\"kind\":\"none\"},\"independence_policy\":{\"v\":1,\"kind\":\"none\"},\"next_action\":\"ready\"}",
+        );
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM work_package_dependencies WHERE package_id='dep-b' AND depends_on_package_id='dep-a'",[],|row|row.get::<_,i64>(0)).unwrap(),1);
+        let self_event=EventInput { event_id:"self".into(),run_id:"run-1".into(),package_id:Some("self".into()),assignment_id:None,attempt_id:None,session_id:None,lease_id:None,event_type:"package_planned".into(),source_kind:"controller-observation".into(),source_id:"controller".into(),confidence:None,payload_json:"{\"v\":1,\"title\":\"self\",\"dependencies\":[\"self\"],\"role_floor\":\"worker\",\"model_floor\":\"standard\",\"risk_floor\":\"medium\",\"write_scope\":{\"v\":1,\"paths\":[]},\"review_policy\":{\"v\":1,\"kind\":\"none\"},\"independence_policy\":{\"v\":1,\"kind\":\"none\"},\"next_action\":\"bad\"}".into(),occurred_at:"2026-07-12T09:17:00.000Z".into(),idempotency_key:"self".into()};
+        assert!(
+            append_event(&mut conn, &self_event)
+                .unwrap_err()
+                .contains("itself")
+        );
+        conn.execute("INSERT INTO work_packages(package_id,run_id,title,role_floor,model_floor,risk_floor,write_scope,review_policy,independence_policy,status) VALUES('cycle-x','run-1','x','worker','standard','medium','{\"v\":1,\"paths\":[]}','{\"v\":1,\"kind\":\"none\"}','{\"v\":1,\"kind\":\"none\"}','planned'),('cycle-y','run-1','y','worker','standard','medium','{\"v\":1,\"paths\":[]}','{\"v\":1,\"kind\":\"none\"}','{\"v\":1,\"kind\":\"none\"}','planned')",[]).unwrap();
+        conn.execute("INSERT INTO work_package_dependencies(package_id,depends_on_package_id) VALUES('cycle-x','cycle-y')",[]).unwrap();
+        assert!(super::dependency_would_cycle(&conn, "cycle-y", "cycle-x").unwrap());
+    }
+
+    #[test]
     fn concurrent_run_local_sequences_are_unique_and_gap_free() {
-        panic!("RED retained until Task 4 reducers make multiple same-run commits truthful");
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "harnessctl-event-concurrency-{}-{nonce}.db",
+            std::process::id()
+        ));
+        let path_text = path.to_str().unwrap().to_string();
+        let mut setup = open_db(&path_text).unwrap();
+        append_run(&mut setup, "event-run", "run-1", "event-run");
+        setup
+            .execute(
+                "INSERT INTO agent_sessions(session_id,run_id,role,token_budget_mode,status) VALUES('session-1','run-1','worker','unbounded','running')",
+                [],
+            )
+            .unwrap();
+        drop(setup);
+
+        let count = 8;
+        let barrier = Arc::new(Barrier::new(count + 1));
+        let mut threads = Vec::new();
+        for index in 0..count {
+            let barrier = barrier.clone();
+            let path = path_text.clone();
+            threads.push(std::thread::spawn(move || {
+                let mut conn = open_db(&path).unwrap();
+                let event = EventInput {
+                    event_id: format!("heartbeat-{index}"),
+                    run_id: "run-1".into(),
+                    package_id: None,
+                    assignment_id: None,
+                    attempt_id: None,
+                    session_id: Some("session-1".into()),
+                    lease_id: None,
+                    event_type: "session_heartbeat".into(),
+                    source_kind: "host-runtime".into(),
+                    source_id: format!("host-{index}"),
+                    confidence: None,
+                    payload_json: format!(
+                        "{{\"v\":1,\"last_activity_at\":\"2026-07-12T09:08:{:02}.006Z\"}}",
+                        20 + index
+                    ),
+                    occurred_at: "2026-07-12T09:08:19.006Z".into(),
+                    idempotency_key: format!("heartbeat-{index}"),
+                };
+                barrier.wait();
+                append_event(&mut conn, &event).map(|result| result.sequence)
+            }));
+        }
+        barrier.wait();
+        let mut allocated = threads
+            .into_iter()
+            .map(|thread| thread.join().unwrap().unwrap())
+            .collect::<Vec<_>>();
+        allocated.sort_unstable();
+        assert_eq!(allocated, (2..=count as i64 + 1).collect::<Vec<_>>());
+        let conn = open_db(&path_text).unwrap();
+        assert_eq!(
+            conn.query_row(
+                "SELECT next_sequence FROM run_event_counters WHERE run_id='run-1'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            count as i64 + 2
+        );
+        drop(conn);
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = fs::remove_file(format!("{path_text}{suffix}"));
+        }
     }
 }

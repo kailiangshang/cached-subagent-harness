@@ -516,6 +516,14 @@ fn usage() -> &'static str {
 "#
 }
 
+const _: fn(
+    &mut rusqlite::Connection,
+    &event_store::EventInput,
+) -> Result<event_store::AppendResult, String> = event_store::append_event;
+const _: fn(&rusqlite::Connection, &mut rusqlite::Connection, &str) -> Result<(), String> =
+    event_store::replay_run_into_empty;
+const _: fn() -> Vec<&'static str> = event_store::event_names;
+
 fn run() -> Result<(), String> {
     let args: Vec<String> = env::args().skip(1).collect();
     let Some((command, rest)) = args.split_first() else {

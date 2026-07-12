@@ -335,6 +335,30 @@ mod tests {
     use super::{AgentInput, AgentPatch, ledger_add, ledger_audit, ledger_update};
     use crate::schema::initialize_connection;
     use rusqlite::Connection;
+    type PhysicalTuple = (
+        String,
+        String,
+        String,
+        String,
+        String,
+        i64,
+        i64,
+        String,
+        String,
+        String,
+        String,
+    );
+    type SessionTuple = (
+        Option<String>,
+        Option<String>,
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+        String,
+        Option<String>,
+        Option<i64>,
+    );
 
     fn connection() -> Connection {
         let mut conn = Connection::open_in_memory().unwrap();
@@ -359,22 +383,7 @@ mod tests {
         }
     }
 
-    fn physical_tuple(
-        conn: &Connection,
-        handle: &str,
-    ) -> Option<(
-        String,
-        String,
-        String,
-        String,
-        String,
-        i64,
-        i64,
-        String,
-        String,
-        String,
-        String,
-    )> {
+    fn physical_tuple(conn: &Connection, handle: &str) -> Option<PhysicalTuple> {
         conn.query_row(
             r#"
             SELECT role,task,status,report_path,spawned_at,waited,closed,
@@ -401,20 +410,7 @@ mod tests {
         .ok()
     }
 
-    fn session_tuple(
-        conn: &Connection,
-        handle: &str,
-    ) -> Option<(
-        Option<String>,
-        Option<String>,
-        String,
-        String,
-        Option<String>,
-        Option<String>,
-        String,
-        Option<String>,
-        Option<i64>,
-    )> {
+    fn session_tuple(conn: &Connection, handle: &str) -> Option<SessionTuple> {
         conn.query_row(
             r#"
             SELECT run_id,handle,role,status,spawned_at,final_reason,
