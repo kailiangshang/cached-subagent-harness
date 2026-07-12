@@ -180,6 +180,9 @@ def validate_skill(repo: Path) -> None:
         "references/report-contracts.md",
         "scripts/harnessctl/Cargo.toml",
         "scripts/harnessctl/src/main.rs",
+        "scripts/harnessctl/src/schema.rs",
+        "scripts/harnessctl/src/ledger.rs",
+        "scripts/harnessctl/src/event_store.rs",
     ]
     for relative in required_files:
         if not (skill_root / relative).is_file():

@@ -59,6 +59,21 @@ class StandaloneContractTests(unittest.TestCase):
     def read(self, relative: str) -> str:
         return (REPO_ROOT / relative).read_text(encoding="utf-8")
 
+    def copy_validation_fixture(self, directory: str) -> Path:
+        repo = Path(directory)
+        shutil.copytree(
+            REPO_ROOT / ".codex-plugin",
+            repo / ".codex-plugin",
+        )
+        shutil.copytree(
+            REPO_ROOT / "skills" / "cached-subagent-harness",
+            repo / "skills" / "cached-subagent-harness",
+        )
+        design_destination = repo / DESIGN_PATH
+        design_destination.parent.mkdir(parents=True)
+        shutil.copy2(REPO_ROOT / DESIGN_PATH, design_destination)
+        return repo
+
     def run_mutated_validation(
         self,
         relative: str,
@@ -66,18 +81,7 @@ class StandaloneContractTests(unittest.TestCase):
         replacement: str,
     ) -> subprocess.CompletedProcess[str]:
         with tempfile.TemporaryDirectory() as directory:
-            repo = Path(directory)
-            shutil.copytree(
-                REPO_ROOT / ".codex-plugin",
-                repo / ".codex-plugin",
-            )
-            shutil.copytree(
-                REPO_ROOT / "skills" / "cached-subagent-harness",
-                repo / "skills" / "cached-subagent-harness",
-            )
-            design_destination = repo / DESIGN_PATH
-            design_destination.parent.mkdir(parents=True)
-            shutil.copy2(REPO_ROOT / DESIGN_PATH, design_destination)
+            repo = self.copy_validation_fixture(directory)
 
             mutation_path = repo / relative
             text = mutation_path.read_text(encoding="utf-8")
@@ -86,6 +90,22 @@ class StandaloneContractTests(unittest.TestCase):
                 text.replace(original, replacement, 1),
                 encoding="utf-8",
             )
+            return subprocess.run(
+                [sys.executable, str(VALIDATOR), str(repo)],
+                cwd=REPO_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+    def run_validation_without_skill_file(
+        self,
+        relative: str,
+    ) -> subprocess.CompletedProcess[str]:
+        with tempfile.TemporaryDirectory() as directory:
+            repo = self.copy_validation_fixture(directory)
+
+            (repo / "skills" / "cached-subagent-harness" / relative).unlink()
             return subprocess.run(
                 [sys.executable, str(VALIDATOR), str(repo)],
                 cwd=REPO_ROOT,
@@ -186,6 +206,25 @@ class StandaloneContractTests(unittest.TestCase):
             "Optional methodology absence is not degraded",
             integration,
         )
+
+    def test_release_validator_requires_every_rust_module(self) -> None:
+        modules = [
+            "scripts/harnessctl/src/schema.rs",
+            "scripts/harnessctl/src/ledger.rs",
+            "scripts/harnessctl/src/event_store.rs",
+        ]
+        for module in modules:
+            with self.subTest(module=module):
+                result = self.run_validation_without_skill_file(module)
+                self.assertNotEqual(
+                    result.returncode,
+                    0,
+                    result.stdout + result.stderr,
+                )
+                self.assertIn(
+                    f"missing skill file: {module}",
+                    result.stderr,
+                )
 
 
 if __name__ == "__main__":
