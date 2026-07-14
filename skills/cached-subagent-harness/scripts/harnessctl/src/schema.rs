@@ -7,6 +7,49 @@ use std::time::Duration;
 
 pub(crate) const CURRENT_SCHEMA_VERSION: i32 = 1;
 
+const SHIPPED_HISTORICAL_LEDGER_DDL: &str = r#"
+CREATE TABLE harness_meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+CREATE TABLE agent_ledger (
+    handle TEXT PRIMARY KEY,
+    role TEXT NOT NULL,
+    task TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL,
+    report_path TEXT NOT NULL DEFAULT '',
+    spawned_at TEXT NOT NULL DEFAULT '',
+    waited INTEGER NOT NULL DEFAULT 0,
+    closed INTEGER NOT NULL DEFAULT 0,
+    write_scope TEXT NOT NULL DEFAULT 'none',
+    token_risk TEXT NOT NULL DEFAULT '',
+    next_action TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+"#;
+
+const SHIPPED_CURRENT_LEDGER_DDL: &str = r#"
+CREATE TABLE harness_meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+CREATE TABLE agent_ledger (
+    handle TEXT PRIMARY KEY,
+    role TEXT NOT NULL,
+    task TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL,
+    report_path TEXT NOT NULL DEFAULT '',
+    spawned_at TEXT NOT NULL DEFAULT '',
+    waited INTEGER NOT NULL DEFAULT 0,
+    closed INTEGER NOT NULL DEFAULT 0,
+    write_scope TEXT NOT NULL DEFAULT 'none',
+    token_risk TEXT NOT NULL DEFAULT '',
+    final_reason TEXT NOT NULL DEFAULT '',
+    next_action TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+"#;
+
 const LEGACY_TABLES_DDL: &str = r#"
 CREATE TABLE harness_meta (
     key TEXT PRIMARY KEY,
@@ -472,6 +515,22 @@ pub(crate) fn initialize_connection(
     Ok(())
 }
 
+pub(crate) fn validate_current_connection(conn: &Connection) -> Result<(), SchemaError> {
+    let foreign_keys: i32 = conn.pragma_query_value(None, "foreign_keys", |row| row.get(0))?;
+    if foreign_keys != 1 {
+        return Err(SchemaError::Integrity(
+            "foreign keys are not enabled on the current connection".into(),
+        ));
+    }
+    probe_json1(conn)?;
+    check_integrity(conn)?;
+    let version = user_version(conn)?;
+    if version != CURRENT_SCHEMA_VERSION {
+        return Err(SchemaError::UnsupportedVersion(version));
+    }
+    validate_current_structure(conn)
+}
+
 fn probe_json1(conn: &Connection) -> Result<(), SchemaError> {
     let value: String = conn.query_row("SELECT json('{\"probe\":1}')", [], |row| row.get(0))?;
     if value != "{\"probe\":1}" {
@@ -563,15 +622,47 @@ fn classify_unversioned_layout(conn: &Connection) -> Result<UnversionedLayout, S
     let columns = column_manifest(conn, "agent_ledger")?;
     let historical = legacy_agent_columns(false);
     let current = legacy_agent_columns(true);
-    if columns == historical {
-        Ok(UnversionedLayout::LegacyWithoutFinalReason)
+    let layout = if columns == historical {
+        UnversionedLayout::LegacyWithoutFinalReason
     } else if columns == current {
-        Ok(UnversionedLayout::LegacyCurrent)
+        UnversionedLayout::LegacyCurrent
     } else {
-        Err(SchemaError::AmbiguousLayout(format!(
+        return Err(SchemaError::AmbiguousLayout(format!(
             "agent_ledger columns do not match either shipped layout: {columns:?}"
-        )))
+        )));
+    };
+    validate_exact_unversioned_objects(conn, layout)?;
+    Ok(layout)
+}
+
+fn expected_object_sql(
+    ddl: &str,
+    object_type: &str,
+) -> Result<BTreeMap<String, String>, SchemaError> {
+    let conn = Connection::open_in_memory()?;
+    conn.execute_batch(ddl)?;
+    object_sql(&conn, object_type)
+}
+
+fn validate_exact_unversioned_objects(
+    conn: &Connection,
+    layout: UnversionedLayout,
+) -> Result<(), SchemaError> {
+    let ddl = match layout {
+        UnversionedLayout::LegacyWithoutFinalReason => SHIPPED_HISTORICAL_LEDGER_DDL,
+        UnversionedLayout::LegacyCurrent => SHIPPED_CURRENT_LEDGER_DDL,
+        UnversionedLayout::Empty => return Ok(()),
+    };
+    for object_type in ["table", "index", "trigger", "view"] {
+        let expected = expected_object_sql(ddl, object_type)?;
+        let actual = object_sql(conn, object_type)?;
+        if actual != expected {
+            return Err(SchemaError::AmbiguousLayout(format!(
+                "{object_type} definitions do not match shipped {layout:?} layout"
+            )));
+        }
     }
+    Ok(())
 }
 
 type ColumnManifest = Vec<(String, String, i32, Option<String>, i32)>;
@@ -752,6 +843,22 @@ fn expected_connection() -> Result<Connection, SchemaError> {
     Ok(conn)
 }
 
+fn allowed_current_ledger_sql() -> Result<BTreeSet<String>, SchemaError> {
+    let mut allowed = BTreeSet::new();
+    for ddl in [LEGACY_TABLES_DDL, SHIPPED_CURRENT_LEDGER_DDL] {
+        let sql = expected_object_sql(ddl, "table")?;
+        allowed.insert(sql["agent_ledger"].clone());
+    }
+    let conn = Connection::open_in_memory()?;
+    conn.execute_batch(SHIPPED_HISTORICAL_LEDGER_DDL)?;
+    conn.execute(
+        "ALTER TABLE agent_ledger ADD COLUMN final_reason TEXT NOT NULL DEFAULT ''",
+        [],
+    )?;
+    allowed.insert(object_sql(&conn, "table")?["agent_ledger"].clone());
+    Ok(allowed)
+}
+
 fn validate_current_structure(conn: &Connection) -> Result<(), SchemaError> {
     let expected = expected_connection()?;
     let expected_tables = table_names(&expected)?;
@@ -789,7 +896,15 @@ fn validate_current_structure(conn: &Connection) -> Result<(), SchemaError> {
     let expected_table_sql = object_sql(&expected, "table")?;
     let actual_table_sql = object_sql(conn, "table")?;
     for (name, sql) in expected_table_sql {
-        if matches!(name.as_str(), "harness_meta" | "agent_ledger") {
+        if name == "agent_ledger" {
+            let actual = actual_table_sql.get(&name).ok_or_else(|| {
+                SchemaError::StructuralMismatch("missing agent_ledger table SQL".into())
+            })?;
+            if !allowed_current_ledger_sql()?.contains(actual) {
+                return Err(SchemaError::StructuralMismatch(
+                    "agent_ledger definition is not a recognized fresh or migrated variant".into(),
+                ));
+            }
             continue;
         }
         if actual_table_sql.get(&name) != Some(&sql) {
@@ -1068,6 +1183,28 @@ mod tests {
         );
         CREATE TABLE agent_ledger (
             handle TEXT PRIMARY KEY,
+            role TEXT NOT NULL,
+            task TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL,
+            report_path TEXT NOT NULL DEFAULT '',
+            spawned_at TEXT NOT NULL DEFAULT '',
+            waited INTEGER NOT NULL DEFAULT 0,
+            closed INTEGER NOT NULL DEFAULT 0,
+            write_scope TEXT NOT NULL DEFAULT 'none',
+            token_risk TEXT NOT NULL DEFAULT '',
+            final_reason TEXT NOT NULL DEFAULT '',
+            next_action TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+    "#;
+
+    const SAME_COLUMN_WRONG_LEDGER_DDL: &str = r#"
+        CREATE TABLE harness_meta (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+        CREATE TABLE agent_ledger (
+            handle TEXT PRIMARY KEY CHECK(length(handle) > 1),
             role TEXT NOT NULL,
             task TEXT NOT NULL DEFAULT '',
             status TEXT NOT NULL,
@@ -1523,6 +1660,75 @@ mod tests {
         assert!(
             !column_manifest_for_test(&raw, "agent_ledger").contains(&"token_risk".to_string())
         );
+    }
+
+    #[test]
+    fn same_column_wrong_legacy_ddl_is_rejected_unchanged() {
+        let db = TempDb::new("same-column-wrong-legacy");
+        let conn = Connection::open(db.path()).unwrap();
+        conn.execute_batch(SAME_COLUMN_WRONG_LEDGER_DDL).unwrap();
+        let before_sql: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_schema WHERE name='agent_ledger'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        drop(conn);
+
+        let error = open_db(db.path().to_str().unwrap()).unwrap_err();
+        assert!(error.contains("ambiguous version-zero layout"), "{error}");
+
+        let conn = Connection::open(db.path()).unwrap();
+        assert_eq!(pragma_i32(&conn, "user_version"), 0);
+        let after_sql: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_schema WHERE name='agent_ledger'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(after_sql, before_sql);
+        assert_eq!(
+            table_names(&conn),
+            ["agent_ledger", "harness_meta"]
+                .into_iter()
+                .map(str::to_string)
+                .collect()
+        );
+    }
+
+    #[test]
+    fn current_version_same_column_wrong_ledger_ddl_is_rejected() {
+        let db = TempDb::new("same-column-wrong-current");
+        drop(open_db(db.path().to_str().unwrap()).unwrap());
+        let conn = Connection::open(db.path()).unwrap();
+        conn.execute_batch(
+            r#"
+            ALTER TABLE agent_ledger RENAME TO agent_ledger_strong;
+            CREATE TABLE agent_ledger (
+                handle TEXT PRIMARY KEY CHECK(length(handle) > 1),
+                role TEXT NOT NULL,
+                task TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL,
+                report_path TEXT NOT NULL DEFAULT '',
+                spawned_at TEXT NOT NULL DEFAULT '',
+                waited INTEGER NOT NULL DEFAULT 0,
+                closed INTEGER NOT NULL DEFAULT 0,
+                write_scope TEXT NOT NULL DEFAULT 'none',
+                token_risk TEXT NOT NULL DEFAULT '',
+                final_reason TEXT NOT NULL DEFAULT '',
+                next_action TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            DROP TABLE agent_ledger_strong;
+            "#,
+        )
+        .unwrap();
+        drop(conn);
+
+        let error = open_db(db.path().to_str().unwrap()).unwrap_err();
+        assert!(error.contains("schema structural mismatch"), "{error}");
     }
 
     #[test]

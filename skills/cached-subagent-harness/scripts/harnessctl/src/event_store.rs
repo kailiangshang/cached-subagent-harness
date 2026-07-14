@@ -1,4 +1,7 @@
-use crate::schema::{JsonTopLevel, canonical_json, sqlite_now, validate_canonical_timestamp};
+use crate::schema::{
+    JsonTopLevel, canonical_json, sqlite_now, validate_canonical_timestamp,
+    validate_current_connection,
+};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 
 const PACKAGE: u8 = 1;
@@ -14,6 +17,33 @@ struct EventRule {
     keys: &'static [&'static str],
     required_references: u8,
     allowed_references: u8,
+    source_floor: SourceFloor,
+    effect: EventEffect,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SourceFloor {
+    ControllerObservation,
+    AgentReport,
+    Inference,
+}
+
+impl SourceFloor {
+    const fn priority(self) -> i64 {
+        match self {
+            Self::ControllerObservation => 3,
+            Self::AgentReport => 4,
+            Self::Inference => 5,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EventEffect {
+    Transition,
+    Facet,
+    Evidence,
+    Usage,
 }
 
 const fn rule(
@@ -27,6 +57,26 @@ const fn rule(
         keys,
         required_references,
         allowed_references,
+        source_floor: SourceFloor::ControllerObservation,
+        effect: EventEffect::Transition,
+    }
+}
+
+const fn rule_with(
+    name: &'static str,
+    keys: &'static [&'static str],
+    required_references: u8,
+    allowed_references: u8,
+    source_floor: SourceFloor,
+    effect: EventEffect,
+) -> EventRule {
+    EventRule {
+        name,
+        keys,
+        required_references,
+        allowed_references,
+        source_floor,
+        effect,
     }
 }
 
@@ -96,13 +146,13 @@ const EVENT_RULES: &[EventRule] = &[
     rule(
         "package_review_started",
         &["v", "review_assignment_id", "next_action"],
-        PACKAGE,
+        PACKAGE | ASSIGNMENT,
         PACKAGE | ASSIGNMENT,
     ),
     rule(
         "package_review_completed",
         &["v", "verdict", "review_evidence", "next_action"],
-        PACKAGE,
+        PACKAGE | ASSIGNMENT,
         PACKAGE | ASSIGNMENT,
     ),
     rule("package_completed", &["v", "ended_at"], PACKAGE, PACKAGE),
@@ -142,29 +192,37 @@ const EVENT_RULES: &[EventRule] = &[
         PACKAGE | ASSIGNMENT | ATTEMPT,
         PACKAGE | ASSIGNMENT | ATTEMPT | SESSION | LEASE,
     ),
-    rule(
+    rule_with(
         "assignment_step_changed",
         &["v", "current_step"],
         PACKAGE | ASSIGNMENT,
         PACKAGE | ASSIGNMENT | ATTEMPT,
+        SourceFloor::AgentReport,
+        EventEffect::Facet,
     ),
-    rule(
+    rule_with(
         "assignment_blocked",
         &["v", "blocker", "next_action"],
         PACKAGE | ASSIGNMENT,
         PACKAGE | ASSIGNMENT | ATTEMPT,
+        SourceFloor::AgentReport,
+        EventEffect::Facet,
     ),
-    rule(
+    rule_with(
         "assignment_unblocked",
         &["v", "resolution", "next_action"],
         PACKAGE | ASSIGNMENT,
         PACKAGE | ASSIGNMENT | ATTEMPT,
+        SourceFloor::ControllerObservation,
+        EventEffect::Facet,
     ),
-    rule(
+    rule_with(
         "assignment_reported",
         &["v", "report_path", "reported_at", "next_action"],
         PACKAGE | ASSIGNMENT,
         PACKAGE | ASSIGNMENT | ATTEMPT | SESSION,
+        SourceFloor::AgentReport,
+        EventEffect::Transition,
     ),
     rule(
         "assignment_validated",
@@ -214,11 +272,13 @@ const EVENT_RULES: &[EventRule] = &[
         PACKAGE | ASSIGNMENT | ATTEMPT,
         ALL_REFERENCES,
     ),
-    rule(
+    rule_with(
         "attempt_reported",
         &["v", "reported_at", "next_action"],
         PACKAGE | ASSIGNMENT | ATTEMPT,
         ALL_REFERENCES,
+        SourceFloor::AgentReport,
+        EventEffect::Transition,
     ),
     rule(
         "attempt_validated",
@@ -359,28 +419,34 @@ const EVENT_RULES: &[EventRule] = &[
             "gate_evidence",
             "next_action",
         ],
-        SESSION,
+        ALL_REFERENCES,
         ALL_REFERENCES,
     ),
-    rule(
+    rule_with(
         "session_heartbeat",
         &["v", "last_activity_at"],
         SESSION,
         ALL_REFERENCES,
+        SourceFloor::AgentReport,
+        EventEffect::Facet,
     ),
-    rule(
+    rule_with(
         "session_blocked",
         &["v", "blocker", "next_action"],
         SESSION,
         ALL_REFERENCES,
+        SourceFloor::AgentReport,
+        EventEffect::Facet,
     ),
-    rule(
+    rule_with(
         "session_unblocked",
         &["v", "resolution", "next_action"],
         SESSION,
         ALL_REFERENCES,
+        SourceFloor::ControllerObservation,
+        EventEffect::Facet,
     ),
-    rule(
+    rule_with(
         "session_reported",
         &[
             "v",
@@ -391,8 +457,10 @@ const EVENT_RULES: &[EventRule] = &[
         ],
         SESSION,
         ALL_REFERENCES,
+        SourceFloor::AgentReport,
+        EventEffect::Transition,
     ),
-    rule(
+    rule_with(
         "session_waited",
         &[
             "v",
@@ -402,6 +470,8 @@ const EVENT_RULES: &[EventRule] = &[
         ],
         SESSION,
         ALL_REFERENCES,
+        SourceFloor::ControllerObservation,
+        EventEffect::Facet,
     ),
     rule(
         "session_failed",
@@ -421,17 +491,21 @@ const EVENT_RULES: &[EventRule] = &[
         SESSION,
         ALL_REFERENCES,
     ),
-    rule(
+    rule_with(
         "session_interrupted",
         &["v", "interruption_reason", "interrupted_at", "next_action"],
         SESSION,
         ALL_REFERENCES,
+        SourceFloor::ControllerObservation,
+        EventEffect::Facet,
     ),
-    rule(
+    rule_with(
         "session_close_requested",
         &["v", "close_requested_at", "next_action"],
         SESSION,
         ALL_REFERENCES,
+        SourceFloor::ControllerObservation,
+        EventEffect::Facet,
     ),
     rule(
         "session_closed",
@@ -439,7 +513,7 @@ const EVENT_RULES: &[EventRule] = &[
         SESSION,
         ALL_REFERENCES,
     ),
-    rule(
+    rule_with(
         "session_superseded",
         &[
             "v",
@@ -450,6 +524,8 @@ const EVENT_RULES: &[EventRule] = &[
         ],
         SESSION,
         ALL_REFERENCES,
+        SourceFloor::ControllerObservation,
+        EventEffect::Facet,
     ),
     rule(
         "lease_planned",
@@ -511,7 +587,7 @@ const EVENT_RULES: &[EventRule] = &[
         PACKAGE | SESSION | LEASE,
         ALL_REFERENCES,
     ),
-    rule(
+    rule_with(
         "usage_observed",
         &[
             "v",
@@ -532,8 +608,10 @@ const EVENT_RULES: &[EventRule] = &[
         ],
         0,
         ALL_REFERENCES,
+        SourceFloor::Inference,
+        EventEffect::Usage,
     ),
-    rule(
+    rule_with(
         "quality_gate_passed",
         &[
             "v",
@@ -545,8 +623,10 @@ const EVENT_RULES: &[EventRule] = &[
         ],
         0,
         ALL_REFERENCES,
+        SourceFloor::ControllerObservation,
+        EventEffect::Evidence,
     ),
-    rule(
+    rule_with(
         "quality_gate_failed",
         &[
             "v",
@@ -559,6 +639,8 @@ const EVENT_RULES: &[EventRule] = &[
         ],
         0,
         ALL_REFERENCES,
+        SourceFloor::ControllerObservation,
+        EventEffect::Evidence,
     ),
 ];
 
@@ -645,6 +727,12 @@ fn validate_common(conn: &Connection, event: &EventInput) -> Result<&'static Eve
     .contains(&event.source_kind.as_str())
     {
         return Err(format!("unknown source kind: {}", event.source_kind));
+    }
+    if source_priority(&event.source_kind)? > rule.source_floor.priority() {
+        return Err(format!(
+            "unauthorized source {} for {} {:?} effect",
+            event.source_kind, event.event_type, rule.effect
+        ));
     }
     if let Some(confidence) = event.confidence
         && !(0..=10_000).contains(&confidence)
@@ -894,7 +982,11 @@ fn validate_identity_chain(
                 && !(session.is_none()
                     && matches!(
                         event.event_type.as_str(),
-                        "session_planned" | "session_running"
+                        "session_planned"
+                            | "session_running"
+                            | "dispatch_reuse_selected"
+                            | "dispatch_spawn_selected"
+                            | "lease_reused"
                     ))
             {
                 return Err(format!(
@@ -903,7 +995,11 @@ fn validate_identity_chain(
             }
             if let Some(event_lease) = &event.lease_id
                 && lease.as_deref() != Some(event_lease.as_str())
-                && !(lease.is_none() && matches!(event.event_type.as_str(), "session_running"))
+                && !(lease.is_none()
+                    && matches!(
+                        event.event_type.as_str(),
+                        "session_running" | "dispatch_reuse_selected" | "lease_reused"
+                    ))
             {
                 return Err(format!(
                     "attempt {attempt_id} does not belong to lease {event_lease}"
@@ -1059,6 +1155,19 @@ pub(crate) fn append_event(
         return Err(format!("duplicate event_id: {}", event.event_id));
     }
     validate_identity_chain(&transaction, event)?;
+
+    if rule.name == "run_planned" {
+        let run_exists: bool = transaction
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM runs WHERE run_id=?1)",
+                [&event.run_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())?;
+        if run_exists {
+            return Err(format!("run already exists: {}", event.run_id));
+        }
+    }
 
     let sequence = if rule.name == "run_planned" {
         1
@@ -1277,7 +1386,7 @@ fn reduce_event(
     event: &EventInput,
     sequence: i64,
 ) -> Result<(), String> {
-    let result = match event.event_type.as_str() {
+    match event.event_type.as_str() {
         "run_planned" => reduce_run_planned(transaction, event),
         "run_started" => reduce_run_started(transaction, event),
         "run_blocked" => reduce_run_blocked(transaction, event),
@@ -1300,16 +1409,14 @@ fn reduce_event(
             Ok(())
         }
         name if name.starts_with("route_") => reduce_route(transaction, event),
-        name if name.starts_with("session_") => reduce_session(transaction, event),
+        name if name.starts_with("session_") => reduce_session(transaction, event, sequence),
         name if name.starts_with("lease_") => reduce_lease(transaction, event),
         "usage_observed" => reduce_usage(transaction, event, sequence),
         "quality_gate_passed" | "quality_gate_failed" => {
             reduce_quality_gate(transaction, event, sequence)
         }
         _ => Err(format!("event_reducer_unavailable: {}", event.event_type)),
-    };
-    let _ = sequence;
-    result
+    }
 }
 
 fn reduce_run_started(transaction: &Transaction<'_>, event: &EventInput) -> Result<(), String> {
@@ -1572,8 +1679,39 @@ fn reduce_package(transaction: &Transaction<'_>, event: &EventInput) -> Result<(
     let package_id = required_reference(&event.package_id, "package_id")?;
     match event.event_type.as_str() {
         "package_planned" => {
+            let dependency_type: Option<String> = transaction
+                .query_row(
+                    "SELECT json_type(?1,'$.dependencies')",
+                    [&event.payload_json],
+                    |row| row.get(0),
+                )
+                .map_err(|error| error.to_string())?;
+            if dependency_type.as_deref() != Some("array") {
+                return Err("package_planned.dependencies must be an array".into());
+            }
             let dependencies = payload_json_value(transaction, event, "dependencies")?
                 .ok_or_else(|| "package_planned.dependencies must be an array".to_string())?;
+            let mut dependency_statement = transaction
+                .prepare("SELECT type,value FROM json_each(?1) ORDER BY key")
+                .map_err(|error| error.to_string())?;
+            let dependency_rows: Vec<(String, Option<String>)> = dependency_statement
+                .query_map([&dependencies], |row| Ok((row.get(0)?, row.get(1)?)))
+                .map_err(|error| error.to_string())?
+                .collect::<Result<_, _>>()
+                .map_err(|error| error.to_string())?;
+            let mut values = Vec::with_capacity(dependency_rows.len());
+            for (value_type, value) in dependency_rows {
+                let Some(value) = value.filter(|value| !value.is_empty()) else {
+                    return Err("package dependencies must be nonempty strings".into());
+                };
+                if value_type != "text" {
+                    return Err("package dependencies must be nonempty strings".into());
+                }
+                values.push(value);
+            }
+            if values.windows(2).any(|pair| pair[0] >= pair[1]) {
+                return Err("package dependencies must be sorted and duplicate-free".into());
+            }
             let write_scope = scope_envelope(transaction, event, "write_scope")?;
             transaction
                 .execute(
@@ -1607,17 +1745,6 @@ fn reduce_package(transaction: &Transaction<'_>, event: &EventInput) -> Result<(
                     ],
                 )
                 .map_err(|error| error.to_string())?;
-            let mut statement = transaction
-                .prepare("SELECT value FROM json_each(?1) ORDER BY value")
-                .map_err(|error| error.to_string())?;
-            let values: Vec<String> = statement
-                .query_map([dependencies], |row| row.get(0))
-                .map_err(|error| error.to_string())?
-                .collect::<Result<_, _>>()
-                .map_err(|error| error.to_string())?;
-            if values.windows(2).any(|pair| pair[0] >= pair[1]) {
-                return Err("package dependencies must be sorted and duplicate-free".into());
-            }
             for dependency in values {
                 if dependency == package_id {
                     return Err("package cannot depend on itself".into());
@@ -1744,6 +1871,9 @@ fn reduce_package(transaction: &Transaction<'_>, event: &EventInput) -> Result<(
                 &["active"],
             )?;
             let review_id = payload_text(transaction, event, "review_assignment_id")?;
+            if event.assignment_id.as_deref() != Some(review_id.as_str()) {
+                return Err("package_review_started assignment reference mismatch".into());
+            }
             let owner: Option<String>=transaction.query_row("SELECT package_id FROM assignments WHERE assignment_id=?1 AND assignment_kind='review'",[&review_id],|row|row.get(0)).optional().map_err(|error| error.to_string())?;
             if owner.as_deref() != Some(package_id) {
                 return Err("review assignment does not belong to package".into());
@@ -1764,9 +1894,29 @@ fn reduce_package(transaction: &Transaction<'_>, event: &EventInput) -> Result<(
                 &event.event_type,
                 &["review"],
             )?;
+            let review_id = required_reference(&event.assignment_id, "assignment_id")?;
+            validate_completed_review_assignment(transaction, event, package_id, review_id)?;
             let verdict = payload_text(transaction, event, "verdict")?;
             let evidence = evidence_envelope(transaction, event, "review_evidence")?;
-            let _ = evidence;
+            let report_path: String = transaction
+                .query_row(
+                    "SELECT report_path FROM assignments WHERE assignment_id=?1",
+                    [review_id],
+                    |row| row.get(0),
+                )
+                .map_err(|error| error.to_string())?;
+            let evidence_has_report: i64 = transaction
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM json_each(?1,'$.items') WHERE json_extract(value,'$.ref')=?2)",
+                    params![evidence, report_path],
+                    |row| row.get(0),
+                )
+                .map_err(|error| error.to_string())?;
+            if evidence_has_report != 1 {
+                return Err(
+                    "package review evidence does not reference the accepted review report".into(),
+                );
+            }
             let target = match verdict.as_str() {
                 "accepted" => "review",
                 "changes_required" => "active",
@@ -1815,6 +1965,129 @@ fn reduce_package(transaction: &Transaction<'_>, event: &EventInput) -> Result<(
             transaction.execute("UPDATE work_packages SET status='cancelled',ended_at=?2,next_action=?3 WHERE package_id=?1",params![package_id,payload_text(transaction,event,"ended_at")?,payload_text(transaction,event,"next_action")?]).map_err(|error|error.to_string())?;
         }
         _ => return Err(format!("event_reducer_unavailable: {}", event.event_type)),
+    }
+    Ok(())
+}
+
+struct ReviewAssignmentState {
+    owner: String,
+    kind: String,
+    role: String,
+    status: String,
+    report_path: Option<String>,
+    test_evidence: Option<String>,
+    review_evidence: Option<String>,
+    attempt_id: Option<String>,
+}
+
+fn validate_completed_review_assignment(
+    transaction: &Transaction<'_>,
+    event: &EventInput,
+    package_id: &str,
+    review_id: &str,
+) -> Result<(), String> {
+    let started: Option<(String, Option<String>)> = transaction
+        .query_row(
+            r#"
+            SELECT json_extract(payload_json,'$.review_assignment_id'), assignment_id
+            FROM control_plane_events
+            WHERE package_id=?1 AND event_type='package_review_started'
+              AND sequence < (SELECT sequence FROM control_plane_events WHERE event_id=?2)
+            ORDER BY sequence DESC LIMIT 1
+            "#,
+            params![package_id, event.event_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    if started
+        .as_ref()
+        .map(|(payload_id, event_id)| (payload_id.as_str(), event_id.as_deref()))
+        != Some((review_id, Some(review_id)))
+    {
+        return Err("package review completion does not match the active review assignment".into());
+    }
+
+    let review = transaction
+        .query_row(
+            "SELECT package_id,assignment_kind,required_role,status,report_path,test_evidence,review_evidence,current_attempt_id FROM assignments WHERE assignment_id=?1",
+            [review_id],
+            |row| Ok(ReviewAssignmentState {
+                owner: row.get(0)?,
+                kind: row.get(1)?,
+                role: row.get(2)?,
+                status: row.get(3)?,
+                report_path: row.get(4)?,
+                test_evidence: row.get(5)?,
+                review_evidence: row.get(6)?,
+                attempt_id: row.get(7)?,
+            }),
+        )
+        .map_err(|error| error.to_string())?;
+    if review.owner != package_id
+        || review.kind != "review"
+        || review.role != "reviewer"
+        || review.status != "accepted"
+    {
+        return Err(
+            "package review assignment is not an accepted owned reviewer assignment".into(),
+        );
+    }
+    if review.report_path.as_deref().is_none_or(str::is_empty)
+        || review.test_evidence.is_none()
+        || review.review_evidence.is_none()
+    {
+        return Err("accepted review assignment is missing report or gate evidence".into());
+    }
+    let attempt_id = review
+        .attempt_id
+        .ok_or_else(|| "accepted review assignment has no attempt".to_string())?;
+    let (attempt_status, review_session): (String, Option<String>) = transaction
+        .query_row(
+            "SELECT status,session_id FROM assignment_attempts WHERE attempt_id=?1 AND assignment_id=?2",
+            params![attempt_id, review_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|error| error.to_string())?;
+    if attempt_status != "accepted" {
+        return Err("review assignment current attempt is not accepted".into());
+    }
+    let independence: String = transaction
+        .query_row(
+            "SELECT json_extract(independence_policy,'$.kind') FROM work_packages WHERE package_id=?1",
+            [package_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    if independence != "none" {
+        let review_session = review_session
+            .ok_or_else(|| "independent review requires a reviewer session".to_string())?;
+        let session_role: String = transaction
+            .query_row(
+                "SELECT role FROM agent_sessions WHERE session_id=?1",
+                [&review_session],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())?;
+        if session_role != "reviewer" {
+            return Err("independent review session must use reviewer role".into());
+        }
+        let overlapping_writer: i64 = transaction
+            .query_row(
+                r#"
+                SELECT COUNT(*) FROM assignment_attempts aa
+                JOIN assignments a ON a.assignment_id=aa.assignment_id
+                WHERE a.package_id=?1 AND a.assignment_id<>?2
+                  AND a.assignment_kind IN ('implementation','fix')
+                  AND aa.session_id=?3
+                "#,
+                params![package_id, review_id, review_session],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())?;
+        if overlapping_writer != 0 {
+            return Err("independent review cannot reuse a writer or fixer session".into());
+        }
     }
     Ok(())
 }
@@ -2024,6 +2297,38 @@ fn reduce_assignment(transaction: &Transaction<'_>, event: &EventInput) -> Resul
                 &["validated"],
             )?;
             let evidence = evidence_envelope(transaction, event, "review_evidence")?;
+            let (policy, stored_test_evidence, stored_review_evidence): (
+                String,
+                Option<String>,
+                Option<String>,
+            ) = transaction
+                .query_row(
+                    r#"
+                    SELECT json_extract(p.review_policy,'$.kind'),a.test_evidence,a.review_evidence
+                    FROM assignments a JOIN work_packages p ON p.package_id=a.package_id
+                    WHERE a.assignment_id=?1
+                    "#,
+                    [assignment_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .map_err(|error| error.to_string())?;
+            match policy.as_str() {
+                "none" => {}
+                "deterministic" if stored_test_evidence.is_some() => {}
+                "independent" if stored_review_evidence.as_deref() == Some(evidence.as_str()) => {}
+                "deterministic" => {
+                    return Err(
+                        "deterministic assignment acceptance requires test gate evidence".into(),
+                    );
+                }
+                "independent" => {
+                    return Err(
+                        "independent assignment acceptance requires prior matching gate evidence"
+                            .into(),
+                    );
+                }
+                _ => return Err("unknown assignment review policy".into()),
+            }
             transaction.execute("UPDATE assignments SET status='accepted',review_evidence=?2,accepted_at=?3,ended_at=?4,next_action=NULL,blocker=NULL WHERE assignment_id=?1",params![assignment_id,evidence,payload_text(transaction,event,"accepted_at")?,payload_text(transaction,event,"ended_at")?]).map_err(|error|error.to_string())?;
         }
         "assignment_requeued" => {
@@ -2336,7 +2641,11 @@ fn object_keys(transaction: &Transaction<'_>, json: &str) -> Result<Vec<String>,
     ordered_json_keys(transaction, json)
 }
 
-fn reduce_session(transaction: &Transaction<'_>, event: &EventInput) -> Result<(), String> {
+fn reduce_session(
+    transaction: &Transaction<'_>,
+    event: &EventInput,
+    sequence: i64,
+) -> Result<(), String> {
     let session_id = required_reference(&event.session_id, "session_id")?;
     match event.event_type.as_str() {
         "session_planned" => {
@@ -2381,13 +2690,17 @@ fn reduce_session(transaction: &Transaction<'_>, event: &EventInput) -> Result<(
             if object_keys(transaction, &delegation)? != ["allowed", "authority_ref"] {
                 return Err("invalid nested_delegation envelope".into());
             }
-            let allowed: i64 = transaction
+            let (allowed_type, allowed_value): (String, i64) = transaction
                 .query_row(
-                    "SELECT json_extract(?1,'$.allowed')",
+                    "SELECT json_type(?1,'$.allowed'),json_extract(?1,'$.allowed')",
                     [&delegation],
-                    |row| row.get(0),
+                    |row| Ok((row.get(0)?, row.get(1)?)),
                 )
                 .map_err(|error| error.to_string())?;
+            if !matches!(allowed_type.as_str(), "true" | "false") {
+                return Err("nested_delegation.allowed must be boolean".into());
+            }
+            let allowed = allowed_value == 1;
             let authority: Option<String> = transaction
                 .query_row(
                     "SELECT json_extract(?1,'$.authority_ref')",
@@ -2396,7 +2709,7 @@ fn reduce_session(transaction: &Transaction<'_>, event: &EventInput) -> Result<(
                 )
                 .map_err(|error| error.to_string())?;
             let parent = payload_optional_text(transaction, event, "parent_session_id")?;
-            if allowed == 1 {
+            if allowed {
                 if authority.as_deref().is_none_or(str::is_empty)
                     || parent.as_deref().is_none_or(str::is_empty)
                 {
@@ -2404,10 +2717,13 @@ fn reduce_session(transaction: &Transaction<'_>, event: &EventInput) -> Result<(
                         "nested delegation requires authority_ref and parent_session_id".into(),
                     );
                 }
+                let parent_id = parent
+                    .as_deref()
+                    .ok_or_else(|| "nested delegation requires parent_session_id".to_string())?;
                 let parent_run: Option<String> = transaction
                     .query_row(
                         "SELECT run_id FROM agent_sessions WHERE session_id=?1",
-                        [parent.as_deref().unwrap()],
+                        [parent_id],
                         |row| row.get(0),
                     )
                     .optional()
@@ -2453,6 +2769,8 @@ fn reduce_session(transaction: &Transaction<'_>, event: &EventInput) -> Result<(
             )?;
             let attempt = payload_text(transaction, event, "attempt_id")?;
             let lease = payload_text(transaction, event, "lease_id")?;
+            let package_ref = required_reference(&event.package_id, "package_id")?;
+            let assignment_ref = required_reference(&event.assignment_id, "assignment_id")?;
             if event.attempt_id.as_deref() != Some(attempt.as_str())
                 || event.lease_id.as_deref() != Some(lease.as_str())
             {
@@ -2466,17 +2784,50 @@ fn reduce_session(transaction: &Transaction<'_>, event: &EventInput) -> Result<(
                     "reported session reuse requires consumed report and gate evidence".into(),
                 );
             }
-            let lease_owner: (String, String) = transaction
+            let lease_owner: (String, String, String, Option<String>) = transaction
                 .query_row(
-                    "SELECT session_id,package_id FROM session_leases WHERE lease_id=?1",
+                    "SELECT session_id,package_id,status,current_attempt_id FROM session_leases WHERE lease_id=?1",
                     [&lease],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
                 )
                 .map_err(|error| error.to_string())?;
             if lease_owner.0 != session_id {
                 return Err("lease does not belong to session".into());
             }
-            transaction.execute("UPDATE assignment_attempts SET session_id=?2,lease_id=?3 WHERE attempt_id=?1 AND (session_id IS NULL OR session_id=?2) AND (lease_id IS NULL OR lease_id=?3)",params![attempt,session_id,lease]).map_err(|error|error.to_string())?;
+            if lease_owner.1 != package_ref
+                || lease_owner.2 != "active"
+                || lease_owner
+                    .3
+                    .as_deref()
+                    .is_some_and(|current| current != attempt)
+            {
+                return Err("session_running requires an active compatible lease".into());
+            }
+            let (attempt_owner, attempt_status, bound_session, bound_lease): (
+                String,
+                String,
+                Option<String>,
+                Option<String>,
+            ) = transaction
+                .query_row(
+                    "SELECT assignment_id,status,session_id,lease_id FROM assignment_attempts WHERE attempt_id=?1",
+                    [&attempt],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )
+                .map_err(|error| error.to_string())?;
+            if attempt_owner != assignment_ref
+                || attempt_status != "planned"
+                || bound_session
+                    .as_deref()
+                    .is_some_and(|bound| bound != session_id)
+                || bound_lease.as_deref().is_some_and(|bound| bound != lease)
+            {
+                return Err("session_running requires a usable planned attempt".into());
+            }
+            let changed = transaction.execute("UPDATE assignment_attempts SET session_id=?2,lease_id=?3 WHERE attempt_id=?1 AND status='planned' AND (session_id IS NULL OR session_id=?2) AND (lease_id IS NULL OR lease_id=?3)",params![attempt,session_id,lease]).map_err(|error|error.to_string())?;
+            if changed != 1 {
+                return Err("session_running attempt binding failed".into());
+            }
             transaction
                 .execute(
                     "UPDATE session_leases SET current_attempt_id=?2 WHERE lease_id=?1",
@@ -2494,15 +2845,36 @@ fn reduce_session(transaction: &Transaction<'_>, event: &EventInput) -> Result<(
                 &event.event_type,
                 &["spawned", "running", "reported"],
             )?;
-            transaction
-                .execute(
-                    "UPDATE agent_sessions SET last_activity_at=?2 WHERE session_id=?1",
-                    params![
-                        session_id,
-                        payload_text(transaction, event, "last_activity_at")?
-                    ],
+            let incoming = payload_text(transaction, event, "last_activity_at")?;
+            let current: Option<String> = transaction
+                .query_row(
+                    "SELECT last_activity_at FROM agent_sessions WHERE session_id=?1",
+                    [session_id],
+                    |row| row.get(0),
                 )
                 .map_err(|error| error.to_string())?;
+            let current = current.unwrap_or_else(|| "null".to_string());
+            if projection_wins(
+                transaction,
+                event,
+                sequence,
+                ProjectionClaim {
+                    entity_kind: "session",
+                    entity_id: session_id,
+                    field_name: "last_activity_at",
+                    current_value: &current,
+                    incoming_value: &incoming,
+                    illegal_correction: false,
+                    supersedes: None,
+                },
+            )? {
+                transaction
+                    .execute(
+                        "UPDATE agent_sessions SET last_activity_at=?2 WHERE session_id=?1",
+                        params![session_id, incoming],
+                    )
+                    .map_err(|error| error.to_string())?;
+            }
         }
         "session_blocked" => {
             require_state(
@@ -2513,6 +2885,11 @@ fn reduce_session(transaction: &Transaction<'_>, event: &EventInput) -> Result<(
                 &event.event_type,
                 &["spawned", "running", "reported"],
             )?;
+            if current_session_blocker_event(transaction, event)?.as_deref()
+                == Some("session_blocked")
+            {
+                return Err("session is already blocked".into());
+            }
             payload_text(transaction, event, "blocker")?;
             transaction
                 .execute(
@@ -2530,6 +2907,11 @@ fn reduce_session(transaction: &Transaction<'_>, event: &EventInput) -> Result<(
                 &event.event_type,
                 &["spawned", "running", "reported"],
             )?;
+            if current_session_blocker_event(transaction, event)?.as_deref()
+                != Some("session_blocked")
+            {
+                return Err("session is not blocked".into());
+            }
             payload_text(transaction, event, "resolution")?;
             transaction
                 .execute(
@@ -2650,6 +3032,25 @@ fn reduce_session(transaction: &Transaction<'_>, event: &EventInput) -> Result<(
         _ => return Err(format!("event_reducer_unavailable: {}", event.event_type)),
     }
     Ok(())
+}
+
+fn current_session_blocker_event(
+    transaction: &Transaction<'_>,
+    event: &EventInput,
+) -> Result<Option<String>, String> {
+    transaction
+        .query_row(
+            r#"
+            SELECT event_type FROM control_plane_events
+            WHERE session_id=?1 AND event_type IN ('session_blocked','session_unblocked')
+              AND sequence < (SELECT sequence FROM control_plane_events WHERE event_id=?2)
+            ORDER BY sequence DESC LIMIT 1
+            "#,
+            params![event.session_id, event.event_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| error.to_string())
 }
 
 fn reduce_lease(transaction: &Transaction<'_>, event: &EventInput) -> Result<(), String> {
@@ -2826,13 +3227,33 @@ fn projection_wins(
             .map_err(|error| error.to_string())?;
         return Ok(true);
     };
-    if current_value == incoming_value {
-        return Ok(false);
-    }
     let incoming_priority = source_priority(&event.source_kind)?;
     let winner_priority = source_priority(&winner_source)?;
     let wins = incoming_priority < winner_priority
         || (incoming_priority == winner_priority && sequence > winner_sequence);
+    if current_value == incoming_value {
+        if wins {
+            transaction
+                .execute(
+                    r#"
+                    UPDATE projection_field_sources SET
+                        winner_event_id=?4,winner_source_kind=?5,winner_sequence=?6,run_id=?7
+                    WHERE entity_kind=?1 AND entity_id=?2 AND field_name=?3
+                    "#,
+                    params![
+                        entity_kind,
+                        entity_id,
+                        field_name,
+                        event.event_id,
+                        event.source_kind,
+                        sequence,
+                        event.run_id
+                    ],
+                )
+                .map_err(|error| error.to_string())?;
+        }
+        return Ok(false);
+    }
     if wins && illegal_correction && supersedes != Some(winner_event.as_str()) {
         return Err(format!(
             "correction for {entity_kind}/{entity_id}/{field_name} must supersede {winner_event}"
@@ -3274,7 +3695,7 @@ fn reduce_usage(
 fn reduce_quality_gate(
     transaction: &Transaction<'_>,
     event: &EventInput,
-    _sequence: i64,
+    sequence: i64,
 ) -> Result<(), String> {
     let subject_kind = payload_text(transaction, event, "subject_kind")?;
     let subject_id = payload_text(transaction, event, "subject_id")?;
@@ -3296,7 +3717,14 @@ fn reduce_quality_gate(
         "attempt" => event.attempt_id.as_deref() == Some(subject_id.as_str()),
         "session" => event.session_id.as_deref() == Some(subject_id.as_str()),
         "lease" => event.lease_id.as_deref() == Some(subject_id.as_str()),
-        "route" => event.attempt_id.is_some(),
+        "route" => {
+            event
+                .attempt_id
+                .as_deref()
+                .and_then(|attempt_id| current_route_id(transaction, attempt_id).ok())
+                .as_deref()
+                == Some(subject_id.as_str())
+        }
         _ => false,
     };
     if !reference_matches {
@@ -3304,25 +3732,103 @@ fn reduce_quality_gate(
     }
     if event.event_type == "quality_gate_passed" {
         let evidence = evidence_envelope(transaction, event, "evidence")?;
-        match subject_kind.as_str() {
+        let (table, id_column, field_name) = match subject_kind.as_str() {
             "assignment" => {
                 let column = if policy == "independent" {
                     "review_evidence"
                 } else {
                     "test_evidence"
                 };
-                let changed = transaction
-                    .execute(
-                        &format!("UPDATE assignments SET {column}=?2 WHERE assignment_id=?1"),
-                        params![subject_id, evidence],
-                    )
-                    .map_err(|error| error.to_string())?;
-                if changed != 1 {
-                    return Err(format!("unknown quality gate subject: {subject_id}"));
-                }
+                ("assignments", "assignment_id", column.to_string())
             }
-            "attempt" | "package" | "run" | "session" | "lease" | "route" => {}
+            "run" => ("runs", "run_id", format!("quality_gate:{policy}")),
+            "package" => (
+                "work_packages",
+                "package_id",
+                format!("quality_gate:{policy}"),
+            ),
+            "attempt" => (
+                "assignment_attempts",
+                "attempt_id",
+                format!("quality_gate:{policy}"),
+            ),
+            "session" => (
+                "agent_sessions",
+                "session_id",
+                format!("quality_gate:{policy}"),
+            ),
+            "lease" => (
+                "session_leases",
+                "lease_id",
+                format!("quality_gate:{policy}"),
+            ),
+            "route" => (
+                "routing_decisions",
+                "route_id",
+                format!("quality_gate:{policy}"),
+            ),
             _ => return Err("invalid quality gate subject_kind".into()),
+        };
+        let exists: bool = transaction
+            .query_row(
+                &format!("SELECT EXISTS(SELECT 1 FROM {table} WHERE {id_column}=?1)"),
+                [&subject_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())?;
+        if !exists {
+            return Err(format!("unknown quality gate subject: {subject_id}"));
+        }
+        let current = if subject_kind == "assignment" {
+            transaction
+                .query_row(
+                    &format!("SELECT {field_name} FROM {table} WHERE {id_column}=?1"),
+                    [&subject_id],
+                    |row| row.get::<_, Option<String>>(0),
+                )
+                .map_err(|error| error.to_string())?
+        } else {
+            transaction
+                .query_row(
+                    r#"
+                    SELECT json_extract(events.payload_json,'$.evidence')
+                    FROM projection_field_sources AS sources
+                    JOIN control_plane_events AS events
+                      ON events.event_id=sources.winner_event_id
+                    WHERE sources.entity_kind=?1 AND sources.entity_id=?2
+                      AND sources.field_name=?3
+                    "#,
+                    params![subject_kind, subject_id, field_name],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(|error| error.to_string())?
+        };
+        let current = current.unwrap_or_else(|| "null".to_string());
+        if projection_wins(
+            transaction,
+            event,
+            sequence,
+            ProjectionClaim {
+                entity_kind: &subject_kind,
+                entity_id: &subject_id,
+                field_name: &field_name,
+                current_value: &current,
+                incoming_value: &evidence,
+                illegal_correction: false,
+                supersedes: None,
+            },
+        )? && subject_kind == "assignment"
+        {
+            let changed = transaction
+                .execute(
+                    &format!("UPDATE assignments SET {field_name}=?2 WHERE assignment_id=?1"),
+                    params![subject_id, evidence],
+                )
+                .map_err(|error| error.to_string())?;
+            if changed != 1 {
+                return Err(format!("unknown quality gate subject: {subject_id}"));
+            }
         }
     } else {
         payload_text(transaction, event, "findings_ref")?;
@@ -3337,14 +3843,37 @@ fn reduce_quality_gate(
             "route" => ("routing_decisions", "route_id"),
             _ => return Err("invalid quality gate subject_kind".into()),
         };
-        let changed = transaction
-            .execute(
-                &format!("UPDATE {table} SET next_action=?2 WHERE {id_column}=?1"),
-                params![subject_id, next_action],
+        let current: Option<String> = transaction
+            .query_row(
+                &format!("SELECT next_action FROM {table} WHERE {id_column}=?1"),
+                [&subject_id],
+                |row| row.get(0),
             )
             .map_err(|error| error.to_string())?;
-        if changed != 1 {
-            return Err(format!("unknown quality gate subject: {subject_id}"));
+        let current = current.unwrap_or_else(|| "null".to_string());
+        if projection_wins(
+            transaction,
+            event,
+            sequence,
+            ProjectionClaim {
+                entity_kind: &subject_kind,
+                entity_id: &subject_id,
+                field_name: "next_action",
+                current_value: &current,
+                incoming_value: &next_action,
+                illegal_correction: false,
+                supersedes: None,
+            },
+        )? {
+            let changed = transaction
+                .execute(
+                    &format!("UPDATE {table} SET next_action=?2 WHERE {id_column}=?1"),
+                    params![subject_id, next_action],
+                )
+                .map_err(|error| error.to_string())?;
+            if changed != 1 {
+                return Err(format!("unknown quality gate subject: {subject_id}"));
+            }
         }
     }
     Ok(())
@@ -3364,12 +3893,7 @@ pub(crate) fn replay_run_into_empty(
     if run_id.is_empty() {
         return Err("replay run_id must be nonempty".into());
     }
-    let version: i32 = target
-        .pragma_query_value(None, "user_version", |row| row.get(0))
-        .map_err(|error| error.to_string())?;
-    if version != crate::schema::CURRENT_SCHEMA_VERSION {
-        return Err(format!("replay target schema version is {version}"));
-    }
+    validate_current_connection(target).map_err(|error| error.to_string())?;
     let occupied: i64 = target
         .query_row(
             r#"
@@ -3764,8 +4288,10 @@ mod tests {
 
     fn transition_contract(name: &str) -> (&'static [&'static str], &'static str) {
         match name {
-            "run_planned" | "package_planned" | "assignment_planned" | "attempt_planned"
-            | "route_requested" | "session_planned" | "lease_planned" => (&["absent"], "planned"),
+            "run_planned" | "package_planned" | "assignment_planned" => (&["absent"], "planned"),
+            "attempt_planned" => (&["assignment-planned", "assignment-queued"], "planned"),
+            "route_requested" | "session_planned" => (&["attempt-planned"], "planned"),
+            "lease_planned" => (&["session-owned"], "planned"),
             "run_started" => (&["planned"], "active"),
             "run_blocked" => (&["active"], "blocked"),
             "run_unblocked" => (&["blocked"], "active"),
@@ -3774,7 +4300,7 @@ mod tests {
             "package_ready" => (&["planned"], "ready"),
             "package_active" => (&["ready"], "active"),
             "package_blocked" => (&["ready", "active", "review"], "blocked"),
-            "package_unblocked" => (&["blocked"], "saved"),
+            "package_unblocked" => (&["blocked"], "ready-or-active-or-review"),
             "package_review_started" => (&["active"], "review"),
             "package_review_completed" => (&["review"], "review-or-active"),
             "package_completed" => (&["active", "review"], "complete"),
@@ -3826,8 +4352,30 @@ mod tests {
                 &["planned", "spawned", "running", "reported"],
                 "exception-terminal",
             ),
-            "session_close_requested" | "session_superseded" => (&["not-closed"], "facet"),
-            "session_closed" => (&["not-closed"], "closed"),
+            "session_close_requested" | "session_superseded" => (
+                &[
+                    "planned",
+                    "spawned",
+                    "running",
+                    "reported",
+                    "failed",
+                    "abandoned",
+                    "externally-unknown",
+                ],
+                "facet",
+            ),
+            "session_closed" => (
+                &[
+                    "planned",
+                    "spawned",
+                    "running",
+                    "reported",
+                    "failed",
+                    "abandoned",
+                    "externally-unknown",
+                ],
+                "closed",
+            ),
             "lease_issued" => (&["planned"], "active"),
             "lease_reused" => (&["idle"], "active"),
             "lease_idle" => (&["active"], "idle"),
@@ -3843,13 +4391,508 @@ mod tests {
         }
     }
 
+    fn event_count_and_counter(conn: &Connection, run_id: &str) -> (i64, i64) {
+        conn.query_row(
+            "SELECT (SELECT COUNT(*) FROM control_plane_events WHERE run_id=?1),COALESCE((SELECT next_sequence FROM run_event_counters WHERE run_id=?1),1)",
+            [run_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap()
+    }
+
+    fn illegal_source_for(name: &str) -> &'static str {
+        match super::event_rule(name).unwrap().source_floor {
+            super::SourceFloor::ControllerObservation => "agent-report",
+            super::SourceFloor::AgentReport => "inference",
+            super::SourceFloor::Inference => "rumor",
+        }
+    }
+
+    fn transition_payload(name: &str, source_state: &str) -> String {
+        let timestamp = "2026-07-12T09:30:00.000Z";
+        match name {
+            "run_planned" => run_payload("matrix"),
+            "run_started" => format!(
+                "{{\"v\":1,\"psoc_revision\":\"psoc-2\",\"started_at\":\"{timestamp}\",\"next_action\":\"work\"}}"
+            ),
+            "run_blocked" => "{\"v\":1,\"blocker\":\"blocked\",\"next_action\":\"resolve\"}".into(),
+            "run_unblocked" => "{\"v\":1,\"resolution\":\"resolved\",\"next_action\":\"work\"}".into(),
+            "run_completed" => format!("{{\"v\":1,\"completed_at\":\"{timestamp}\",\"ended_at\":\"{timestamp}\"}}"),
+            "run_cancelled" => format!("{{\"v\":1,\"reason\":\"cancel\",\"ended_at\":\"{timestamp}\",\"next_action\":\"audit\"}}"),
+            "package_planned" => "{\"v\":1,\"title\":\"matrix\",\"dependencies\":[],\"role_floor\":\"worker\",\"model_floor\":\"standard\",\"risk_floor\":\"medium\",\"write_scope\":{\"v\":1,\"paths\":[]},\"review_policy\":{\"v\":1,\"kind\":\"none\"},\"independence_policy\":{\"v\":1,\"kind\":\"none\"},\"next_action\":\"ready\"}".into(),
+            "package_ready" | "package_active" => "{\"v\":1,\"next_action\":\"continue\"}".into(),
+            "package_blocked" => format!("{{\"v\":1,\"blocker\":\"blocked\",\"resume_status\":\"{source_state}\",\"next_action\":\"resolve\"}}"),
+            "package_unblocked" => "{\"v\":1,\"resolution\":\"resolved\",\"resume_status\":\"active\",\"next_action\":\"continue\"}".into(),
+            "package_review_started" => "{\"v\":1,\"review_assignment_id\":\"matrix-review\",\"next_action\":\"review\"}".into(),
+            "package_review_completed" => "{\"v\":1,\"verdict\":\"accepted\",\"review_evidence\":{\"v\":1,\"items\":[{\"kind\":\"review\",\"ref\":\"/tmp/review.md\",\"result\":\"accepted\"}]},\"next_action\":\"complete\"}".into(),
+            "package_completed" => format!("{{\"v\":1,\"ended_at\":\"{timestamp}\"}}"),
+            "package_cancelled" => format!("{{\"v\":1,\"reason\":\"cancel\",\"ended_at\":\"{timestamp}\",\"next_action\":\"audit\"}}"),
+            "assignment_planned" => "{\"v\":1,\"title\":\"matrix\",\"sequence\":3,\"assignment_kind\":\"implementation\",\"required_role\":\"worker\",\"model_floor\":\"standard\",\"risk_class\":\"medium\",\"write_scope\":{\"v\":1,\"paths\":[]},\"base_revision\":\"base\",\"independence_boundary_id\":null,\"next_action\":\"queue\"}".into(),
+            "assignment_queued" => "{\"v\":1,\"next_action\":\"run\"}".into(),
+            "assignment_started" => format!("{{\"v\":1,\"attempt_id\":\"matrix-attempt\",\"started_at\":\"{timestamp}\",\"current_step\":\"edit\"}}"),
+            "assignment_step_changed" => "{\"v\":1,\"current_step\":\"test\"}".into(),
+            "assignment_blocked" => "{\"v\":1,\"blocker\":\"blocked\",\"next_action\":\"resolve\"}".into(),
+            "assignment_unblocked" => "{\"v\":1,\"resolution\":\"resolved\",\"next_action\":\"continue\"}".into(),
+            "assignment_reported" => format!("{{\"v\":1,\"report_path\":\"/tmp/matrix.md\",\"reported_at\":\"{timestamp}\",\"next_action\":\"validate\"}}"),
+            "assignment_validated" => format!("{{\"v\":1,\"test_evidence\":{{\"v\":1,\"items\":[{{\"kind\":\"test\",\"ref\":\"suite\",\"result\":\"passed\"}}]}},\"validated_at\":\"{timestamp}\",\"next_action\":\"accept\"}}"),
+            "assignment_accepted" => format!("{{\"v\":1,\"review_evidence\":{{\"v\":1,\"items\":[]}},\"accepted_at\":\"{timestamp}\",\"ended_at\":\"{timestamp}\"}}"),
+            "assignment_requeued" => "{\"v\":1,\"reason\":\"retry\",\"next_action\":\"queue\"}".into(),
+            "assignment_failed" => format!("{{\"v\":1,\"policy_exhausted\":true,\"final_reason\":\"failed\",\"ended_at\":\"{timestamp}\",\"next_action\":\"audit\"}}"),
+            "assignment_cancelled" => format!("{{\"v\":1,\"final_reason\":\"cancelled\",\"ended_at\":\"{timestamp}\",\"next_action\":\"audit\"}}"),
+            "attempt_planned" => "{\"v\":1,\"attempt_sequence\":2,\"next_action\":\"route\"}".into(),
+            "attempt_started" => format!("{{\"v\":1,\"started_at\":\"{timestamp}\",\"next_action\":\"work\"}}"),
+            "attempt_reported" => format!("{{\"v\":1,\"reported_at\":\"{timestamp}\",\"next_action\":\"validate\"}}"),
+            "attempt_validated" => format!("{{\"v\":1,\"validated_at\":\"{timestamp}\",\"next_action\":\"accept\"}}"),
+            "attempt_accepted" => format!("{{\"v\":1,\"accepted_at\":\"{timestamp}\",\"ended_at\":\"{timestamp}\"}}"),
+            "attempt_failed" | "attempt_cancelled" => format!("{{\"v\":1,\"outcome_reason\":\"terminal\",\"ended_at\":\"{timestamp}\",\"next_action\":\"audit\"}}"),
+            "dispatch_main_selected" | "dispatch_batch_selected" => "{\"v\":1,\"reason\":\"selected\",\"authorization_ref\":\"auth\"}".into(),
+            "dispatch_reuse_selected" => "{\"v\":1,\"session_id\":\"matrix-session\",\"lease_id\":\"matrix-lease\",\"reason\":\"compatible\",\"authorization_ref\":\"auth\"}".into(),
+            "dispatch_spawn_selected" => "{\"v\":1,\"session_id\":\"matrix-session\",\"reason\":\"isolate\",\"authorization_ref\":\"auth\"}".into(),
+            "route_requested" => format!("{{\"v\":1,\"route_id\":\"matrix-new-route\",\"required_profile\":\"standard\",\"requested_model\":null,\"requested_reasoning\":null,\"escalated_from_route_id\":null,\"decided_at\":\"{timestamp}\",\"next_action\":\"apply\"}}"),
+            "route_applied" => format!("{{\"v\":1,\"routing_status\":\"applied\",\"actual_model\":\"model\",\"actual_reasoning\":null,\"eligibility_evidence\":{{\"v\":1,\"items\":[{{\"kind\":\"probe\",\"ref\":\"matrix-route\",\"result\":\"eligible\"}}]}},\"decided_at\":\"{timestamp}\"}}"),
+            "route_degraded" => format!("{{\"v\":1,\"actual_model\":null,\"actual_reasoning\":null,\"reason\":\"unsupported\",\"eligibility_status\":\"unknown\",\"eligibility_evidence\":{{\"v\":1,\"items\":[]}},\"next_action\":\"fallback\",\"decided_at\":\"{timestamp}\"}}"),
+            "route_rejected" => format!("{{\"v\":1,\"reason\":\"ineligible\",\"eligibility_evidence\":{{\"v\":1,\"items\":[]}},\"next_action\":\"reroute\",\"decided_at\":\"{timestamp}\"}}"),
+            "session_planned" => "{\"v\":1,\"authorization_ref\":\"auth\",\"budget_reason\":\"matrix\",\"run_max_open\":2,\"run_max_total\":4,\"session_token_budget\":{\"mode\":\"unbounded\",\"tokens\":null},\"nested_delegation\":{\"allowed\":false,\"authority_ref\":null},\"requested_host\":null,\"requested_profile\":\"standard\",\"requested_model\":null,\"requested_reasoning\":null,\"parent_session_id\":null}".into(),
+            "session_spawned" => format!("{{\"v\":1,\"handle\":\"matrix-handle\",\"host_id\":\"host\",\"spawned_at\":\"{timestamp}\",\"next_action\":\"run\"}}"),
+            "session_running" => {
+                let (report, evidence) = if source_state == "reported" {
+                    ("\"/tmp/matrix.md\"", "{\"v\":1,\"items\":[]}")
+                } else {
+                    ("null", "null")
+                };
+                format!("{{\"v\":1,\"started_or_resumed_at\":\"{timestamp}\",\"lease_id\":\"matrix-lease\",\"attempt_id\":\"matrix-attempt\",\"prior_report_ref\":{report},\"gate_evidence\":{evidence},\"next_action\":\"work\"}}")
+            }
+            "session_heartbeat" => format!("{{\"v\":1,\"last_activity_at\":\"{timestamp}\"}}"),
+            "session_blocked" => "{\"v\":1,\"blocker\":\"blocked\",\"next_action\":\"resolve\"}".into(),
+            "session_unblocked" => "{\"v\":1,\"resolution\":\"resolved\",\"next_action\":\"continue\"}".into(),
+            "session_reported" => format!("{{\"v\":1,\"last_reported_at\":\"{timestamp}\",\"assignment_id\":\"matrix-assignment\",\"attempt_id\":\"matrix-attempt\",\"next_action\":\"wait\"}}"),
+            "session_waited" => {
+                let (report, terminal) = if source_state == "reported" {
+                    ("\"/tmp/matrix.md\"", "null")
+                } else {
+                    ("null", "\"observed terminal\"")
+                };
+                format!("{{\"v\":1,\"last_waited_at\":\"{timestamp}\",\"consumed_report_ref\":{report},\"terminal_observation\":{terminal}}}")
+            }
+            "session_failed" | "session_abandoned" | "session_externally_unknown" => format!("{{\"v\":1,\"final_reason\":\"terminal\",\"ended_at\":\"{timestamp}\",\"next_action\":\"audit\"}}"),
+            "session_interrupted" => format!("{{\"v\":1,\"interruption_reason\":\"host\",\"interrupted_at\":\"{timestamp}\",\"next_action\":\"recover\"}}"),
+            "session_close_requested" => format!("{{\"v\":1,\"close_requested_at\":\"{timestamp}\",\"next_action\":\"close\"}}"),
+            "session_closed" => format!("{{\"v\":1,\"outcome\":\"unknown\",\"close_disposition\":\"confirmed\",\"closed_at\":\"{timestamp}\",\"ended_at\":\"{timestamp}\"}}"),
+            "session_superseded" => format!("{{\"v\":1,\"superseded_by_session_id\":\"matrix-replacement\",\"superseded_at\":\"{timestamp}\",\"reason\":\"replace\",\"next_action\":\"close\"}}"),
+            "lease_planned" => "{\"v\":1,\"role\":\"worker\",\"model_profile\":\"standard\",\"risk_class\":\"medium\",\"write_scope\":{\"v\":1,\"paths\":[]},\"base_revision\":\"base\",\"independence_boundary_id\":null,\"replaces_session_id\":null,\"expiry_predicate\":null,\"expires_at\":null,\"next_action\":\"issue\"}".into(),
+            "lease_issued" => format!("{{\"v\":1,\"issued_at\":\"{timestamp}\",\"next_action\":\"run\"}}"),
+            "lease_reused" => format!("{{\"v\":1,\"attempt_id\":\"matrix-attempt\",\"compatibility_evidence\":{{\"v\":1,\"items\":[{{\"kind\":\"scope\",\"ref\":\"matrix-lease\",\"result\":\"compatible\"}}]}},\"last_used_at\":\"{timestamp}\",\"next_action\":\"run\"}}"),
+            "lease_idle" => format!("{{\"v\":1,\"last_used_at\":\"{timestamp}\",\"next_action\":\"reuse\"}}"),
+            "lease_expired" | "lease_revoked" => format!("{{\"v\":1,\"expiry_reason\":\"terminal\",\"ended_at\":\"{timestamp}\",\"next_action\":\"close\"}}"),
+            "lease_closed" => format!("{{\"v\":1,\"expiry_reason\":\"cleanup\",\"ended_at\":\"{timestamp}\"}}"),
+            "usage_observed" => format!("{{\"v\":1,\"scope\":\"session\",\"subject_id\":\"matrix-session\",\"observation_kind\":\"cumulative\",\"window_start\":null,\"window_end\":\"{timestamp}\",\"input_tokens\":1,\"output_tokens\":null,\"reasoning_tokens\":null,\"cache_read_tokens\":null,\"cache_write_tokens\":null,\"credits\":null,\"provider_cost\":null,\"telemetry_quality\":\"exact\",\"supersedes_event_id\":null}}"),
+            "quality_gate_passed" => format!("{{\"v\":1,\"subject_kind\":\"assignment\",\"subject_id\":\"matrix-assignment\",\"policy\":{{\"v\":1,\"kind\":\"deterministic\"}},\"evidence\":{{\"v\":1,\"items\":[{{\"kind\":\"test\",\"ref\":\"suite\",\"result\":\"passed\"}}]}},\"observed_at\":\"{timestamp}\"}}"),
+            "quality_gate_failed" => format!("{{\"v\":1,\"subject_kind\":\"assignment\",\"subject_id\":\"matrix-assignment\",\"policy\":{{\"v\":1,\"kind\":\"deterministic\"}},\"findings_ref\":\"/tmp/findings.md\",\"next_action\":\"fix\",\"observed_at\":\"{timestamp}\"}}"),
+            _ => panic!("missing executable payload for {name}"),
+        }
+    }
+
+    fn insert_transition_graph(conn: &Connection) {
+        conn.execute("INSERT INTO work_packages(package_id,run_id,title,role_floor,model_floor,risk_floor,write_scope,review_policy,independence_policy,status,next_action) VALUES('matrix-package','matrix-run','matrix','worker','standard','medium','{\"v\":1,\"paths\":[]}','{\"v\":1,\"kind\":\"none\"}','{\"v\":1,\"kind\":\"none\"}','active','work')",[]).unwrap();
+        conn.execute("INSERT INTO assignments(assignment_id,package_id,title,sequence,assignment_kind,required_role,model_floor,risk_class,write_scope,base_revision,current_step,attempt_count,status,next_action) VALUES('matrix-assignment','matrix-package','matrix',1,'implementation','worker','standard','medium','{\"v\":1,\"paths\":[]}','base','edit',1,'running','work')",[]).unwrap();
+        conn.execute("INSERT INTO agent_sessions(session_id,run_id,handle,host_id,role,requested_profile,token_budget_mode,status,next_action) VALUES('matrix-session','matrix-run','matrix-handle','host','worker','standard','unbounded','running','work')",[]).unwrap();
+        conn.execute("INSERT INTO assignment_attempts(attempt_id,assignment_id,session_id,attempt_sequence,status,next_action) VALUES('matrix-attempt','matrix-assignment','matrix-session',1,'planned','work')",[]).unwrap();
+        conn.execute("INSERT INTO session_leases(lease_id,session_id,package_id,role,model_profile,risk_class,write_scope,base_revision,current_attempt_id,status,reuse_count,next_action) VALUES('matrix-lease','matrix-session','matrix-package','worker','standard','medium','{\"v\":1,\"paths\":[]}','base','matrix-attempt','active',0,'work')",[]).unwrap();
+        conn.execute("UPDATE assignment_attempts SET lease_id='matrix-lease' WHERE attempt_id='matrix-attempt'",[]).unwrap();
+        conn.execute("INSERT INTO routing_decisions(route_id,attempt_id,required_profile,routing_status,eligibility_status,next_action,decided_at) VALUES('matrix-route','matrix-attempt','standard','requested','unknown','apply','2026-07-12T09:29:00.000Z')",[]).unwrap();
+        conn.execute("UPDATE assignment_attempts SET route_id='matrix-route' WHERE attempt_id='matrix-attempt'",[]).unwrap();
+        conn.execute("UPDATE assignments SET current_attempt_id='matrix-attempt' WHERE assignment_id='matrix-assignment'",[]).unwrap();
+        conn.execute("INSERT INTO agent_sessions(session_id,run_id,role,token_budget_mode,status) VALUES('matrix-replacement','matrix-run','worker','unbounded','planned')",[]).unwrap();
+        conn.execute("INSERT INTO agent_sessions(session_id,run_id,role,token_budget_mode,status) VALUES('matrix-review-session','matrix-run','reviewer','unbounded','reported')",[]).unwrap();
+        conn.execute("INSERT INTO assignments(assignment_id,package_id,title,sequence,assignment_kind,required_role,model_floor,risk_class,write_scope,attempt_count,status,report_path,test_evidence,review_evidence) VALUES('matrix-review','matrix-package','review',2,'review','reviewer','standard','medium','{\"v\":1,\"paths\":[]}',1,'accepted','/tmp/review.md','{\"v\":1,\"items\":[{\"kind\":\"test\",\"ref\":\"suite\",\"result\":\"passed\"}]}','{\"v\":1,\"items\":[{\"kind\":\"review\",\"ref\":\"matrix-review\",\"result\":\"accepted\"}]}')",[]).unwrap();
+        conn.execute("INSERT INTO assignment_attempts(attempt_id,assignment_id,session_id,attempt_sequence,status) VALUES('matrix-review-attempt','matrix-review','matrix-review-session',1,'accepted')",[]).unwrap();
+        conn.execute("UPDATE assignments SET current_attempt_id='matrix-review-attempt' WHERE assignment_id='matrix-review'",[]).unwrap();
+    }
+
+    fn source_for_event(name: &str) -> &'static str {
+        match super::event_rule(name).unwrap().source_floor {
+            super::SourceFloor::ControllerObservation => "controller-observation",
+            super::SourceFloor::AgentReport => "agent-report",
+            super::SourceFloor::Inference => "inference",
+        }
+    }
+
+    fn executable_transition_fixture(
+        name: &str,
+        source_state: &str,
+        legal: bool,
+    ) -> (Connection, EventInput) {
+        let mut conn = connection();
+        if name == "run_planned" {
+            if !legal {
+                append_run(
+                    &mut conn,
+                    "matrix-existing",
+                    "matrix-run",
+                    "matrix-existing",
+                );
+            }
+        } else {
+            append_run(&mut conn, "matrix-seed", "matrix-run", "matrix-seed");
+            conn.execute(
+                "UPDATE runs SET status='active' WHERE run_id='matrix-run'",
+                [],
+            )
+            .unwrap();
+            insert_transition_graph(&conn);
+        }
+
+        let target_state = if legal { source_state } else { "illegal" };
+        if name.starts_with("run_") && name != "run_planned" {
+            let status = if legal { source_state } else { "complete" };
+            conn.execute(
+                "UPDATE runs SET status=?1 WHERE run_id='matrix-run'",
+                [status],
+            )
+            .unwrap();
+        } else if name.starts_with("package_") {
+            if name != "package_planned" {
+                let status = if legal { source_state } else { "complete" };
+                if name == "package_completed" && source_state == "review" && legal {
+                    conn.execute("UPDATE work_packages SET review_policy='{\"v\":1,\"kind\":\"independent\"}',independence_policy='{\"v\":1,\"kind\":\"different-role-and-session\"}',status='active' WHERE package_id='matrix-package'",[]).unwrap();
+                    append_named(
+                        &mut conn,
+                        "matrix-run",
+                        "matrix-review-start",
+                        "package_review_started",
+                        Refs {
+                            package: Some("matrix-package"),
+                            assignment: Some("matrix-review"),
+                            ..Refs::default()
+                        },
+                        "{\"v\":1,\"review_assignment_id\":\"matrix-review\",\"next_action\":\"review\"}",
+                    );
+                    append_named(
+                        &mut conn,
+                        "matrix-run",
+                        "matrix-review-pass",
+                        "package_review_completed",
+                        Refs {
+                            package: Some("matrix-package"),
+                            assignment: Some("matrix-review"),
+                            ..Refs::default()
+                        },
+                        "{\"v\":1,\"verdict\":\"accepted\",\"review_evidence\":{\"v\":1,\"items\":[{\"kind\":\"review\",\"ref\":\"/tmp/review.md\",\"result\":\"accepted\"}]},\"next_action\":\"complete\"}",
+                    );
+                } else if name == "package_review_completed" && legal {
+                    conn.execute("UPDATE work_packages SET review_policy='{\"v\":1,\"kind\":\"independent\"}',independence_policy='{\"v\":1,\"kind\":\"different-role-and-session\"}',status='active' WHERE package_id='matrix-package'",[]).unwrap();
+                    append_named(
+                        &mut conn,
+                        "matrix-run",
+                        "matrix-review-start",
+                        "package_review_started",
+                        Refs {
+                            package: Some("matrix-package"),
+                            assignment: Some("matrix-review"),
+                            ..Refs::default()
+                        },
+                        "{\"v\":1,\"review_assignment_id\":\"matrix-review\",\"next_action\":\"review\"}",
+                    );
+                } else if name == "package_unblocked" && legal {
+                    conn.execute("UPDATE work_packages SET status='active' WHERE package_id='matrix-package'",[]).unwrap();
+                    append_named(
+                        &mut conn,
+                        "matrix-run",
+                        "matrix-package-block",
+                        "package_blocked",
+                        Refs {
+                            package: Some("matrix-package"),
+                            ..Refs::default()
+                        },
+                        "{\"v\":1,\"blocker\":\"blocked\",\"resume_status\":\"active\",\"next_action\":\"resolve\"}",
+                    );
+                } else {
+                    conn.execute(
+                        "UPDATE work_packages SET status=?1,blocker=CASE WHEN ?1='blocked' THEN 'blocked' ELSE NULL END WHERE package_id='matrix-package'",
+                        [status],
+                    )
+                    .unwrap();
+                }
+            }
+        } else if name.starts_with("assignment_") {
+            if name != "assignment_planned" {
+                let status = if legal { source_state } else { "accepted" };
+                conn.execute(
+                    "UPDATE assignments SET status=?1 WHERE assignment_id='matrix-assignment'",
+                    [status],
+                )
+                .unwrap();
+                if name == "assignment_started" && legal {
+                    conn.execute(
+                        "UPDATE assignment_attempts SET status='running' WHERE attempt_id='matrix-attempt'",
+                        [],
+                    )
+                    .unwrap();
+                }
+                if name == "assignment_requeued" && legal {
+                    conn.execute("UPDATE assignment_attempts SET status='failed' WHERE attempt_id='matrix-attempt'",[]).unwrap();
+                }
+                if name == "assignment_unblocked" && legal {
+                    conn.execute("UPDATE assignments SET status=?1,blocker=NULL WHERE assignment_id='matrix-assignment'",[source_state]).unwrap();
+                    append_named(
+                        &mut conn,
+                        "matrix-run",
+                        "matrix-assignment-block",
+                        "assignment_blocked",
+                        Refs {
+                            package: Some("matrix-package"),
+                            assignment: Some("matrix-assignment"),
+                            ..Refs::default()
+                        },
+                        "{\"v\":1,\"blocker\":\"blocked\",\"next_action\":\"resolve\"}",
+                    );
+                }
+            }
+        } else if name.starts_with("attempt_") {
+            if name == "attempt_planned" {
+                conn.execute(
+                    "UPDATE assignments SET status=?1 WHERE assignment_id='matrix-assignment'",
+                    [if legal && source_state == "assignment-queued" {
+                        "queued"
+                    } else if legal {
+                        "planned"
+                    } else {
+                        "running"
+                    }],
+                )
+                .unwrap();
+            } else {
+                conn.execute(
+                    "UPDATE assignment_attempts SET status=?1 WHERE attempt_id='matrix-attempt'",
+                    [if legal { source_state } else { "accepted" }],
+                )
+                .unwrap();
+            }
+        } else if name.starts_with("dispatch_") {
+            conn.execute(
+                "UPDATE assignment_attempts SET status=?1 WHERE attempt_id='matrix-attempt'",
+                [if legal { "planned" } else { "running" }],
+            )
+            .unwrap();
+        } else if name.starts_with("route_") {
+            if name == "route_requested" {
+                conn.execute(
+                    "UPDATE assignment_attempts SET status=?1 WHERE attempt_id='matrix-attempt'",
+                    [if legal { "planned" } else { "running" }],
+                )
+                .unwrap();
+            } else {
+                conn.execute(
+                    "UPDATE routing_decisions SET routing_status=?1 WHERE route_id='matrix-route'",
+                    [if legal { source_state } else { "rejected" }],
+                )
+                .unwrap();
+            }
+        } else if name.starts_with("session_") {
+            if name == "session_planned" {
+                conn.execute("UPDATE assignment_attempts SET status='planned',session_id=NULL,lease_id=NULL WHERE attempt_id='matrix-attempt'",[]).unwrap();
+            } else {
+                conn.execute(
+                    "UPDATE agent_sessions SET status=?1 WHERE session_id='matrix-session'",
+                    [if legal { source_state } else { "closed" }],
+                )
+                .unwrap();
+                if name == "session_running" && legal {
+                    conn.execute("UPDATE assignment_attempts SET status='planned',session_id=NULL,lease_id=NULL WHERE attempt_id='matrix-attempt'",[]).unwrap();
+                    conn.execute("UPDATE session_leases SET status='active',current_attempt_id=NULL WHERE lease_id='matrix-lease'",[]).unwrap();
+                }
+                if name == "session_unblocked" && legal {
+                    append_named(
+                        &mut conn,
+                        "matrix-run",
+                        "matrix-session-block",
+                        "session_blocked",
+                        Refs {
+                            session: Some("matrix-session"),
+                            ..Refs::default()
+                        },
+                        "{\"v\":1,\"blocker\":\"blocked\",\"next_action\":\"resolve\"}",
+                    );
+                }
+            }
+        } else if name.starts_with("lease_") && name != "lease_planned" {
+            conn.execute(
+                "UPDATE session_leases SET status=?1 WHERE lease_id='matrix-lease'",
+                [if legal { source_state } else { "closed" }],
+            )
+            .unwrap();
+        }
+
+        let mut refs = Refs::default();
+        match name {
+            n if n.starts_with("package_") => {
+                refs.package = Some(if n == "package_planned" && legal {
+                    "matrix-new-package"
+                } else {
+                    "matrix-package"
+                });
+            }
+            n if n.starts_with("assignment_") => {
+                refs.package = Some("matrix-package");
+                refs.assignment = Some(if n == "assignment_planned" && legal {
+                    "matrix-new-assignment"
+                } else {
+                    "matrix-assignment"
+                });
+                if n == "assignment_started" {
+                    refs.attempt = Some("matrix-attempt");
+                }
+            }
+            n if n.starts_with("attempt_") => {
+                refs.package = Some("matrix-package");
+                refs.assignment = Some("matrix-assignment");
+                refs.attempt = Some(if n == "attempt_planned" && legal {
+                    "matrix-new-attempt"
+                } else {
+                    "matrix-attempt"
+                });
+            }
+            n if n.starts_with("dispatch_") || n.starts_with("route_") => {
+                refs.package = Some("matrix-package");
+                refs.assignment = Some("matrix-assignment");
+                refs.attempt = Some("matrix-attempt");
+                if n == "dispatch_reuse_selected" {
+                    refs.session = Some("matrix-session");
+                    refs.lease = Some("matrix-lease");
+                } else if n == "dispatch_spawn_selected" {
+                    refs.session = Some("matrix-session");
+                }
+            }
+            "session_planned" => {
+                refs.package = Some("matrix-package");
+                refs.assignment = Some("matrix-assignment");
+                refs.attempt = Some("matrix-attempt");
+                refs.session = Some(if legal {
+                    "matrix-new-session"
+                } else {
+                    "matrix-session"
+                });
+            }
+            "session_running" => {
+                refs.package = Some("matrix-package");
+                refs.assignment = Some("matrix-assignment");
+                refs.attempt = Some("matrix-attempt");
+                refs.session = Some("matrix-session");
+                refs.lease = Some("matrix-lease");
+            }
+            "session_reported" => {
+                refs.package = Some("matrix-package");
+                refs.assignment = Some("matrix-assignment");
+                refs.attempt = Some("matrix-attempt");
+                refs.session = Some("matrix-session");
+            }
+            n if n.starts_with("session_") => refs.session = Some("matrix-session"),
+            n if n.starts_with("lease_") => {
+                refs.package = Some("matrix-package");
+                refs.session = Some("matrix-session");
+                refs.lease = Some(if n == "lease_planned" && legal {
+                    "matrix-new-lease"
+                } else {
+                    "matrix-lease"
+                });
+                if n == "lease_reused" {
+                    refs.assignment = Some("matrix-assignment");
+                    refs.attempt = Some("matrix-attempt");
+                }
+            }
+            "usage_observed" => refs.session = Some("matrix-session"),
+            "quality_gate_passed" | "quality_gate_failed" => {
+                refs.package = Some("matrix-package");
+                refs.assignment = Some("matrix-assignment");
+            }
+            _ => {}
+        }
+        if matches!(name, "package_review_started" | "package_review_completed") {
+            refs.assignment = Some("matrix-review");
+        }
+        if !legal
+            && matches!(
+                name,
+                "usage_observed" | "quality_gate_passed" | "quality_gate_failed"
+            )
+        {
+            if name == "usage_observed" {
+                refs.session = Some("missing-session");
+            } else {
+                refs.assignment = Some("missing-assignment");
+            }
+        }
+        let payload = if !legal && name == "usage_observed" {
+            transition_payload(name, target_state).replace("matrix-session", "missing-session")
+        } else if !legal && matches!(name, "quality_gate_passed" | "quality_gate_failed") {
+            transition_payload(name, target_state)
+                .replace("matrix-assignment", "missing-assignment")
+        } else {
+            transition_payload(name, target_state)
+        };
+        let event = EventInput {
+            event_id: format!(
+                "matrix-{name}-{source_state}-{}",
+                if legal { "legal" } else { "illegal" }
+            ),
+            run_id: "matrix-run".into(),
+            package_id: refs.package.map(str::to_string),
+            assignment_id: refs.assignment.map(str::to_string),
+            attempt_id: refs.attempt.map(str::to_string),
+            session_id: refs.session.map(str::to_string),
+            lease_id: refs.lease.map(str::to_string),
+            event_type: name.into(),
+            source_kind: source_for_event(name).into(),
+            source_id: format!("matrix-source-{name}"),
+            confidence: Some(9_000),
+            payload_json: payload,
+            occurred_at: "2026-07-12T09:30:00.000Z".into(),
+            idempotency_key: format!(
+                "matrix-{name}-{source_state}-{}",
+                if legal { "legal" } else { "illegal" }
+            ),
+        };
+        (conn, event)
+    }
+
     #[test]
     fn transition_table_has_legal_effect_and_illegal_source_for_every_event() {
         for name in event_names() {
             let (legal, effect) = transition_contract(name);
-            assert!(!legal.is_empty(), "{name}");
-            assert!(!legal.contains(&"definitely-illegal"), "{name}");
-            assert!(!effect.is_empty(), "{name}");
+            for source_state in legal {
+                let (mut conn, event) = executable_transition_fixture(name, source_state, true);
+                let before = event_count_and_counter(&conn, &event.run_id);
+                append_event(&mut conn, &event)
+                    .unwrap_or_else(|error| panic!("legal {name} from {source_state}: {error}"));
+                let after = event_count_and_counter(&conn, &event.run_id);
+                assert_eq!(after.0, before.0 + 1, "{name}/{source_state}/{effect}");
+                assert_eq!(after.1, before.1 + 1, "{name}/{source_state}/{effect}");
+            }
+
+            let (mut conn, event) = executable_transition_fixture(name, "illegal", false);
+            let before = event_count_and_counter(&conn, &event.run_id);
+            let error = append_event(&mut conn, &event).unwrap_err();
+            assert!(
+                error.contains("illegal")
+                    || error.contains("already")
+                    || error.contains("unknown")
+                    || error.contains("does not match")
+                    || error.contains("requires"),
+                "illegal {name}: {error}"
+            );
+            assert_eq!(event_count_and_counter(&conn, &event.run_id), before);
+
+            let (mut conn, mut event) = executable_transition_fixture(name, legal[0], true);
+            event.source_kind = illegal_source_for(name).into();
+            event.source_id = format!("illegal-source-{name}");
+            event.idempotency_key = format!("illegal-source-{name}");
+            let before = event_count_and_counter(&conn, &event.run_id);
+            let error = append_event(&mut conn, &event).unwrap_err();
+            assert!(
+                error.contains("unauthorized source") || error.contains("unknown source kind"),
+                "illegal source {name}: {error}"
+            );
+            assert_eq!(event_count_and_counter(&conn, &event.run_id), before);
         }
         assert_eq!(
             transition_contract("assignment_reported"),
@@ -4789,67 +5832,1038 @@ mod tests {
     }
 
     fn setup_replay_source(conn: &mut Connection) {
-        setup_planned_attempt(conn);
+        let at = "2026-07-12T09:10:00.006Z";
+        let evidence =
+            "{\"v\":1,\"items\":[{\"kind\":\"test\",\"ref\":\"suite\",\"result\":\"passed\"}]}";
+        let review_evidence = "{\"v\":1,\"items\":[{\"kind\":\"review\",\"ref\":\"/tmp/review.md\",\"result\":\"accepted\"}]}";
+        append_run(conn, "rich-run", "run-1", "rich-run");
         append_named(
             conn,
             "run-1",
-            "replay-session",
-            "session_planned",
+            "rich-run-start",
+            "run_started",
+            Refs::default(),
+            &format!(
+                "{{\"v\":1,\"psoc_revision\":\"psoc-rich\",\"started_at\":\"{at}\",\"next_action\":\"packages\"}}"
+            ),
+        );
+
+        append_named(
+            conn,
+            "run-1",
+            "foundation-plan",
+            "package_planned",
             Refs {
-                package: Some("package-1"),
-                assignment: Some("assignment-1"),
-                attempt: Some("attempt-1"),
-                session: Some("session-1"),
+                package: Some("foundation"),
                 ..Refs::default()
             },
-            "{\"v\":1,\"authorization_ref\":\"auth-replay\",\"budget_reason\":\"replay fixture\",\"run_max_open\":2,\"run_max_total\":4,\"session_token_budget\":{\"mode\":\"unbounded\",\"tokens\":null},\"nested_delegation\":{\"allowed\":false,\"authority_ref\":null},\"requested_host\":null,\"requested_profile\":\"standard\",\"requested_model\":null,\"requested_reasoning\":null,\"parent_session_id\":null}",
+            "{\"v\":1,\"title\":\"foundation\",\"dependencies\":[],\"role_floor\":\"worker\",\"model_floor\":\"standard\",\"risk_floor\":\"medium\",\"write_scope\":{\"v\":1,\"paths\":[]},\"review_policy\":{\"v\":1,\"kind\":\"none\"},\"independence_policy\":{\"v\":1,\"kind\":\"none\"},\"next_action\":\"ready\"}",
         );
         append_named(
             conn,
             "run-1",
-            "replay-block",
+            "foundation-ready",
+            "package_ready",
+            Refs {
+                package: Some("foundation"),
+                ..Refs::default()
+            },
+            "{\"v\":1,\"next_action\":\"active\"}",
+        );
+        append_named(
+            conn,
+            "run-1",
+            "foundation-active",
+            "package_active",
+            Refs {
+                package: Some("foundation"),
+                ..Refs::default()
+            },
+            "{\"v\":1,\"next_action\":\"complete\"}",
+        );
+        append_named(
+            conn,
+            "run-1",
+            "foundation-complete",
+            "package_completed",
+            Refs {
+                package: Some("foundation"),
+                ..Refs::default()
+            },
+            &format!("{{\"v\":1,\"ended_at\":\"{at}\"}}"),
+        );
+
+        append_named(
+            conn,
+            "run-1",
+            "package-plan",
+            "package_planned",
+            Refs {
+                package: Some("package-1"),
+                ..Refs::default()
+            },
+            "{\"v\":1,\"title\":\"delivery\",\"dependencies\":[\"foundation\"],\"role_floor\":\"worker\",\"model_floor\":\"standard\",\"risk_floor\":\"high\",\"write_scope\":{\"v\":1,\"paths\":[\"src\"]},\"review_policy\":{\"v\":1,\"kind\":\"independent\"},\"independence_policy\":{\"v\":1,\"kind\":\"different-role-and-session\"},\"next_action\":\"ready\"}",
+        );
+        append_named(
+            conn,
+            "run-1",
+            "package-ready",
+            "package_ready",
+            Refs {
+                package: Some("package-1"),
+                ..Refs::default()
+            },
+            "{\"v\":1,\"next_action\":\"active\"}",
+        );
+        append_named(
+            conn,
+            "run-1",
+            "package-active",
+            "package_active",
+            Refs {
+                package: Some("package-1"),
+                ..Refs::default()
+            },
+            "{\"v\":1,\"next_action\":\"writer\"}",
+        );
+        append_named(
+            conn,
+            "run-1",
+            "package-block",
             "package_blocked",
             Refs {
                 package: Some("package-1"),
                 ..Refs::default()
             },
-            "{\"v\":1,\"blocker\":\"wait\",\"resume_status\":\"active\",\"next_action\":\"unblock\"}",
+            "{\"v\":1,\"blocker\":\"capacity\",\"resume_status\":\"active\",\"next_action\":\"unblock\"}",
         );
         append_named(
             conn,
             "run-1",
-            "replay-unblock",
+            "package-unblock",
             "package_unblocked",
             Refs {
                 package: Some("package-1"),
                 ..Refs::default()
             },
-            "{\"v\":1,\"resolution\":\"ready\",\"resume_status\":\"active\",\"next_action\":\"continue\"}",
+            "{\"v\":1,\"resolution\":\"capacity restored\",\"resume_status\":\"active\",\"next_action\":\"writer\"}",
         );
-        for (event_id, source, tokens) in [
-            ("replay-usage-strong", "host-runtime", 10),
-            ("replay-usage-weak", "inference", 20),
+
+        append_named(
+            conn,
+            "run-1",
+            "writer-plan",
+            "assignment_planned",
+            Refs {
+                package: Some("package-1"),
+                assignment: Some("writer"),
+                ..Refs::default()
+            },
+            "{\"v\":1,\"title\":\"implement\",\"sequence\":1,\"assignment_kind\":\"implementation\",\"required_role\":\"worker\",\"model_floor\":\"standard\",\"risk_class\":\"high\",\"write_scope\":{\"v\":1,\"paths\":[\"src\"]},\"base_revision\":\"base\",\"independence_boundary_id\":\"boundary\",\"next_action\":\"queue\"}",
+        );
+        append_named(
+            conn,
+            "run-1",
+            "writer-queue",
+            "assignment_queued",
+            Refs {
+                package: Some("package-1"),
+                assignment: Some("writer"),
+                ..Refs::default()
+            },
+            "{\"v\":1,\"next_action\":\"attempt\"}",
+        );
+        append_named(
+            conn,
+            "run-1",
+            "writer-attempt-1-plan",
+            "attempt_planned",
+            Refs {
+                package: Some("package-1"),
+                assignment: Some("writer"),
+                attempt: Some("writer-attempt-1"),
+                ..Refs::default()
+            },
+            "{\"v\":1,\"attempt_sequence\":1,\"next_action\":\"route\"}",
+        );
+        append_named(
+            conn,
+            "run-1",
+            "writer-route-1",
+            "route_requested",
+            Refs {
+                package: Some("package-1"),
+                assignment: Some("writer"),
+                attempt: Some("writer-attempt-1"),
+                ..Refs::default()
+            },
+            &format!(
+                "{{\"v\":1,\"route_id\":\"writer-route-1\",\"required_profile\":\"standard\",\"requested_model\":null,\"requested_reasoning\":null,\"escalated_from_route_id\":null,\"decided_at\":\"{at}\",\"next_action\":\"spawn\"}}"
+            ),
+        );
+        append_named(
+            conn,
+            "run-1",
+            "writer-session-plan",
+            "session_planned",
+            Refs {
+                package: Some("package-1"),
+                assignment: Some("writer"),
+                attempt: Some("writer-attempt-1"),
+                session: Some("writer-session"),
+                ..Refs::default()
+            },
+            "{\"v\":1,\"authorization_ref\":\"writer-auth\",\"budget_reason\":\"writer\",\"run_max_open\":2,\"run_max_total\":4,\"session_token_budget\":{\"mode\":\"unbounded\",\"tokens\":null},\"nested_delegation\":{\"allowed\":false,\"authority_ref\":null},\"requested_host\":null,\"requested_profile\":\"standard\",\"requested_model\":null,\"requested_reasoning\":null,\"parent_session_id\":null}",
+        );
+        append_named(
+            conn,
+            "run-1",
+            "writer-lease-plan",
+            "lease_planned",
+            Refs {
+                package: Some("package-1"),
+                session: Some("writer-session"),
+                lease: Some("writer-lease"),
+                ..Refs::default()
+            },
+            "{\"v\":1,\"role\":\"worker\",\"model_profile\":\"standard\",\"risk_class\":\"high\",\"write_scope\":{\"v\":1,\"paths\":[\"src\"]},\"base_revision\":\"base\",\"independence_boundary_id\":\"boundary\",\"replaces_session_id\":null,\"expiry_predicate\":null,\"expires_at\":null,\"next_action\":\"issue\"}",
+        );
+        append_named(
+            conn,
+            "run-1",
+            "writer-spawn",
+            "session_spawned",
+            Refs {
+                session: Some("writer-session"),
+                ..Refs::default()
+            },
+            &format!(
+                "{{\"v\":1,\"handle\":\"writer-handle\",\"host_id\":\"host\",\"spawned_at\":\"{at}\",\"next_action\":\"route\"}}"
+            ),
+        );
+        append_named(
+            conn,
+            "run-1",
+            "writer-route-degraded",
+            "route_degraded",
+            Refs {
+                package: Some("package-1"),
+                assignment: Some("writer"),
+                attempt: Some("writer-attempt-1"),
+                ..Refs::default()
+            },
+            &format!(
+                "{{\"v\":1,\"actual_model\":null,\"actual_reasoning\":null,\"reason\":\"selector unsupported\",\"eligibility_status\":\"unknown\",\"eligibility_evidence\":{{\"v\":1,\"items\":[]}},\"next_action\":\"inherit\",\"decided_at\":\"{at}\"}}"
+            ),
+        );
+        append_named(
+            conn,
+            "run-1",
+            "writer-route-applied",
+            "route_applied",
+            Refs {
+                package: Some("package-1"),
+                assignment: Some("writer"),
+                attempt: Some("writer-attempt-1"),
+                ..Refs::default()
+            },
+            &format!(
+                "{{\"v\":1,\"routing_status\":\"inherited\",\"actual_model\":null,\"actual_reasoning\":null,\"eligibility_evidence\":{{\"v\":1,\"items\":[{{\"kind\":\"host\",\"ref\":\"host\",\"result\":\"inherited\"}}]}},\"decided_at\":\"{at}\"}}"
+            ),
+        );
+        append_named(
+            conn,
+            "run-1",
+            "writer-lease-issue",
+            "lease_issued",
+            Refs {
+                package: Some("package-1"),
+                session: Some("writer-session"),
+                lease: Some("writer-lease"),
+                ..Refs::default()
+            },
+            &format!("{{\"v\":1,\"issued_at\":\"{at}\",\"next_action\":\"run\"}}"),
+        );
+        append_named(
+            conn,
+            "run-1",
+            "writer-session-run-1",
+            "session_running",
+            Refs {
+                package: Some("package-1"),
+                assignment: Some("writer"),
+                attempt: Some("writer-attempt-1"),
+                session: Some("writer-session"),
+                lease: Some("writer-lease"),
+            },
+            &format!(
+                "{{\"v\":1,\"started_or_resumed_at\":\"{at}\",\"lease_id\":\"writer-lease\",\"attempt_id\":\"writer-attempt-1\",\"prior_report_ref\":null,\"gate_evidence\":null,\"next_action\":\"work\"}}"
+            ),
+        );
+        append_named(
+            conn,
+            "run-1",
+            "writer-attempt-1-start",
+            "attempt_started",
+            Refs {
+                package: Some("package-1"),
+                assignment: Some("writer"),
+                attempt: Some("writer-attempt-1"),
+                session: Some("writer-session"),
+                lease: Some("writer-lease"),
+            },
+            &format!("{{\"v\":1,\"started_at\":\"{at}\",\"next_action\":\"work\"}}"),
+        );
+        append_named(
+            conn,
+            "run-1",
+            "writer-start-1",
+            "assignment_started",
+            Refs {
+                package: Some("package-1"),
+                assignment: Some("writer"),
+                attempt: Some("writer-attempt-1"),
+                session: Some("writer-session"),
+                lease: Some("writer-lease"),
+            },
+            &format!(
+                "{{\"v\":1,\"attempt_id\":\"writer-attempt-1\",\"started_at\":\"{at}\",\"current_step\":\"edit\"}}"
+            ),
+        );
+        append_named(
+            conn,
+            "run-1",
+            "writer-block",
+            "assignment_blocked",
+            Refs {
+                package: Some("package-1"),
+                assignment: Some("writer"),
+                attempt: Some("writer-attempt-1"),
+                ..Refs::default()
+            },
+            "{\"v\":1,\"blocker\":\"test failure\",\"next_action\":\"fix\"}",
+        );
+        append_named(
+            conn,
+            "run-1",
+            "writer-unblock",
+            "assignment_unblocked",
+            Refs {
+                package: Some("package-1"),
+                assignment: Some("writer"),
+                attempt: Some("writer-attempt-1"),
+                ..Refs::default()
+            },
+            "{\"v\":1,\"resolution\":\"fixed\",\"next_action\":\"report\"}",
+        );
+        append_named(
+            conn,
+            "run-1",
+            "writer-report-1",
+            "assignment_reported",
+            Refs {
+                package: Some("package-1"),
+                assignment: Some("writer"),
+                attempt: Some("writer-attempt-1"),
+                session: Some("writer-session"),
+                ..Refs::default()
+            },
+            &format!(
+                "{{\"v\":1,\"report_path\":\"/tmp/writer-1.md\",\"reported_at\":\"{at}\",\"next_action\":\"retry\"}}"
+            ),
+        );
+        append_named(
+            conn,
+            "run-1",
+            "writer-session-report-1",
+            "session_reported",
+            Refs {
+                package: Some("package-1"),
+                assignment: Some("writer"),
+                attempt: Some("writer-attempt-1"),
+                session: Some("writer-session"),
+                ..Refs::default()
+            },
+            &format!(
+                "{{\"v\":1,\"last_reported_at\":\"{at}\",\"assignment_id\":\"writer\",\"attempt_id\":\"writer-attempt-1\",\"next_action\":\"wait\"}}"
+            ),
+        );
+        append_named(
+            conn,
+            "run-1",
+            "writer-attempt-1-fail",
+            "attempt_failed",
+            Refs {
+                package: Some("package-1"),
+                assignment: Some("writer"),
+                attempt: Some("writer-attempt-1"),
+                session: Some("writer-session"),
+                lease: Some("writer-lease"),
+            },
+            &format!(
+                "{{\"v\":1,\"outcome_reason\":\"retryable\",\"ended_at\":\"{at}\",\"next_action\":\"requeue\"}}"
+            ),
+        );
+        append_named(
+            conn,
+            "run-1",
+            "writer-requeue",
+            "assignment_requeued",
+            Refs {
+                package: Some("package-1"),
+                assignment: Some("writer"),
+                attempt: Some("writer-attempt-1"),
+                ..Refs::default()
+            },
+            "{\"v\":1,\"reason\":\"retry\",\"next_action\":\"attempt\"}",
+        );
+        append_named(
+            conn,
+            "run-1",
+            "writer-lease-idle",
+            "lease_idle",
+            Refs {
+                package: Some("package-1"),
+                session: Some("writer-session"),
+                lease: Some("writer-lease"),
+                ..Refs::default()
+            },
+            &format!("{{\"v\":1,\"last_used_at\":\"{at}\",\"next_action\":\"reuse\"}}"),
+        );
+
+        append_named(
+            conn,
+            "run-1",
+            "writer-attempt-2-plan",
+            "attempt_planned",
+            Refs {
+                package: Some("package-1"),
+                assignment: Some("writer"),
+                attempt: Some("writer-attempt-2"),
+                ..Refs::default()
+            },
+            "{\"v\":1,\"attempt_sequence\":2,\"next_action\":\"route\"}",
+        );
+        append_named(
+            conn,
+            "run-1",
+            "writer-route-2",
+            "route_requested",
+            Refs {
+                package: Some("package-1"),
+                assignment: Some("writer"),
+                attempt: Some("writer-attempt-2"),
+                ..Refs::default()
+            },
+            &format!(
+                "{{\"v\":1,\"route_id\":\"writer-route-2\",\"required_profile\":\"standard\",\"requested_model\":null,\"requested_reasoning\":null,\"escalated_from_route_id\":null,\"decided_at\":\"{at}\",\"next_action\":\"reuse\"}}"
+            ),
+        );
+        append_named(
+            conn,
+            "run-1",
+            "writer-dispatch-reuse",
+            "dispatch_reuse_selected",
+            Refs {
+                package: Some("package-1"),
+                assignment: Some("writer"),
+                attempt: Some("writer-attempt-2"),
+                session: Some("writer-session"),
+                lease: Some("writer-lease"),
+            },
+            "{\"v\":1,\"session_id\":\"writer-session\",\"lease_id\":\"writer-lease\",\"reason\":\"compatible\",\"authorization_ref\":\"reuse-auth\"}",
+        );
+        append_named(
+            conn,
+            "run-1",
+            "writer-lease-reuse",
+            "lease_reused",
+            Refs {
+                package: Some("package-1"),
+                assignment: Some("writer"),
+                attempt: Some("writer-attempt-2"),
+                session: Some("writer-session"),
+                lease: Some("writer-lease"),
+            },
+            &format!(
+                "{{\"v\":1,\"attempt_id\":\"writer-attempt-2\",\"compatibility_evidence\":{{\"v\":1,\"items\":[{{\"kind\":\"scope\",\"ref\":\"writer-lease\",\"result\":\"compatible\"}}]}},\"last_used_at\":\"{at}\",\"next_action\":\"run\"}}"
+            ),
+        );
+        append_named(
+            conn,
+            "run-1",
+            "writer-session-run-2",
+            "session_running",
+            Refs {
+                package: Some("package-1"),
+                assignment: Some("writer"),
+                attempt: Some("writer-attempt-2"),
+                session: Some("writer-session"),
+                lease: Some("writer-lease"),
+            },
+            &format!(
+                "{{\"v\":1,\"started_or_resumed_at\":\"{at}\",\"lease_id\":\"writer-lease\",\"attempt_id\":\"writer-attempt-2\",\"prior_report_ref\":\"/tmp/writer-1.md\",\"gate_evidence\":{evidence},\"next_action\":\"work\"}}"
+            ),
+        );
+        append_named(
+            conn,
+            "run-1",
+            "writer-route-2-applied",
+            "route_applied",
+            Refs {
+                package: Some("package-1"),
+                assignment: Some("writer"),
+                attempt: Some("writer-attempt-2"),
+                session: Some("writer-session"),
+                ..Refs::default()
+            },
+            &format!(
+                "{{\"v\":1,\"routing_status\":\"applied\",\"actual_model\":\"observed-model\",\"actual_reasoning\":null,\"eligibility_evidence\":{evidence},\"decided_at\":\"{at}\"}}"
+            ),
+        );
+        append_named(
+            conn,
+            "run-1",
+            "writer-attempt-2-start",
+            "attempt_started",
+            Refs {
+                package: Some("package-1"),
+                assignment: Some("writer"),
+                attempt: Some("writer-attempt-2"),
+                session: Some("writer-session"),
+                lease: Some("writer-lease"),
+            },
+            &format!("{{\"v\":1,\"started_at\":\"{at}\",\"next_action\":\"work\"}}"),
+        );
+        append_named(
+            conn,
+            "run-1",
+            "writer-start-2",
+            "assignment_started",
+            Refs {
+                package: Some("package-1"),
+                assignment: Some("writer"),
+                attempt: Some("writer-attempt-2"),
+                session: Some("writer-session"),
+                lease: Some("writer-lease"),
+            },
+            &format!(
+                "{{\"v\":1,\"attempt_id\":\"writer-attempt-2\",\"started_at\":\"{at}\",\"current_step\":\"verify\"}}"
+            ),
+        );
+
+        for (event_id, source, observation, tokens, supersedes) in [
+            ("usage-weak", "inference", "cumulative", 20, "null"),
+            (
+                "usage-correction",
+                "host-runtime",
+                "correction",
+                10,
+                "\"usage-weak\"",
+            ),
         ] {
-            let event = EventInput {
-                event_id: event_id.into(),
-                run_id: "run-1".into(),
-                package_id: None,
-                assignment_id: None,
-                attempt_id: None,
-                session_id: Some("session-1".into()),
-                lease_id: None,
-                event_type: "usage_observed".into(),
-                source_kind: source.into(),
-                source_id: event_id.into(),
-                confidence: None,
-                payload_json: format!(
-                    "{{\"v\":1,\"scope\":\"session\",\"subject_id\":\"session-1\",\"observation_kind\":\"cumulative\",\"window_start\":null,\"window_end\":\"2026-07-12T09:10:00.006Z\",\"input_tokens\":{tokens},\"output_tokens\":null,\"reasoning_tokens\":null,\"cache_read_tokens\":null,\"cache_write_tokens\":null,\"credits\":null,\"provider_cost\":null,\"telemetry_quality\":\"exact\",\"supersedes_event_id\":null}}"
-                ),
-                occurred_at: "2026-07-12T09:10:00.006Z".into(),
-                idempotency_key: event_id.into(),
-            };
-            append_event(conn, &event).unwrap();
+            append_event(conn,&EventInput{event_id:event_id.into(),run_id:"run-1".into(),package_id:None,assignment_id:None,attempt_id:None,session_id:Some("writer-session".into()),lease_id:None,event_type:"usage_observed".into(),source_kind:source.into(),source_id:event_id.into(),confidence:Some(8_000),payload_json:format!("{{\"v\":1,\"scope\":\"session\",\"subject_id\":\"writer-session\",\"observation_kind\":\"{observation}\",\"window_start\":null,\"window_end\":\"{at}\",\"input_tokens\":{tokens},\"output_tokens\":null,\"reasoning_tokens\":null,\"cache_read_tokens\":null,\"cache_write_tokens\":null,\"credits\":null,\"provider_cost\":null,\"telemetry_quality\":\"exact\",\"supersedes_event_id\":{supersedes}}}"),occurred_at:at.into(),idempotency_key:event_id.into()}).unwrap();
         }
+        append_named(
+            conn,
+            "run-1",
+            "writer-report-2",
+            "assignment_reported",
+            Refs {
+                package: Some("package-1"),
+                assignment: Some("writer"),
+                attempt: Some("writer-attempt-2"),
+                session: Some("writer-session"),
+                ..Refs::default()
+            },
+            &format!(
+                "{{\"v\":1,\"report_path\":\"/tmp/writer-2.md\",\"reported_at\":\"{at}\",\"next_action\":\"validate\"}}"
+            ),
+        );
+        append_named(
+            conn,
+            "run-1",
+            "writer-attempt-2-report",
+            "attempt_reported",
+            Refs {
+                package: Some("package-1"),
+                assignment: Some("writer"),
+                attempt: Some("writer-attempt-2"),
+                session: Some("writer-session"),
+                lease: Some("writer-lease"),
+            },
+            &format!("{{\"v\":1,\"reported_at\":\"{at}\",\"next_action\":\"validate\"}}"),
+        );
+        append_named(
+            conn,
+            "run-1",
+            "writer-session-report-2",
+            "session_reported",
+            Refs {
+                package: Some("package-1"),
+                assignment: Some("writer"),
+                attempt: Some("writer-attempt-2"),
+                session: Some("writer-session"),
+                ..Refs::default()
+            },
+            &format!(
+                "{{\"v\":1,\"last_reported_at\":\"{at}\",\"assignment_id\":\"writer\",\"attempt_id\":\"writer-attempt-2\",\"next_action\":\"review\"}}"
+            ),
+        );
+        append_named(
+            conn,
+            "run-1",
+            "writer-validate",
+            "assignment_validated",
+            Refs {
+                package: Some("package-1"),
+                assignment: Some("writer"),
+                attempt: Some("writer-attempt-2"),
+                ..Refs::default()
+            },
+            &format!(
+                "{{\"v\":1,\"test_evidence\":{evidence},\"validated_at\":\"{at}\",\"next_action\":\"review\"}}"
+            ),
+        );
+        append_named(
+            conn,
+            "run-1",
+            "writer-attempt-2-validate",
+            "attempt_validated",
+            Refs {
+                package: Some("package-1"),
+                assignment: Some("writer"),
+                attempt: Some("writer-attempt-2"),
+                session: Some("writer-session"),
+                lease: Some("writer-lease"),
+            },
+            &format!("{{\"v\":1,\"validated_at\":\"{at}\",\"next_action\":\"review\"}}"),
+        );
+
+        append_named(
+            conn,
+            "run-1",
+            "review-plan",
+            "assignment_planned",
+            Refs {
+                package: Some("package-1"),
+                assignment: Some("review"),
+                ..Refs::default()
+            },
+            "{\"v\":1,\"title\":\"review\",\"sequence\":2,\"assignment_kind\":\"review\",\"required_role\":\"reviewer\",\"model_floor\":\"deep\",\"risk_class\":\"high\",\"write_scope\":{\"v\":1,\"paths\":[]},\"base_revision\":\"head\",\"independence_boundary_id\":\"boundary\",\"next_action\":\"queue\"}",
+        );
+        append_named(
+            conn,
+            "run-1",
+            "review-queue",
+            "assignment_queued",
+            Refs {
+                package: Some("package-1"),
+                assignment: Some("review"),
+                ..Refs::default()
+            },
+            "{\"v\":1,\"next_action\":\"attempt\"}",
+        );
+        append_named(
+            conn,
+            "run-1",
+            "review-attempt-plan",
+            "attempt_planned",
+            Refs {
+                package: Some("package-1"),
+                assignment: Some("review"),
+                attempt: Some("review-attempt"),
+                ..Refs::default()
+            },
+            "{\"v\":1,\"attempt_sequence\":1,\"next_action\":\"route\"}",
+        );
+        append_named(
+            conn,
+            "run-1",
+            "review-route",
+            "route_requested",
+            Refs {
+                package: Some("package-1"),
+                assignment: Some("review"),
+                attempt: Some("review-attempt"),
+                ..Refs::default()
+            },
+            &format!(
+                "{{\"v\":1,\"route_id\":\"review-route\",\"required_profile\":\"deep\",\"requested_model\":null,\"requested_reasoning\":null,\"escalated_from_route_id\":null,\"decided_at\":\"{at}\",\"next_action\":\"spawn\"}}"
+            ),
+        );
+        append_named(
+            conn,
+            "run-1",
+            "review-session-plan",
+            "session_planned",
+            Refs {
+                package: Some("package-1"),
+                assignment: Some("review"),
+                attempt: Some("review-attempt"),
+                session: Some("review-session"),
+                ..Refs::default()
+            },
+            "{\"v\":1,\"authorization_ref\":\"review-auth\",\"budget_reason\":\"review\",\"run_max_open\":2,\"run_max_total\":4,\"session_token_budget\":{\"mode\":\"unbounded\",\"tokens\":null},\"nested_delegation\":{\"allowed\":false,\"authority_ref\":null},\"requested_host\":null,\"requested_profile\":\"deep\",\"requested_model\":null,\"requested_reasoning\":null,\"parent_session_id\":null}",
+        );
+        append_named(
+            conn,
+            "run-1",
+            "review-lease-plan",
+            "lease_planned",
+            Refs {
+                package: Some("package-1"),
+                session: Some("review-session"),
+                lease: Some("review-lease"),
+                ..Refs::default()
+            },
+            "{\"v\":1,\"role\":\"reviewer\",\"model_profile\":\"deep\",\"risk_class\":\"high\",\"write_scope\":{\"v\":1,\"paths\":[]},\"base_revision\":\"head\",\"independence_boundary_id\":\"boundary\",\"replaces_session_id\":null,\"expiry_predicate\":null,\"expires_at\":null,\"next_action\":\"issue\"}",
+        );
+        append_named(
+            conn,
+            "run-1",
+            "review-spawn",
+            "session_spawned",
+            Refs {
+                session: Some("review-session"),
+                ..Refs::default()
+            },
+            &format!(
+                "{{\"v\":1,\"handle\":\"review-handle\",\"host_id\":\"host\",\"spawned_at\":\"{at}\",\"next_action\":\"route\"}}"
+            ),
+        );
+        append_named(
+            conn,
+            "run-1",
+            "review-route-applied",
+            "route_applied",
+            Refs {
+                package: Some("package-1"),
+                assignment: Some("review"),
+                attempt: Some("review-attempt"),
+                ..Refs::default()
+            },
+            &format!(
+                "{{\"v\":1,\"routing_status\":\"applied\",\"actual_model\":\"review-model\",\"actual_reasoning\":null,\"eligibility_evidence\":{evidence},\"decided_at\":\"{at}\"}}"
+            ),
+        );
+        append_named(
+            conn,
+            "run-1",
+            "review-lease-issue",
+            "lease_issued",
+            Refs {
+                package: Some("package-1"),
+                session: Some("review-session"),
+                lease: Some("review-lease"),
+                ..Refs::default()
+            },
+            &format!("{{\"v\":1,\"issued_at\":\"{at}\",\"next_action\":\"run\"}}"),
+        );
+        append_named(
+            conn,
+            "run-1",
+            "review-session-run",
+            "session_running",
+            Refs {
+                package: Some("package-1"),
+                assignment: Some("review"),
+                attempt: Some("review-attempt"),
+                session: Some("review-session"),
+                lease: Some("review-lease"),
+            },
+            &format!(
+                "{{\"v\":1,\"started_or_resumed_at\":\"{at}\",\"lease_id\":\"review-lease\",\"attempt_id\":\"review-attempt\",\"prior_report_ref\":null,\"gate_evidence\":null,\"next_action\":\"review\"}}"
+            ),
+        );
+        append_named(
+            conn,
+            "run-1",
+            "review-attempt-start",
+            "attempt_started",
+            Refs {
+                package: Some("package-1"),
+                assignment: Some("review"),
+                attempt: Some("review-attempt"),
+                session: Some("review-session"),
+                lease: Some("review-lease"),
+            },
+            &format!("{{\"v\":1,\"started_at\":\"{at}\",\"next_action\":\"review\"}}"),
+        );
+        append_named(
+            conn,
+            "run-1",
+            "review-start",
+            "assignment_started",
+            Refs {
+                package: Some("package-1"),
+                assignment: Some("review"),
+                attempt: Some("review-attempt"),
+                session: Some("review-session"),
+                lease: Some("review-lease"),
+            },
+            &format!(
+                "{{\"v\":1,\"attempt_id\":\"review-attempt\",\"started_at\":\"{at}\",\"current_step\":\"inspect\"}}"
+            ),
+        );
+        append_named(
+            conn,
+            "run-1",
+            "review-report",
+            "assignment_reported",
+            Refs {
+                package: Some("package-1"),
+                assignment: Some("review"),
+                attempt: Some("review-attempt"),
+                session: Some("review-session"),
+                ..Refs::default()
+            },
+            &format!(
+                "{{\"v\":1,\"report_path\":\"/tmp/review.md\",\"reported_at\":\"{at}\",\"next_action\":\"validate\"}}"
+            ),
+        );
+        append_named(
+            conn,
+            "run-1",
+            "review-attempt-report",
+            "attempt_reported",
+            Refs {
+                package: Some("package-1"),
+                assignment: Some("review"),
+                attempt: Some("review-attempt"),
+                session: Some("review-session"),
+                lease: Some("review-lease"),
+            },
+            &format!("{{\"v\":1,\"reported_at\":\"{at}\",\"next_action\":\"validate\"}}"),
+        );
+        append_named(
+            conn,
+            "run-1",
+            "review-session-report",
+            "session_reported",
+            Refs {
+                package: Some("package-1"),
+                assignment: Some("review"),
+                attempt: Some("review-attempt"),
+                session: Some("review-session"),
+                ..Refs::default()
+            },
+            &format!(
+                "{{\"v\":1,\"last_reported_at\":\"{at}\",\"assignment_id\":\"review\",\"attempt_id\":\"review-attempt\",\"next_action\":\"gate\"}}"
+            ),
+        );
+        append_named(
+            conn,
+            "run-1",
+            "review-validate",
+            "assignment_validated",
+            Refs {
+                package: Some("package-1"),
+                assignment: Some("review"),
+                attempt: Some("review-attempt"),
+                ..Refs::default()
+            },
+            &format!(
+                "{{\"v\":1,\"test_evidence\":{evidence},\"validated_at\":\"{at}\",\"next_action\":\"gate\"}}"
+            ),
+        );
+        append_named(
+            conn,
+            "run-1",
+            "review-attempt-validate",
+            "attempt_validated",
+            Refs {
+                package: Some("package-1"),
+                assignment: Some("review"),
+                attempt: Some("review-attempt"),
+                session: Some("review-session"),
+                lease: Some("review-lease"),
+            },
+            &format!("{{\"v\":1,\"validated_at\":\"{at}\",\"next_action\":\"gate\"}}"),
+        );
+        append_named(
+            conn,
+            "run-1",
+            "review-gate",
+            "quality_gate_passed",
+            Refs {
+                package: Some("package-1"),
+                assignment: Some("review"),
+                ..Refs::default()
+            },
+            &format!(
+                "{{\"v\":1,\"subject_kind\":\"assignment\",\"subject_id\":\"review\",\"policy\":{{\"v\":1,\"kind\":\"independent\"}},\"evidence\":{review_evidence},\"observed_at\":\"{at}\"}}"
+            ),
+        );
+        append_named(
+            conn,
+            "run-1",
+            "review-accept",
+            "assignment_accepted",
+            Refs {
+                package: Some("package-1"),
+                assignment: Some("review"),
+                attempt: Some("review-attempt"),
+                ..Refs::default()
+            },
+            &format!(
+                "{{\"v\":1,\"review_evidence\":{review_evidence},\"accepted_at\":\"{at}\",\"ended_at\":\"{at}\"}}"
+            ),
+        );
+        append_named(
+            conn,
+            "run-1",
+            "review-attempt-accept",
+            "attempt_accepted",
+            Refs {
+                package: Some("package-1"),
+                assignment: Some("review"),
+                attempt: Some("review-attempt"),
+                session: Some("review-session"),
+                lease: Some("review-lease"),
+            },
+            &format!("{{\"v\":1,\"accepted_at\":\"{at}\",\"ended_at\":\"{at}\"}}"),
+        );
+        append_named(
+            conn,
+            "run-1",
+            "package-review-start",
+            "package_review_started",
+            Refs {
+                package: Some("package-1"),
+                assignment: Some("review"),
+                ..Refs::default()
+            },
+            "{\"v\":1,\"review_assignment_id\":\"review\",\"next_action\":\"review\"}",
+        );
+        append_named(
+            conn,
+            "run-1",
+            "package-review-complete",
+            "package_review_completed",
+            Refs {
+                package: Some("package-1"),
+                assignment: Some("review"),
+                ..Refs::default()
+            },
+            &format!(
+                "{{\"v\":1,\"verdict\":\"accepted\",\"review_evidence\":{review_evidence},\"next_action\":\"complete\"}}"
+            ),
+        );
+        append_named(
+            conn,
+            "run-1",
+            "writer-gate",
+            "quality_gate_passed",
+            Refs {
+                package: Some("package-1"),
+                assignment: Some("writer"),
+                ..Refs::default()
+            },
+            &format!(
+                "{{\"v\":1,\"subject_kind\":\"assignment\",\"subject_id\":\"writer\",\"policy\":{{\"v\":1,\"kind\":\"independent\"}},\"evidence\":{review_evidence},\"observed_at\":\"{at}\"}}"
+            ),
+        );
+        append_named(
+            conn,
+            "run-1",
+            "writer-accept",
+            "assignment_accepted",
+            Refs {
+                package: Some("package-1"),
+                assignment: Some("writer"),
+                attempt: Some("writer-attempt-2"),
+                ..Refs::default()
+            },
+            &format!(
+                "{{\"v\":1,\"review_evidence\":{review_evidence},\"accepted_at\":\"{at}\",\"ended_at\":\"{at}\"}}"
+            ),
+        );
+        append_named(
+            conn,
+            "run-1",
+            "writer-attempt-2-accept",
+            "attempt_accepted",
+            Refs {
+                package: Some("package-1"),
+                assignment: Some("writer"),
+                attempt: Some("writer-attempt-2"),
+                session: Some("writer-session"),
+                lease: Some("writer-lease"),
+            },
+            &format!("{{\"v\":1,\"accepted_at\":\"{at}\",\"ended_at\":\"{at}\"}}"),
+        );
+        append_named(
+            conn,
+            "run-1",
+            "writer-lease-close",
+            "lease_closed",
+            Refs {
+                package: Some("package-1"),
+                session: Some("writer-session"),
+                lease: Some("writer-lease"),
+                ..Refs::default()
+            },
+            &format!("{{\"v\":1,\"expiry_reason\":\"complete\",\"ended_at\":\"{at}\"}}"),
+        );
+        append_named(
+            conn,
+            "run-1",
+            "review-lease-close",
+            "lease_closed",
+            Refs {
+                package: Some("package-1"),
+                session: Some("review-session"),
+                lease: Some("review-lease"),
+                ..Refs::default()
+            },
+            &format!("{{\"v\":1,\"expiry_reason\":\"complete\",\"ended_at\":\"{at}\"}}"),
+        );
+        append_named(
+            conn,
+            "run-1",
+            "writer-session-close",
+            "session_closed",
+            Refs {
+                session: Some("writer-session"),
+                ..Refs::default()
+            },
+            &format!(
+                "{{\"v\":1,\"outcome\":\"success\",\"close_disposition\":\"confirmed\",\"closed_at\":\"{at}\",\"ended_at\":\"{at}\"}}"
+            ),
+        );
+        append_named(
+            conn,
+            "run-1",
+            "review-session-close",
+            "session_closed",
+            Refs {
+                session: Some("review-session"),
+                ..Refs::default()
+            },
+            &format!(
+                "{{\"v\":1,\"outcome\":\"success\",\"close_disposition\":\"confirmed\",\"closed_at\":\"{at}\",\"ended_at\":\"{at}\"}}"
+            ),
+        );
+        append_named(
+            conn,
+            "run-1",
+            "package-complete",
+            "package_completed",
+            Refs {
+                package: Some("package-1"),
+                ..Refs::default()
+            },
+            &format!("{{\"v\":1,\"ended_at\":\"{at}\"}}"),
+        );
+        append_named(
+            conn,
+            "run-1",
+            "run-complete",
+            "run_completed",
+            Refs::default(),
+            &format!("{{\"v\":1,\"completed_at\":\"{at}\",\"ended_at\":\"{at}\"}}"),
+        );
     }
 
     fn snapshot(conn: &Connection, table: &str, columns: &str, order: &str) -> Vec<String> {
@@ -4866,6 +6880,49 @@ mod tests {
     fn replay_reproduces_every_projection_and_provenance_row() {
         let mut source = connection();
         setup_replay_source(&mut source);
+        for table in [
+            "work_packages",
+            "work_package_dependencies",
+            "assignments",
+            "assignment_attempts",
+            "agent_sessions",
+            "session_leases",
+            "routing_decisions",
+            "projection_field_sources",
+        ] {
+            assert!(
+                source
+                    .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row
+                        .get::<_, i64>(0))
+                    .unwrap()
+                    > 0,
+                "rich replay fixture left {table} empty"
+            );
+        }
+        for event_type in [
+            "route_degraded",
+            "attempt_failed",
+            "assignment_requeued",
+            "lease_reused",
+            "quality_gate_passed",
+            "package_review_completed",
+            "usage_observed",
+            "session_closed",
+            "package_completed",
+            "run_completed",
+        ] {
+            assert!(
+                source
+                    .query_row(
+                        "SELECT COUNT(*) FROM control_plane_events WHERE event_type=?1",
+                        [event_type],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .unwrap()
+                    > 0,
+                "rich replay fixture omitted {event_type}"
+            );
+        }
         let mut target = connection();
         replay_run_into_empty(&source, &mut target, "run-1").unwrap();
         let tables = [
@@ -4962,6 +7019,31 @@ mod tests {
         append_run(&mut target, "other-event", "other-run", "other");
         let error = replay_run_into_empty(&source, &mut target, "run-1").unwrap_err();
         assert!(error.contains("target must be empty"), "{error}");
+    }
+
+    #[test]
+    fn replay_rejects_structurally_wrong_current_target() {
+        let mut source = connection();
+        setup_replay_source(&mut source);
+        let mut target = connection();
+        target
+            .execute("DROP TRIGGER trg_control_plane_events_no_delete", [])
+            .unwrap();
+        let error = replay_run_into_empty(&source, &mut target, "run-1").unwrap_err();
+        assert!(
+            error.contains("structural mismatch")
+                || error.contains("trg_control_plane_events_no_delete"),
+            "{error}"
+        );
+        assert_eq!(
+            target
+                .query_row("SELECT COUNT(*) FROM control_plane_events", [], |row| row
+                    .get::<_, i64>(
+                    0
+                ))
+                .unwrap(),
+            0
+        );
     }
 
     #[test]
@@ -5069,11 +7151,253 @@ mod tests {
     }
 
     #[test]
+    fn independent_assignment_acceptance_requires_prior_gate_evidence() {
+        let mut conn = connection();
+        append_run(&mut conn, "independent-run", "run-1", "independent-run");
+        direct_active_package(&conn, "package-1", "independent");
+        conn.execute(
+            "INSERT INTO assignments(assignment_id,package_id,title,sequence,assignment_kind,required_role,model_floor,risk_class,write_scope,attempt_count,status,test_evidence) VALUES('assignment-1','package-1','work',1,'implementation','worker','standard','medium','{\"v\":1,\"paths\":[]}',0,'validated','{\"v\":1,\"items\":[]}')",
+            [],
+        )
+        .unwrap();
+        let accepted = |event_id: &str| {
+            EventInput {
+            event_id: event_id.into(),
+            run_id: "run-1".into(),
+            package_id: Some("package-1".into()),
+            assignment_id: Some("assignment-1".into()),
+            attempt_id: None,
+            session_id: None,
+            lease_id: None,
+            event_type: "assignment_accepted".into(),
+            source_kind: "controller-observation".into(),
+            source_id: "controller".into(),
+            confidence: None,
+            payload_json: "{\"v\":1,\"review_evidence\":{\"v\":1,\"items\":[{\"kind\":\"review\",\"ref\":\"review-report\",\"result\":\"pass\"}]},\"accepted_at\":\"2026-07-12T09:20:00.000Z\",\"ended_at\":\"2026-07-12T09:20:00.000Z\"}".into(),
+            occurred_at: "2026-07-12T09:20:00.000Z".into(),
+            idempotency_key: event_id.into(),
+        }
+        };
+        let before = conn
+            .query_row(
+                "SELECT next_sequence FROM run_event_counters WHERE run_id='run-1'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap();
+        assert!(append_event(&mut conn, &accepted("accept-without-gate")).is_err());
+        assert_eq!(
+            conn.query_row(
+                "SELECT next_sequence FROM run_event_counters WHERE run_id='run-1'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            before
+        );
+
+        append_named(
+            &mut conn,
+            "run-1",
+            "independent-gate",
+            "quality_gate_passed",
+            Refs {
+                package: Some("package-1"),
+                assignment: Some("assignment-1"),
+                ..Refs::default()
+            },
+            "{\"v\":1,\"subject_kind\":\"assignment\",\"subject_id\":\"assignment-1\",\"policy\":{\"v\":1,\"kind\":\"independent\"},\"evidence\":{\"v\":1,\"items\":[{\"kind\":\"review\",\"ref\":\"review-report\",\"result\":\"pass\"}]},\"observed_at\":\"2026-07-12T09:20:01.000Z\"}",
+        );
+        append_event(&mut conn, &accepted("accept-after-gate")).unwrap();
+        assert_eq!(
+            conn.query_row(
+                "SELECT status FROM assignments WHERE assignment_id='assignment-1'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+            "accepted"
+        );
+    }
+
+    #[test]
+    fn package_review_completion_requires_accepted_owned_review_assignment() {
+        let mut conn = connection();
+        append_run(&mut conn, "review-guard-run", "run-1", "review-guard-run");
+        direct_active_package(&conn, "package-1", "independent");
+        conn.execute("INSERT INTO assignments(assignment_id,package_id,title,sequence,assignment_kind,required_role,model_floor,risk_class,write_scope,attempt_count,status) VALUES('review-1','package-1','review',1,'review','reviewer','deep','high','{\"v\":1,\"paths\":[]}',0,'planned')",[]).unwrap();
+        append_named(
+            &mut conn,
+            "run-1",
+            "review-guard-start",
+            "package_review_started",
+            Refs {
+                package: Some("package-1"),
+                assignment: Some("review-1"),
+                ..Refs::default()
+            },
+            "{\"v\":1,\"review_assignment_id\":\"review-1\",\"next_action\":\"review\"}",
+        );
+        let completion = EventInput {
+            event_id: "review-guard-complete".into(),
+            run_id: "run-1".into(),
+            package_id: Some("package-1".into()),
+            assignment_id: Some("review-1".into()),
+            attempt_id: None,
+            session_id: None,
+            lease_id: None,
+            event_type: "package_review_completed".into(),
+            source_kind: "controller-observation".into(),
+            source_id: "controller".into(),
+            confidence: None,
+            payload_json: "{\"v\":1,\"verdict\":\"accepted\",\"review_evidence\":{\"v\":1,\"items\":[{\"kind\":\"review\",\"ref\":\"review-report\",\"result\":\"pass\"}]},\"next_action\":\"complete\"}".into(),
+            occurred_at: "2026-07-12T09:20:00.000Z".into(),
+            idempotency_key: "review-guard-complete".into(),
+        };
+        for status in ["planned", "reported", "validated"] {
+            conn.execute(
+                "UPDATE assignments SET status=?2 WHERE assignment_id='review-1'",
+                ["review-1", status],
+            )
+            .unwrap();
+            assert!(
+                append_event(&mut conn, &completion).is_err(),
+                "status={status}"
+            );
+        }
+    }
+
+    #[test]
+    fn session_running_requires_active_lease_and_nonterminal_attempt() {
+        for lease_status in ["planned", "idle", "expired", "revoked", "closed"] {
+            let mut conn = connection();
+            setup_planned_attempt(&mut conn);
+            conn.execute("INSERT INTO agent_sessions(session_id,run_id,role,token_budget_mode,status) VALUES('session-1','run-1','worker','unbounded','spawned')",[]).unwrap();
+            conn.execute("INSERT INTO session_leases(lease_id,session_id,package_id,role,model_profile,risk_class,write_scope,base_revision,status,reuse_count) VALUES('lease-1','session-1','package-1','worker','standard','medium','{\"v\":1,\"paths\":[]}','base',?1,0)",[lease_status]).unwrap();
+            let event = session_running_event("run-invalid-lease");
+            let before = conn
+                .query_row(
+                    "SELECT next_sequence FROM run_event_counters WHERE run_id='run-1'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap();
+            assert!(
+                append_event(&mut conn, &event).is_err(),
+                "lease_status={lease_status}"
+            );
+            assert_eq!(
+                conn.query_row(
+                    "SELECT next_sequence FROM run_event_counters WHERE run_id='run-1'",
+                    [],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap(),
+                before
+            );
+        }
+
+        for attempt_status in ["accepted", "failed", "cancelled"] {
+            let mut conn = connection();
+            setup_planned_attempt(&mut conn);
+            conn.execute(
+                "UPDATE assignment_attempts SET status=?1 WHERE attempt_id='attempt-1'",
+                [attempt_status],
+            )
+            .unwrap();
+            conn.execute("INSERT INTO agent_sessions(session_id,run_id,role,token_budget_mode,status) VALUES('session-1','run-1','worker','unbounded','spawned')",[]).unwrap();
+            conn.execute("INSERT INTO session_leases(lease_id,session_id,package_id,role,model_profile,risk_class,write_scope,base_revision,status,reuse_count) VALUES('lease-1','session-1','package-1','worker','standard','medium','{\"v\":1,\"paths\":[]}','base','active',0)",[]).unwrap();
+            assert!(
+                append_event(&mut conn, &session_running_event("run-terminal-attempt")).is_err(),
+                "attempt_status={attempt_status}"
+            );
+        }
+    }
+
+    fn session_running_event(event_id: &str) -> EventInput {
+        EventInput {
+            event_id: event_id.into(),
+            run_id: "run-1".into(),
+            package_id: Some("package-1".into()),
+            assignment_id: Some("assignment-1".into()),
+            attempt_id: Some("attempt-1".into()),
+            session_id: Some("session-1".into()),
+            lease_id: Some("lease-1".into()),
+            event_type: "session_running".into(),
+            source_kind: "controller-observation".into(),
+            source_id: "controller".into(),
+            confidence: None,
+            payload_json: "{\"v\":1,\"started_or_resumed_at\":\"2026-07-12T09:21:00.000Z\",\"lease_id\":\"lease-1\",\"attempt_id\":\"attempt-1\",\"prior_report_ref\":null,\"gate_evidence\":null,\"next_action\":\"run\"}".into(),
+            occurred_at: "2026-07-12T09:21:00.000Z".into(),
+            idempotency_key: event_id.into(),
+        }
+    }
+
+    #[test]
+    fn session_blocked_facet_requires_balanced_transitions() {
+        let mut conn = connection();
+        append_run(&mut conn, "block-run", "run-1", "block-run");
+        conn.execute("INSERT INTO agent_sessions(session_id,run_id,role,token_budget_mode,status) VALUES('session-1','run-1','worker','unbounded','running')",[]).unwrap();
+        let facet = |event_id: &str, event_type: &str, payload: &str| EventInput {
+            event_id: event_id.into(),
+            run_id: "run-1".into(),
+            package_id: None,
+            assignment_id: None,
+            attempt_id: None,
+            session_id: Some("session-1".into()),
+            lease_id: None,
+            event_type: event_type.into(),
+            source_kind: "controller-observation".into(),
+            source_id: "controller".into(),
+            confidence: None,
+            payload_json: payload.into(),
+            occurred_at: "2026-07-12T09:22:00.000Z".into(),
+            idempotency_key: event_id.into(),
+        };
+        let unblock_payload = "{\"v\":1,\"resolution\":\"clear\",\"next_action\":\"continue\"}";
+        let block_payload = "{\"v\":1,\"blocker\":\"waiting\",\"next_action\":\"wait\"}";
+        assert!(
+            append_event(
+                &mut conn,
+                &facet("unblock-before-block", "session_unblocked", unblock_payload)
+            )
+            .is_err()
+        );
+        append_event(
+            &mut conn,
+            &facet("block-1", "session_blocked", block_payload),
+        )
+        .unwrap();
+        assert!(
+            append_event(
+                &mut conn,
+                &facet("block-2", "session_blocked", block_payload)
+            )
+            .is_err()
+        );
+        append_event(
+            &mut conn,
+            &facet("unblock-1", "session_unblocked", unblock_payload),
+        )
+        .unwrap();
+        assert!(
+            append_event(
+                &mut conn,
+                &facet("unblock-2", "session_unblocked", unblock_payload)
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn package_review_verdict_controls_resume_or_completion() {
         let mut conn = connection();
         append_run(&mut conn, "review-run", "run-1", "review-run");
         direct_active_package(&conn, "package-1", "independent");
         conn.execute("INSERT INTO assignments(assignment_id,package_id,title,sequence,assignment_kind,required_role,model_floor,risk_class,write_scope,attempt_count,status) VALUES('review-1','package-1','review',1,'review','reviewer','deep','high','{\"v\":1,\"paths\":[]}',0,'planned')",[]).unwrap();
+        conn.execute("INSERT INTO agent_sessions(session_id,run_id,role,token_budget_mode,status) VALUES('review-session','run-1','reviewer','unbounded','closed')",[]).unwrap();
+        conn.execute("INSERT INTO assignment_attempts(attempt_id,assignment_id,session_id,attempt_sequence,status) VALUES('review-attempt','review-1','review-session',1,'accepted')",[]).unwrap();
+        conn.execute("UPDATE assignments SET status='accepted',report_path='/tmp/review.md',test_evidence='{\"v\":1,\"items\":[]}',review_evidence='{\"v\":1,\"items\":[{\"kind\":\"independence\",\"ref\":\"review-session\",\"result\":\"pass\"}]}',current_attempt_id='review-attempt' WHERE assignment_id='review-1'",[]).unwrap();
         let start = |conn: &mut Connection, id: &str| {
             append_named(
                 conn,
@@ -5082,6 +7406,7 @@ mod tests {
                 "package_review_started",
                 Refs {
                     package: Some("package-1"),
+                    assignment: Some("review-1"),
                     ..Refs::default()
                 },
                 "{\"v\":1,\"review_assignment_id\":\"review-1\",\"next_action\":\"review\"}",
@@ -5095,9 +7420,10 @@ mod tests {
             "package_review_completed",
             Refs {
                 package: Some("package-1"),
+                assignment: Some("review-1"),
                 ..Refs::default()
             },
-            "{\"v\":1,\"verdict\":\"changes_required\",\"review_evidence\":{\"v\":1,\"items\":[]},\"next_action\":\"fix\"}",
+            "{\"v\":1,\"verdict\":\"changes_required\",\"review_evidence\":{\"v\":1,\"items\":[{\"kind\":\"report\",\"ref\":\"/tmp/review.md\",\"result\":\"changes-required\"}]},\"next_action\":\"fix\"}",
         );
         assert_eq!(
             conn.query_row(
@@ -5116,9 +7442,10 @@ mod tests {
             "package_review_completed",
             Refs {
                 package: Some("package-1"),
+                assignment: Some("review-1"),
                 ..Refs::default()
             },
-            "{\"v\":1,\"verdict\":\"accepted\",\"review_evidence\":{\"v\":1,\"items\":[]},\"next_action\":\"complete\"}",
+            "{\"v\":1,\"verdict\":\"accepted\",\"review_evidence\":{\"v\":1,\"items\":[{\"kind\":\"report\",\"ref\":\"/tmp/review.md\",\"result\":\"accepted\"}]},\"next_action\":\"complete\"}",
         );
         append_named(
             &mut conn,
@@ -5336,7 +7663,39 @@ mod tests {
 
     #[test]
     fn circular_projection_pointers_preserve_ownership() {
-        canonical_run_package_assignment_attempt_session_lease_route_chain();
+        let (mut conn, event) = executable_transition_fixture("session_running", "spawned", true);
+        append_event(&mut conn, &event).unwrap();
+        assert_eq!(conn.query_row(
+            "SELECT a.current_attempt_id,aa.assignment_id,aa.session_id,aa.lease_id,aa.route_id,l.session_id,l.package_id,l.current_attempt_id,r.attempt_id FROM assignments a JOIN assignment_attempts aa ON aa.attempt_id=a.current_attempt_id JOIN session_leases l ON l.lease_id=aa.lease_id JOIN routing_decisions r ON r.route_id=aa.route_id WHERE a.assignment_id='matrix-assignment'",
+            [],
+            |row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,String>(2)?,row.get::<_,String>(3)?,row.get::<_,String>(4)?,row.get::<_,String>(5)?,row.get::<_,String>(6)?,row.get::<_,String>(7)?,row.get::<_,String>(8)?)),
+        ).unwrap(),(
+            "matrix-attempt".into(),"matrix-assignment".into(),"matrix-session".into(),"matrix-lease".into(),"matrix-route".into(),"matrix-session".into(),"matrix-package".into(),"matrix-attempt".into(),"matrix-attempt".into()
+        ));
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+            0
+        );
+
+        let (mut conn, mut cross_owner) =
+            executable_transition_fixture("session_running", "spawned", true);
+        cross_owner.event_id = "cross-owner-pointer".into();
+        cross_owner.session_id = Some("matrix-replacement".into());
+        cross_owner.idempotency_key = "cross-owner-pointer".into();
+        let before = event_count_and_counter(&conn, "matrix-run");
+        let error = append_event(&mut conn, &cross_owner).unwrap_err();
+        assert!(
+            error.contains("lease") && error.contains("ownership"),
+            "{error}"
+        );
+        assert_eq!(event_count_and_counter(&conn, "matrix-run"), before);
+        assert_eq!(
+            conn.query_row("SELECT session_id,lease_id FROM assignment_attempts WHERE attempt_id='matrix-attempt'",[],|row|Ok((row.get::<_,Option<String>>(0)?,row.get::<_,Option<String>>(1)?))).unwrap(),
+            (None, None)
+        );
     }
 
     #[test]
@@ -5379,9 +7738,410 @@ mod tests {
                 .unwrap_err()
                 .contains("itself")
         );
-        conn.execute("INSERT INTO work_packages(package_id,run_id,title,role_floor,model_floor,risk_floor,write_scope,review_policy,independence_policy,status) VALUES('cycle-x','run-1','x','worker','standard','medium','{\"v\":1,\"paths\":[]}','{\"v\":1,\"kind\":\"none\"}','{\"v\":1,\"kind\":\"none\"}','planned'),('cycle-y','run-1','y','worker','standard','medium','{\"v\":1,\"paths\":[]}','{\"v\":1,\"kind\":\"none\"}','{\"v\":1,\"kind\":\"none\"}','planned')",[]).unwrap();
-        conn.execute("INSERT INTO work_package_dependencies(package_id,depends_on_package_id) VALUES('cycle-x','cycle-y')",[]).unwrap();
-        assert!(super::dependency_would_cycle(&conn, "cycle-y", "cycle-x").unwrap());
+        append_run(&mut conn, "deps-other-run", "run-2", "deps-other-run");
+        append_named(
+            &mut conn,
+            "run-2",
+            "other-package",
+            "package_planned",
+            Refs {
+                package: Some("other-package"),
+                ..Refs::default()
+            },
+            "{\"v\":1,\"title\":\"other\",\"dependencies\":[],\"role_floor\":\"worker\",\"model_floor\":\"standard\",\"risk_floor\":\"medium\",\"write_scope\":{\"v\":1,\"paths\":[]},\"review_policy\":{\"v\":1,\"kind\":\"none\"},\"independence_policy\":{\"v\":1,\"kind\":\"none\"},\"next_action\":\"done\"}",
+        );
+        let cross_run = EventInput {
+            event_id: "cross-run-dependency".into(),
+            run_id: "run-1".into(),
+            package_id: Some("cross-run-package".into()),
+            assignment_id: None,
+            attempt_id: None,
+            session_id: None,
+            lease_id: None,
+            event_type: "package_planned".into(),
+            source_kind: "controller-observation".into(),
+            source_id: "controller".into(),
+            confidence: None,
+            payload_json: "{\"v\":1,\"title\":\"cross\",\"dependencies\":[\"other-package\"],\"role_floor\":\"worker\",\"model_floor\":\"standard\",\"risk_floor\":\"medium\",\"write_scope\":{\"v\":1,\"paths\":[]},\"review_policy\":{\"v\":1,\"kind\":\"none\"},\"independence_policy\":{\"v\":1,\"kind\":\"none\"},\"next_action\":\"reject\"}".into(),
+            occurred_at: "2026-07-12T09:17:00.000Z".into(),
+            idempotency_key: "cross-run-dependency".into(),
+        };
+        let before = event_count_and_counter(&conn, "run-1");
+        let error = append_event(&mut conn, &cross_run).unwrap_err();
+        assert!(error.contains("does not belong to run"), "{error}");
+        assert_eq!(event_count_and_counter(&conn, "run-1"), before);
+
+        let mut cycle = connection();
+        append_run(&mut cycle, "cycle-run", "cycle-run", "cycle-run");
+        cycle.pragma_update(None, "foreign_keys", "OFF").unwrap();
+        cycle.execute("INSERT INTO work_packages(package_id,run_id,title,role_floor,model_floor,risk_floor,write_scope,review_policy,independence_policy,status) VALUES('cycle-x','cycle-run','x','worker','standard','medium','{\"v\":1,\"paths\":[]}','{\"v\":1,\"kind\":\"none\"}','{\"v\":1,\"kind\":\"none\"}','planned')",[]).unwrap();
+        cycle.execute("INSERT INTO work_package_dependencies(package_id,depends_on_package_id) VALUES('cycle-x','cycle-y')",[]).unwrap();
+        cycle.pragma_update(None, "foreign_keys", "ON").unwrap();
+        assert_eq!(
+            cycle
+                .pragma_query_value(None, "foreign_keys", |row| row.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        let cycle_event = EventInput {
+            event_id: "cycle-y".into(),
+            run_id: "cycle-run".into(),
+            package_id: Some("cycle-y".into()),
+            assignment_id: None,
+            attempt_id: None,
+            session_id: None,
+            lease_id: None,
+            event_type: "package_planned".into(),
+            source_kind: "controller-observation".into(),
+            source_id: "controller".into(),
+            confidence: None,
+            payload_json: "{\"v\":1,\"title\":\"y\",\"dependencies\":[\"cycle-x\"],\"role_floor\":\"worker\",\"model_floor\":\"standard\",\"risk_floor\":\"medium\",\"write_scope\":{\"v\":1,\"paths\":[]},\"review_policy\":{\"v\":1,\"kind\":\"none\"},\"independence_policy\":{\"v\":1,\"kind\":\"none\"},\"next_action\":\"reject\"}".into(),
+            occurred_at: "2026-07-12T09:17:00.000Z".into(),
+            idempotency_key: "cycle-y".into(),
+        };
+        let before = event_count_and_counter(&cycle, "cycle-run");
+        let error = append_event(&mut cycle, &cycle_event).unwrap_err();
+        assert!(error.contains("would create a cycle"), "{error}");
+        assert_eq!(event_count_and_counter(&cycle, "cycle-run"), before);
+        assert_eq!(
+            cycle
+                .query_row(
+                    "SELECT COUNT(*) FROM work_packages WHERE package_id='cycle-y'",
+                    [],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn package_dependencies_require_a_sorted_array() {
+        let mut conn = connection();
+        append_run(&mut conn, "shape-run", "shape-run", "shape-run");
+        for package in ["dep-a", "dep-z"] {
+            append_named(
+                &mut conn,
+                "shape-run",
+                package,
+                "package_planned",
+                Refs {
+                    package: Some(package),
+                    ..Refs::default()
+                },
+                &format!(
+                    "{{\"v\":1,\"title\":\"{package}\",\"dependencies\":[],\"role_floor\":\"worker\",\"model_floor\":\"standard\",\"risk_floor\":\"medium\",\"write_scope\":{{\"v\":1,\"paths\":[]}},\"review_policy\":{{\"v\":1,\"kind\":\"none\"}},\"independence_policy\":{{\"v\":1,\"kind\":\"none\"}},\"next_action\":\"done\"}}"
+                ),
+            );
+            conn.execute(
+                "UPDATE work_packages SET status='complete' WHERE package_id=?1",
+                [package],
+            )
+            .unwrap();
+        }
+        for (event_id, dependencies) in [
+            ("deps-unsorted", "[\"dep-z\",\"dep-a\"]"),
+            ("deps-object", "{\"first\":\"dep-a\"}"),
+        ] {
+            let event = EventInput {
+                event_id: event_id.into(),
+                run_id: "shape-run".into(),
+                package_id: Some(event_id.into()),
+                assignment_id: None,
+                attempt_id: None,
+                session_id: None,
+                lease_id: None,
+                event_type: "package_planned".into(),
+                source_kind: "controller-observation".into(),
+                source_id: "controller".into(),
+                confidence: None,
+                payload_json: format!(
+                    "{{\"v\":1,\"title\":\"bad\",\"dependencies\":{dependencies},\"role_floor\":\"worker\",\"model_floor\":\"standard\",\"risk_floor\":\"medium\",\"write_scope\":{{\"v\":1,\"paths\":[]}},\"review_policy\":{{\"v\":1,\"kind\":\"none\"}},\"independence_policy\":{{\"v\":1,\"kind\":\"none\"}},\"next_action\":\"reject\"}}"
+                ),
+                occurred_at: "2026-07-12T09:18:00.000Z".into(),
+                idempotency_key: event_id.into(),
+            };
+            let before = conn
+                .query_row(
+                    "SELECT next_sequence FROM run_event_counters WHERE run_id='shape-run'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap();
+            assert!(append_event(&mut conn, &event).is_err());
+            assert_eq!(
+                conn.query_row(
+                    "SELECT next_sequence FROM run_event_counters WHERE run_id='shape-run'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+                before
+            );
+        }
+    }
+
+    #[test]
+    fn nested_delegation_allowed_requires_json_boolean() {
+        let mut conn = connection();
+        setup_planned_attempt(&mut conn);
+        let event = EventInput {
+            event_id: "numeric-delegation".into(),
+            run_id: "run-1".into(),
+            package_id: Some("package-1".into()),
+            assignment_id: Some("assignment-1".into()),
+            attempt_id: Some("attempt-1".into()),
+            session_id: Some("numeric-session".into()),
+            lease_id: None,
+            event_type: "session_planned".into(),
+            source_kind: "controller-observation".into(),
+            source_id: "controller".into(),
+            confidence: None,
+            payload_json: "{\"v\":1,\"authorization_ref\":\"auth\",\"budget_reason\":\"reason\",\"run_max_open\":2,\"run_max_total\":4,\"session_token_budget\":{\"mode\":\"unbounded\",\"tokens\":null},\"nested_delegation\":{\"allowed\":0,\"authority_ref\":null},\"requested_host\":null,\"requested_profile\":\"standard\",\"requested_model\":null,\"requested_reasoning\":null,\"parent_session_id\":null}".into(),
+            occurred_at: "2026-07-12T09:18:00.000Z".into(),
+            idempotency_key: "numeric-delegation".into(),
+        };
+        let before = conn
+            .query_row(
+                "SELECT next_sequence FROM run_event_counters WHERE run_id='run-1'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap();
+        let error = append_event(&mut conn, &event).unwrap_err();
+        assert!(error.contains("boolean"), "{error}");
+        assert_eq!(
+            conn.query_row(
+                "SELECT next_sequence FROM run_event_counters WHERE run_id='run-1'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            before
+        );
+    }
+
+    fn setup_provenance_subjects(conn: &mut Connection) {
+        append_run(
+            conn,
+            "provenance-run-event",
+            "provenance-run",
+            "provenance-run",
+        );
+        conn.execute(
+            "INSERT INTO work_packages(package_id,run_id,title,role_floor,model_floor,risk_floor,write_scope,review_policy,independence_policy,status) VALUES('provenance-package','provenance-run','provenance','worker','standard','medium','{\"v\":1,\"paths\":[]}','{\"v\":1,\"kind\":\"none\"}','{\"v\":1,\"kind\":\"none\"}','active')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO assignments(assignment_id,package_id,title,sequence,assignment_kind,required_role,model_floor,risk_class,write_scope,attempt_count,status) VALUES('provenance-assignment','provenance-package','provenance',1,'implementation','worker','standard','medium','{\"v\":1,\"paths\":[]}',0,'validated')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO agent_sessions(session_id,run_id,role,token_budget_mode,status) VALUES('provenance-session','provenance-run','worker','unbounded','running')",
+            [],
+        )
+        .unwrap();
+    }
+
+    fn heartbeat_claim(event_id: &str, source_kind: &str, last_activity_at: &str) -> EventInput {
+        EventInput {
+            event_id: event_id.into(),
+            run_id: "provenance-run".into(),
+            package_id: None,
+            assignment_id: None,
+            attempt_id: None,
+            session_id: Some("provenance-session".into()),
+            lease_id: None,
+            event_type: "session_heartbeat".into(),
+            source_kind: source_kind.into(),
+            source_id: format!("source-{event_id}"),
+            confidence: Some(8_000),
+            payload_json: format!("{{\"v\":1,\"last_activity_at\":\"{last_activity_at}\"}}"),
+            occurred_at: "2026-07-12T09:20:00.000Z".into(),
+            idempotency_key: event_id.into(),
+        }
+    }
+
+    fn quality_gate_claim(event_id: &str, source_kind: &str, result: &str) -> EventInput {
+        EventInput {
+            event_id: event_id.into(),
+            run_id: "provenance-run".into(),
+            package_id: Some("provenance-package".into()),
+            assignment_id: Some("provenance-assignment".into()),
+            attempt_id: None,
+            session_id: None,
+            lease_id: None,
+            event_type: "quality_gate_passed".into(),
+            source_kind: source_kind.into(),
+            source_id: format!("source-{event_id}"),
+            confidence: Some(8_000),
+            payload_json: format!(
+                "{{\"v\":1,\"subject_kind\":\"assignment\",\"subject_id\":\"provenance-assignment\",\"policy\":{{\"v\":1,\"kind\":\"deterministic\"}},\"evidence\":{{\"v\":1,\"items\":[{{\"kind\":\"test\",\"ref\":\"suite\",\"result\":\"{result}\"}}]}},\"observed_at\":\"2026-07-12T09:20:00.000Z\"}}"
+            ),
+            occurred_at: "2026-07-12T09:20:00.000Z".into(),
+            idempotency_key: event_id.into(),
+        }
+    }
+
+    #[test]
+    fn authoritative_events_reject_agent_report_and_inference_sources() {
+        let mut conn = connection();
+        setup_provenance_subjects(&mut conn);
+        let before = conn
+            .query_row(
+                "SELECT next_sequence FROM run_event_counters WHERE run_id='provenance-run'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap();
+
+        let mut accepted = EventInput {
+            event_id: "unauthorized-accept".into(),
+            run_id: "provenance-run".into(),
+            package_id: Some("provenance-package".into()),
+            assignment_id: Some("provenance-assignment".into()),
+            attempt_id: None,
+            session_id: None,
+            lease_id: None,
+            event_type: "assignment_accepted".into(),
+            source_kind: "agent-report".into(),
+            source_id: "writer".into(),
+            confidence: Some(10_000),
+            payload_json: "{\"v\":1,\"review_evidence\":{\"v\":1,\"items\":[]},\"accepted_at\":\"2026-07-12T09:20:00.000Z\",\"ended_at\":\"2026-07-12T09:20:00.000Z\"}".into(),
+            occurred_at: "2026-07-12T09:20:00.000Z".into(),
+            idempotency_key: "unauthorized-accept".into(),
+        };
+        let error = append_event(&mut conn, &accepted).unwrap_err();
+        assert!(error.contains("unauthorized source"), "{error}");
+
+        accepted.event_id = "unauthorized-close".into();
+        accepted.package_id = None;
+        accepted.assignment_id = None;
+        accepted.session_id = Some("provenance-session".into());
+        accepted.event_type = "session_closed".into();
+        accepted.source_kind = "inference".into();
+        accepted.source_id = "observer".into();
+        accepted.payload_json = "{\"v\":1,\"outcome\":\"unknown\",\"close_disposition\":\"observed\",\"closed_at\":\"2026-07-12T09:20:00.000Z\",\"ended_at\":\"2026-07-12T09:20:00.000Z\"}".into();
+        accepted.idempotency_key = "unauthorized-close".into();
+        let error = append_event(&mut conn, &accepted).unwrap_err();
+        assert!(error.contains("unauthorized source"), "{error}");
+
+        let error = append_event(
+            &mut conn,
+            &quality_gate_claim("unauthorized-gate", "agent-report", "passed"),
+        )
+        .unwrap_err();
+        assert!(error.contains("unauthorized source"), "{error}");
+        assert_eq!(
+            conn.query_row(
+                "SELECT next_sequence FROM run_event_counters WHERE run_id='provenance-run'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            before
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT status FROM assignments WHERE assignment_id='provenance-assignment'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+            "validated"
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT status FROM agent_sessions WHERE session_id='provenance-session'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+            "running"
+        );
+    }
+
+    #[test]
+    fn lifecycle_field_provenance_uses_deterministic_winner_and_conflicts() {
+        let mut conn = connection();
+        setup_provenance_subjects(&mut conn);
+        for claim in [
+            heartbeat_claim(
+                "heartbeat-agent",
+                "agent-report",
+                "2026-07-12T09:20:30.000Z",
+            ),
+            heartbeat_claim(
+                "heartbeat-host-correction",
+                "host-runtime",
+                "2026-07-12T09:20:10.000Z",
+            ),
+            heartbeat_claim(
+                "heartbeat-corroboration",
+                "host-runtime",
+                "2026-07-12T09:20:10.000Z",
+            ),
+            heartbeat_claim(
+                "heartbeat-host-later",
+                "host-runtime",
+                "2026-07-12T09:20:20.000Z",
+            ),
+            heartbeat_claim(
+                "heartbeat-agent-weaker",
+                "agent-report",
+                "2026-07-12T09:20:40.000Z",
+            ),
+        ] {
+            append_event(&mut conn, &claim).unwrap();
+        }
+        assert_eq!(
+            conn.query_row(
+                "SELECT last_activity_at FROM agent_sessions WHERE session_id='provenance-session'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+            "2026-07-12T09:20:20.000Z"
+        );
+        assert_eq!(conn.query_row("SELECT winner_event_id,winner_source_kind,conflict_count,last_conflict_event_id FROM projection_field_sources WHERE entity_kind='session' AND entity_id='provenance-session' AND field_name='last_activity_at'",[],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,i64>(2)?,row.get::<_,Option<String>>(3)?))).unwrap(),("heartbeat-host-later".into(),"host-runtime".into(),3,Some("heartbeat-agent-weaker".into())));
+
+        let error = append_event(
+            &mut conn,
+            &heartbeat_claim(
+                "heartbeat-inference",
+                "inference",
+                "2026-07-12T09:20:50.000Z",
+            ),
+        )
+        .unwrap_err();
+        assert!(error.contains("unauthorized source"), "{error}");
+    }
+
+    #[test]
+    fn quality_gate_provenance_uses_deterministic_winner_and_conflicts() {
+        let mut conn = connection();
+        setup_provenance_subjects(&mut conn);
+        for claim in [
+            quality_gate_claim("gate-controller", "controller-observation", "controller"),
+            quality_gate_claim("gate-host", "host-runtime", "host"),
+            quality_gate_claim("gate-corroboration", "host-runtime", "host"),
+            quality_gate_claim("gate-controller-weaker", "controller-observation", "weaker"),
+            quality_gate_claim("gate-host-later", "host-runtime", "latest"),
+        ] {
+            append_event(&mut conn, &claim).unwrap();
+        }
+        assert_eq!(
+            conn.query_row(
+                "SELECT test_evidence FROM assignments WHERE assignment_id='provenance-assignment'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+            "{\"v\":1,\"items\":[{\"kind\":\"test\",\"ref\":\"suite\",\"result\":\"latest\"}]}"
+        );
+        assert_eq!(conn.query_row("SELECT winner_event_id,winner_source_kind,conflict_count,last_conflict_event_id FROM projection_field_sources WHERE entity_kind='assignment' AND entity_id='provenance-assignment' AND field_name='test_evidence'",[],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,i64>(2)?,row.get::<_,Option<String>>(3)?))).unwrap(),("gate-host-later".into(),"host-runtime".into(),3,Some("gate-host-later".into())));
     }
 
     #[test]
