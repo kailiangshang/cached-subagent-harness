@@ -88,6 +88,10 @@ Tiny fix range reviewed: `95853f8..0c39d8f`. No full tests were run; `git diff -
 
 **Final assessment: Ready No.** The idempotency and dashboard gaps are closed, but the estimate sample count remains materially misleading for mixed qualifying/under-threshold groups.
 
+## Closure Verdict
+
+**Ready Yes — Closed:** `49dff80` counts only qualifying groups and adds the mixed qualifying/under-threshold regression fixture.
+
 ## Final Resolution
 
 The remaining sample-count finding is fixed: only groups that both have
