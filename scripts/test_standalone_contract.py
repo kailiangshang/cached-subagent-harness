@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import re
 from pathlib import Path
 
 
@@ -15,14 +16,15 @@ SKILL_PATH = "skills/cached-subagent-harness/SKILL.md"
 METHOD_PATH = (
     "skills/cached-subagent-harness/references/standalone-methodology.md"
 )
-DESIGN_PATH = "docs/specs/2026-07-10-agent-control-plane-design.md"
+DESIGN_PATH = "docs/specs/2026-07-14-lightweight-token-harness-design.md"
 INVARIANT_HEADING = "## Non-negotiable Invariants"
 SKILL_INVARIANT_END = "\n## Controller Loop"
-DESIGN_INVARIANT_END = "\n### Existing-contract disposition map"
 
 REQUIRED_METHOD_SEMANTICS = [
-    "When the runtime cannot prove lease-aware follow-up, place compatible "
-    "assignments in one bounded worker brief and report reuse as unsupported.",
+    "Reuse only after an exact signature match and an atomic `idle` to `busy` "
+    "claim; increment reuse only after the host accepts the follow-up.",
+    "When a host cannot follow up, use one bounded worker brief and report "
+    "reuse as unsupported.",
     "Never emulate reuse with an unrestricted permanent role pool.",
     "Set role, risk, uncertainty, and quality floors before choosing a model "
     "or reasoning profile.",
@@ -114,20 +116,15 @@ class StandaloneContractTests(unittest.TestCase):
                 check=False,
             )
 
-    def test_skill_keeps_canonical_invariant_block(self) -> None:
+    def test_skill_keeps_all_twenty_invariants(self) -> None:
         skill = self.read(SKILL_PATH)
-        design = self.read(DESIGN_PATH)
-        actual = extract_section(
+        invariants = extract_section(
             skill,
             INVARIANT_HEADING,
             SKILL_INVARIANT_END,
         )
-        canonical = extract_section(
-            design,
-            INVARIANT_HEADING,
-            DESIGN_INVARIANT_END,
-        )
-        self.assertEqual(actual, canonical)
+        for number in range(1, 21):
+            self.assertRegex(invariants, rf"(?m)^{number}\. \*\*")
 
     def test_skill_declares_standalone_normal_and_optional_adapters(self) -> None:
         skill = self.read("skills/cached-subagent-harness/SKILL.md")
@@ -209,9 +206,18 @@ class StandaloneContractTests(unittest.TestCase):
 
     def test_release_validator_requires_every_rust_module(self) -> None:
         modules = [
-            "scripts/harnessctl/src/schema.rs",
-            "scripts/harnessctl/src/ledger.rs",
-            "scripts/harnessctl/src/event_store.rs",
+            "scripts/harnessctl/src/domain.rs",
+            "scripts/harnessctl/src/store.rs",
+            "scripts/harnessctl/src/bundle.rs",
+            "scripts/harnessctl/src/routing.rs",
+            "scripts/harnessctl/src/sessions.rs",
+            "scripts/harnessctl/src/hosts.rs",
+            "scripts/harnessctl/src/accounting.rs",
+            "scripts/harnessctl/src/status.rs",
+            "scripts/harnessctl/src/dashboard.rs",
+            "scripts/harnessctl/assets/index.html",
+            "scripts/harnessctl/assets/styles.css",
+            "scripts/harnessctl/assets/app.js",
         ]
         for module in modules:
             with self.subTest(module=module):

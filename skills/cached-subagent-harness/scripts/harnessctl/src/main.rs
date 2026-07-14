@@ -1,17 +1,27 @@
-mod event_store;
-mod ledger;
-mod schema;
+mod accounting;
+mod bundle;
+mod dashboard;
+mod domain;
+mod hosts;
+mod routing;
+mod sessions;
+mod status;
+mod store;
 
-use ledger::{
-    AgentInput, AgentPatch, get_meta_usize, ledger_add, ledger_audit, ledger_update, parse_bool,
-    set_meta,
+use domain::{
+    ActivityInput, DispatchRequest, Language, Operation, Profile, SessionInput, SessionSignature,
+    SessionStatus, TaskInput, TemplateValues, UsageInput,
 };
-use schema::open_db;
+use routing::route;
+use sessions::decide;
+use status::{build_status, render_json, render_text};
 use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::path::Path;
 use std::process::ExitCode;
+use std::str::FromStr;
+use store::Store;
 
 const DYNAMIC_MARKER: &str = "--- DYNAMIC TASK CONTEXT ---";
 const DYNAMIC_FIELDS: &[&str] = &[
@@ -411,97 +421,353 @@ fn cmd_check_prompt(args: &[String]) -> Result<(), String> {
     }
 }
 
-fn cmd_ledger_init(args: &[String]) -> Result<(), String> {
+fn parse_value<T: FromStr<Err = String>>(parsed: &ParsedArgs, name: &str) -> Result<T, String> {
+    required_flag(parsed, name)?.parse()
+}
+
+fn parse_bool_value(parsed: &ParsedArgs, name: &str, default: bool) -> Result<bool, String> {
+    match flag_one(parsed, name).as_deref() {
+        None => Ok(default),
+        Some("true") => Ok(true),
+        Some("false") => Ok(false),
+        Some(value) => Err(format!("invalid --{name}: {value}; expected true or false")),
+    }
+}
+
+fn parse_u64_value(parsed: &ParsedArgs, name: &str) -> Result<u64, String> {
+    let value = required_flag(parsed, name)?;
+    let parsed_value = value
+        .parse::<u64>()
+        .map_err(|error| format!("invalid --{name}: {error}"))?;
+    if parsed_value.to_string() != value {
+        return Err(format!("invalid noncanonical --{name}: {value}"));
+    }
+    Ok(parsed_value)
+}
+
+fn open_store(parsed: &ParsedArgs) -> Result<Store, String> {
+    Store::open(Path::new(&required_flag(parsed, "db")?))
+}
+
+fn cmd_init(args: &[String]) -> Result<(), String> {
     let parsed = parse_args(args)?;
-    let db = required_flag(&parsed, "db")?;
-    let max_concurrent = flag_one(&parsed, "max-concurrent").unwrap_or_else(|| "2".to_string());
-    let max_total = flag_one(&parsed, "max-total").unwrap_or_else(|| "4".to_string());
-    let mut conn = open_db(&db)?;
-    set_meta(&mut conn, "max_concurrent", &max_concurrent)?;
-    set_meta(&mut conn, "max_total", &max_total)?;
-    println!("OK: ledger initialized at {db}");
+    let mut store = open_store(&parsed)?;
+    store.create_run(
+        &required_flag(&parsed, "run")?,
+        &required_flag(&parsed, "goal")?,
+        &required_flag(&parsed, "repo-root")?,
+        &required_flag(&parsed, "report")?,
+    )?;
+    println!("OK: run initialized");
     Ok(())
 }
 
-fn cmd_ledger_add(args: &[String]) -> Result<(), String> {
+fn cmd_task(args: &[String]) -> Result<(), String> {
     let parsed = parse_args(args)?;
-    let db = required_flag(&parsed, "db")?;
-    let role = required_flag(&parsed, "role")?;
-    let write_scope = flag_one(&parsed, "write-scope").unwrap_or_else(|| "none".to_string());
-    let input = AgentInput {
-        handle: required_flag(&parsed, "handle")?,
-        role,
-        task: required_flag(&parsed, "task")?,
-        status: flag_one(&parsed, "status").unwrap_or_else(|| "planned".to_string()),
-        report_path: flag_one(&parsed, "report-path").unwrap_or_default(),
-        spawned_at: flag_one(&parsed, "spawned-at").unwrap_or_default(),
-        waited: flag_one(&parsed, "waited")
-            .map(|value| parse_bool(&value))
-            .transpose()?
-            .unwrap_or(false),
-        closed: flag_one(&parsed, "closed")
-            .map(|value| parse_bool(&value))
-            .transpose()?
-            .unwrap_or(false),
-        write_scope,
-        token_risk: flag_one(&parsed, "token-risk").unwrap_or_default(),
-        final_reason: flag_one(&parsed, "reason").unwrap_or_default(),
-        next_action: flag_one(&parsed, "next-action").unwrap_or_default(),
-    };
-    let mut conn = open_db(&db)?;
-    ledger_add(&mut conn, &input)?;
-    println!("OK: ledger row added for {}", input.handle);
+    let operation = parsed
+        .positionals
+        .first()
+        .ok_or_else(|| "task requires add or update".to_string())?;
+    let mut store = open_store(&parsed)?;
+    match operation.as_str() {
+        "add" => store.add_task(&TaskInput {
+            task_id: required_flag(&parsed, "task")?,
+            run_id: required_flag(&parsed, "run")?,
+            package_key: required_flag(&parsed, "package")?,
+            title: required_flag(&parsed, "title")?,
+            sequence: parse_u64_value(&parsed, "sequence")?,
+            role: parse_value(&parsed, "role")?,
+            complexity: parse_value(&parsed, "complexity")?,
+            risk: parse_value(&parsed, "risk")?,
+            uncertainty: parse_value(&parsed, "uncertainty")?,
+            write_scope: flag_many(&parsed, "write-scope"),
+            scope_hash: required_flag(&parsed, "scope-hash")?,
+            repo_revision: required_flag(&parsed, "revision")?,
+            review_boundary: flag_one(&parsed, "review-boundary"),
+            required_profile: parse_value(&parsed, "profile")?,
+        }),
+        "update" => store.update_task(
+            &required_flag(&parsed, "task")?,
+            parse_value(&parsed, "status")?,
+            flag_one(&parsed, "next-action").as_deref(),
+        ),
+        _ => Err(format!("unknown task operation: {operation}")),
+    }?;
+    println!("OK: task {operation}");
     Ok(())
 }
 
-fn cmd_ledger_update(args: &[String]) -> Result<(), String> {
+fn cmd_session(args: &[String]) -> Result<(), String> {
     let parsed = parse_args(args)?;
-    let db = required_flag(&parsed, "db")?;
-    let handle = required_flag(&parsed, "handle")?;
-    let patch = AgentPatch {
-        status: flag_one(&parsed, "status"),
-        report_path: flag_one(&parsed, "report-path"),
-        waited: flag_one(&parsed, "waited")
-            .map(|value| parse_bool(&value))
-            .transpose()?,
-        closed: flag_one(&parsed, "closed")
-            .map(|value| parse_bool(&value))
-            .transpose()?,
-        write_scope: flag_one(&parsed, "write-scope"),
-        token_risk: flag_one(&parsed, "token-risk"),
-        final_reason: flag_one(&parsed, "reason"),
-        next_action: flag_one(&parsed, "next-action"),
-    };
-    let mut conn = open_db(&db)?;
-    ledger_update(&mut conn, &handle, &patch)?;
-    println!("OK: ledger row updated for {handle}");
-    Ok(())
-}
-
-fn cmd_ledger_audit(args: &[String]) -> Result<(), String> {
-    let parsed = parse_args(args)?;
-    let db = required_flag(&parsed, "db")?;
-    let conn = open_db(&db)?;
-    let mode = flag_one(&parsed, "mode").unwrap_or_else(|| "budget".to_string());
-    let max_concurrent = flag_one(&parsed, "max-concurrent")
-        .map(|value| value.parse::<usize>())
-        .transpose()
-        .map_err(|error| format!("invalid --max-concurrent: {error}"))?
-        .unwrap_or(get_meta_usize(&conn, "max_concurrent", 2)?);
-    let max_total = flag_one(&parsed, "max-total")
-        .map(|value| value.parse::<usize>())
-        .transpose()
-        .map_err(|error| format!("invalid --max-total: {error}"))?
-        .unwrap_or(get_meta_usize(&conn, "max_total", 4)?);
-    let errors = ledger_audit(&conn, &mode, max_concurrent, max_total)?;
-    if errors.is_empty() {
-        println!("OK: ledger audit passed");
-        Ok(())
-    } else {
-        for error in errors {
-            eprintln!("FAIL: {error}");
+    let operation = parsed
+        .positionals
+        .first()
+        .ok_or_else(|| "session requires record, accept-followup, release, or close".to_string())?;
+    let mut store = open_store(&parsed)?;
+    let session_id = required_flag(&parsed, "session")?;
+    match operation.as_str() {
+        "record" => store.add_session(&SessionInput {
+            session_id,
+            run_id: required_flag(&parsed, "run")?,
+            host: required_flag(&parsed, "host")?,
+            handle: flag_one(&parsed, "handle"),
+            role: parse_value(&parsed, "role")?,
+            profile: parse_value(&parsed, "profile")?,
+            requested_model: flag_one(&parsed, "requested-model"),
+            actual_model: flag_one(&parsed, "actual-model"),
+            routing_status: parse_value(&parsed, "routing-status")?,
+            package_key: required_flag(&parsed, "package")?,
+            scope_hash: required_flag(&parsed, "scope-hash")?,
+            repo_revision: required_flag(&parsed, "revision")?,
+            review_boundary: flag_one(&parsed, "review-boundary"),
+            status: parse_value(&parsed, "status")?,
+            current_task_id: flag_one(&parsed, "task"),
+        }),
+        "accept-followup" => {
+            sessions::accept_followup(&mut store, &session_id, &required_flag(&parsed, "task")?)
         }
-        Err("ledger audit failed".to_string())
+        "release" => sessions::release_verified(
+            &mut store,
+            &session_id,
+            &required_flag(&parsed, "task")?,
+            &required_flag(&parsed, "revision")?,
+        ),
+        "close" => store.update_session(
+            &session_id,
+            flag_one(&parsed, "status")
+                .map(|value| value.parse())
+                .transpose()?
+                .unwrap_or(SessionStatus::Closed),
+            flag_one(&parsed, "task").as_deref(),
+            flag_one(&parsed, "reason").as_deref(),
+        ),
+        _ => Err(format!("unknown session operation: {operation}")),
+    }?;
+    println!("OK: session {operation}");
+    Ok(())
+}
+
+fn cmd_decide(args: &[String]) -> Result<(), String> {
+    let parsed = parse_args(args)?;
+    let demand = domain::RouteDemand {
+        complexity: parse_value(&parsed, "complexity")?,
+        risk: parse_value(&parsed, "risk")?,
+        role: parse_value(&parsed, "role")?,
+        uncertainty: parse_value(&parsed, "uncertainty")?,
+    };
+    let manual = flag_one(&parsed, "profile")
+        .map(|value| value.parse::<Profile>())
+        .transpose()?;
+    let route_decision = route(&demand, manual);
+    let request = DispatchRequest {
+        run_id: required_flag(&parsed, "run")?,
+        task_id: required_flag(&parsed, "task")?,
+        signature: SessionSignature {
+            host: required_flag(&parsed, "host")?,
+            role: demand.role,
+            profile: route_decision.profile,
+            package_key: required_flag(&parsed, "package")?,
+            scope_hash: required_flag(&parsed, "scope-hash")?,
+            repo_revision: required_flag(&parsed, "revision")?,
+            review_boundary: flag_one(&parsed, "review-boundary"),
+        },
+        trivial: parse_bool_value(&parsed, "trivial", false)?,
+        isolation_required: parse_bool_value(&parsed, "isolation-required", false)?,
+        related_ready_count: usize::try_from(parse_u64_value(&parsed, "related-ready")?)
+            .map_err(|_| "--related-ready is too large".to_string())?,
+        delegation_value_exceeds_cost: parse_bool_value(
+            &parsed,
+            "delegation-value-exceeds-cost",
+            true,
+        )?,
+        host_supports_followup: parse_bool_value(&parsed, "host-supports-followup", true)?,
+    };
+    let mut store = open_store(&parsed)?;
+    let dispatch = decide(&mut store, &request)?;
+    store.append_activity(&ActivityInput {
+        run_id: request.run_id,
+        task_id: Some(request.task_id),
+        session_id: dispatch.session_id.clone(),
+        kind: "route".into(),
+        summary: format!("{} -> {:?}", route_decision.profile, dispatch.action),
+    })?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "route": route_decision,
+            "dispatch": dispatch
+        }))
+        .map_err(|error| error.to_string())?
+    );
+    Ok(())
+}
+
+fn optional_tokens(parsed: &ParsedArgs, name: &str) -> Result<Option<u64>, String> {
+    flag_one(parsed, name)
+        .map(|value| {
+            let parsed_value = value
+                .parse::<u64>()
+                .map_err(|error| format!("invalid --{name}: {error}"))?;
+            if parsed_value.to_string() != value {
+                return Err(format!("invalid noncanonical --{name}: {value}"));
+            }
+            Ok(parsed_value)
+        })
+        .transpose()
+}
+
+fn cmd_usage(args: &[String]) -> Result<(), String> {
+    let parsed = parse_args(args)?;
+    if parsed.positionals.first().map(String::as_str) != Some("add") {
+        return Err("usage requires add".into());
+    }
+    let mut store = open_store(&parsed)?;
+    store.record_usage(&UsageInput {
+        usage_id: required_flag(&parsed, "usage")?,
+        run_id: required_flag(&parsed, "run")?,
+        task_id: flag_one(&parsed, "task"),
+        session_id: flag_one(&parsed, "session"),
+        phase: parse_value(&parsed, "phase")?,
+        input_tokens: optional_tokens(&parsed, "input")?,
+        output_tokens: optional_tokens(&parsed, "output")?,
+        reasoning_tokens: optional_tokens(&parsed, "reasoning")?,
+        cache_read_tokens: optional_tokens(&parsed, "cache-read")?,
+        cache_write_tokens: optional_tokens(&parsed, "cache-write")?,
+        source: required_flag(&parsed, "source")?,
+        quality: parse_value(&parsed, "quality")?,
+    })?;
+    println!("OK: usage recorded");
+    Ok(())
+}
+
+fn cmd_status(args: &[String]) -> Result<(), String> {
+    let parsed = parse_args(args)?;
+    let store = open_store(&parsed)?;
+    let view = build_status(&store, &required_flag(&parsed, "run")?)?;
+    if parse_bool_value(&parsed, "json", false)? {
+        println!("{}", render_json(&view)?);
+    } else {
+        let language = flag_one(&parsed, "lang")
+            .map(|value| value.parse())
+            .transpose()?
+            .unwrap_or(Language::ZhCn);
+        print!("{}", render_text(&view, language));
+    }
+    Ok(())
+}
+
+fn cmd_watch(args: &[String]) -> Result<(), String> {
+    let parsed = parse_args(args)?;
+    let interval = flag_one(&parsed, "interval-ms")
+        .unwrap_or_else(|| "1500".into())
+        .parse::<u64>()
+        .map_err(|error| format!("invalid --interval-ms: {error}"))?;
+    let iterations = flag_one(&parsed, "iterations")
+        .map(|value| value.parse::<u64>())
+        .transpose()
+        .map_err(|error| format!("invalid --iterations: {error}"))?;
+    let language = flag_one(&parsed, "lang")
+        .map(|value| value.parse())
+        .transpose()?
+        .unwrap_or(Language::ZhCn);
+    let store = open_store(&parsed)?;
+    let run_id = required_flag(&parsed, "run")?;
+    let mut count = 0_u64;
+    loop {
+        print!(
+            "\x1b[2J\x1b[H{}",
+            render_text(&build_status(&store, &run_id)?, language)
+        );
+        count += 1;
+        if iterations.is_some_and(|limit| count >= limit) {
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(interval));
+    }
+}
+
+fn cmd_audit(args: &[String]) -> Result<(), String> {
+    let parsed = parse_args(args)?;
+    let store = open_store(&parsed)?;
+    match store.final_audit(&required_flag(&parsed, "run")?) {
+        Ok(()) => {
+            println!("OK: final audit passed");
+            Ok(())
+        }
+        Err(errors) => Err(errors.join("\n")),
+    }
+}
+
+fn cmd_bundle(args: &[String]) -> Result<(), String> {
+    let parsed = parse_args(args)?;
+    let store = open_store(&parsed)?;
+    let snapshot = store.snapshot(&required_flag(&parsed, "run")?)?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&bundle::bundle_ready(&snapshot.tasks))
+            .map_err(|error| error.to_string())?
+    );
+    Ok(())
+}
+
+fn cmd_host_command(args: &[String]) -> Result<(), String> {
+    let parsed = parse_args(args)?;
+    let host = required_flag(&parsed, "host")?;
+    let templates = hosts::bundled_templates()?;
+    let template = templates
+        .get(&host)
+        .ok_or_else(|| format!("unknown host template: {host}"))?;
+    let operation = match required_flag(&parsed, "operation")?.as_str() {
+        "spawn" => Operation::Spawn,
+        "followup" => Operation::Followup,
+        "close" => Operation::Close,
+        value => return Err(format!("invalid --operation: {value}")),
+    };
+    let command = hosts::render_command(
+        template,
+        operation,
+        &TemplateValues {
+            prompt: flag_one(&parsed, "prompt"),
+            session: flag_one(&parsed, "session"),
+            model: flag_one(&parsed, "model"),
+        },
+        parse_value(&parsed, "profile")?,
+    )?;
+    println!(
+        "{}",
+        serde_json::to_string(&command).map_err(|error| error.to_string())?
+    );
+    Ok(())
+}
+
+fn cmd_dashboard(args: &[String]) -> Result<(), String> {
+    let parsed = parse_args(args)?;
+    let db = required_flag(&parsed, "db")?;
+    let bind = flag_one(&parsed, "bind")
+        .unwrap_or_else(|| "127.0.0.1".into())
+        .parse::<std::net::IpAddr>()
+        .map_err(|error| format!("invalid --bind: {error}"))?;
+    let port = flag_one(&parsed, "port")
+        .unwrap_or_else(|| "7347".into())
+        .parse::<u16>()
+        .map_err(|error| format!("invalid --port: {error}"))?;
+    let language = flag_one(&parsed, "lang")
+        .map(|value| value.parse())
+        .transpose()?
+        .unwrap_or(Language::ZhCn);
+    let address = dashboard::serve(
+        Path::new(&db),
+        &required_flag(&parsed, "run")?,
+        dashboard::DashboardOptions {
+            bind,
+            port,
+            language,
+            allow_remote: parse_bool_value(&parsed, "allow-remote", false)?,
+        },
+    )?;
+    println!("Dashboard: http://{address}");
+    loop {
+        std::thread::park();
     }
 }
 
@@ -509,20 +775,19 @@ fn usage() -> &'static str {
     r#"usage:
   harnessctl render-prompt --role ROLE --report PATH [--brief PATH for worker] [--ledger PATH] [--allowed-write-paths PATH]...
   harnessctl check-prompt --file PATH [--max-lines N]
-  harnessctl ledger-init --db PATH [--max-concurrent N] [--max-total N]
-  harnessctl ledger-add --db PATH --handle ID --role ROLE --task TEXT [--status STATUS] [--write-scope SCOPE] [--reason TEXT]
-  harnessctl ledger-update --db PATH --handle ID [--status STATUS] [--waited true] [--closed true] [--reason TEXT]
-  harnessctl ledger-audit --db PATH [--mode budget|final]
+  harnessctl init --db DB --run ID --goal TEXT --repo-root PATH --report PATH
+  harnessctl task add|update --db DB ...
+  harnessctl decide --db DB --run ID --task ID --host HOST ...
+  harnessctl session record|accept-followup|release|close --db DB ...
+  harnessctl usage add --db DB --run ID --usage ID --phase PHASE --source SOURCE --quality QUALITY ...
+  harnessctl status --db DB --run ID [--json true] [--lang zh-CN|en-US]
+  harnessctl watch --db DB --run ID [--interval-ms 1500] [--iterations N]
+  harnessctl audit --db DB --run ID
+  harnessctl bundle --db DB --run ID
+  harnessctl host-command --host codex|claude|opencode --operation spawn|followup|close --profile light|standard|deep ...
+  harnessctl dashboard --db DB --run ID [--bind 127.0.0.1] [--port 7347] [--lang zh-CN|en-US]
 "#
 }
-
-const _: fn(
-    &mut rusqlite::Connection,
-    &event_store::EventInput,
-) -> Result<event_store::AppendResult, String> = event_store::append_event;
-const _: fn(&rusqlite::Connection, &mut rusqlite::Connection, &str) -> Result<(), String> =
-    event_store::replay_run_into_empty;
-const _: fn() -> Vec<&'static str> = event_store::event_names;
 
 fn run() -> Result<(), String> {
     let args: Vec<String> = env::args().skip(1).collect();
@@ -532,10 +797,17 @@ fn run() -> Result<(), String> {
     match command.as_str() {
         "render-prompt" => cmd_render_prompt(rest),
         "check-prompt" => cmd_check_prompt(rest),
-        "ledger-init" => cmd_ledger_init(rest),
-        "ledger-add" => cmd_ledger_add(rest),
-        "ledger-update" => cmd_ledger_update(rest),
-        "ledger-audit" => cmd_ledger_audit(rest),
+        "init" => cmd_init(rest),
+        "task" => cmd_task(rest),
+        "decide" => cmd_decide(rest),
+        "session" => cmd_session(rest),
+        "usage" => cmd_usage(rest),
+        "status" => cmd_status(rest),
+        "watch" => cmd_watch(rest),
+        "audit" => cmd_audit(rest),
+        "bundle" => cmd_bundle(rest),
+        "host-command" => cmd_host_command(rest),
+        "dashboard" => cmd_dashboard(rest),
         "help" | "--help" | "-h" => {
             print!("{}", usage());
             Ok(())

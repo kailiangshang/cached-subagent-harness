@@ -2,7 +2,7 @@
 
 The repo task report is the authoritative state source for long-running work. Subagents write full reports to files and return only a short status line to the controller.
 
-Use `scripts/bin/harnessctl` with a task-local SQLite database for machine-enforced lifecycle state. The Markdown report remains the human-readable audit surface.
+Use `scripts/bin/harnessctl` with a task-local SQLite database for machine-enforced run, task, session, usage, and activity state. The Markdown report remains the human-readable audit surface.
 
 ## Task Report
 
@@ -37,7 +37,8 @@ Every harness-created agent must have a row:
 handle | role | task | status | report_path | spawned_at | waited | closed | write_scope | token_risk | final_reason | next_action
 ```
 
-Create and update rows with `scripts/bin/harnessctl ledger-add` and `scripts/bin/harnessctl ledger-update`.
+Create and update machine rows with `harnessctl task add|update` and
+`harnessctl session record|accept-followup|release|close`.
 
 Allowed statuses:
 

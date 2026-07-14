@@ -26,8 +26,8 @@ invariant wins.
 ### P0: Correctness and control-plane safety
 
 1. **Harness first.** Every long task has a brief, durable report, budget,
-   lifecycle state, gates, and final audit. Record a durable planned session and
-   spawn authorization before invoking a host.
+   lifecycle state, gates, and final audit. Record a durable queued task and
+   dispatch decision before invoking a host.
 2. **PSOC first.** Define Problem, Scenarios, Options, and Chosen Plan before
    worker code. When evidence invalidates PSOC, return to the earliest invalid
    section before continuing. Resolve internal engineering corrections
@@ -69,8 +69,8 @@ invariant wins.
 10. **Close deliberately.** Close expired, failed, abandoned, cancelled, and
     superseded sessions promptly. Every temporary or replacement session has an
     explicit expiry predicate before spawn; when it fires, close that session
-    before further dispatch. Keep a session open only while a valid lease makes
-    known near-term reuse more valuable than closure. Final audit closes or
+   before further dispatch. Keep a session open only while its compatibility
+   signature and known near-term work make reuse more valuable than closure. Final audit closes or
     explicitly finalizes every session.
 11. **No uncontrolled fan-out.** Nested delegation remains disabled unless the
     user explicitly authorizes it and the budget records the reason.
@@ -103,9 +103,9 @@ invariant wins.
     reasoning, budget, status, and usage separately.
 18. **Unknown is honest.** Unsupported or unavailable telemetry remains
     `unknown`; never convert it to zero, success, or an inferred fact.
-19. **Facts do not depend on an LLM.** Host adapters, lifecycle operations, and
-    validated events produce dashboard facts. An observer may explain but never
-    becomes the source of truth.
+19. **Facts do not depend on an LLM.** Validated host results, lifecycle
+    operations, and compact current state produce dashboard facts. The display
+    never guesses missing state.
 20. **Stable names, no version suffixes.** Keep skill, role, agent/session
     profile, and policy names stable. Unique session IDs and versions are data,
     not name suffixes.
@@ -149,14 +149,16 @@ Use the bundled Rust runtime when available:
 ```text
 scripts/bin/harnessctl render-prompt
 scripts/bin/harnessctl check-prompt
-scripts/bin/harnessctl ledger-init
-scripts/bin/harnessctl ledger-add
-scripts/bin/harnessctl ledger-update
-scripts/bin/harnessctl ledger-audit
+scripts/bin/harnessctl init
+scripts/bin/harnessctl decide
+scripts/bin/harnessctl status
+scripts/bin/harnessctl watch
+scripts/bin/harnessctl dashboard
+scripts/bin/harnessctl audit
 ```
 
 `scripts/harnessctl/` contains the Rust source. `scripts/bin/harnessctl` stores
-durable lifecycle state in the SQLite database selected by `--db`. Existing
+durable run, task, session, usage, and activity state in the SQLite database selected by `--db`. Existing
 Python helpers are legacy development aids. If a required harness/runtime
 capability is unavailable, use only a documented equivalent that preserves the
 gates and record the actual degraded capability in the report.
@@ -171,11 +173,10 @@ read-heavy roles may run in parallel. Write-heavy assignments with overlapping
 scope remain serial. Nested delegation is disabled unless the user explicitly
 authorizes it and the budget records why.
 
-The repository-backed report and machine ledger are authoritative for every
-harness-created session. Update planned state to `spawned` or `running`
-immediately after the host result, then to `reported` and `closed`; otherwise
-use `failed`, `abandoned`, or `externally-unknown` with `final_reason` and next
-action. Completed or closed sessions may remain visible in a host UI. When the
+The repository-backed report and compact SQLite state are authoritative for every
+harness-created session. Tasks progress through `queued`, `running`, `reported`,
+and `accepted`; sessions progress through `starting`, `busy`, `idle`, and
+`closed`, or terminate as `failed`/`unknown` with `final_reason`. Completed or closed sessions may remain visible in a host UI. When the
 platform cannot list sessions, reconcile user-reported external unknowns only
 when they affect budget, cleanup, or correctness; never pretend the harness can
 close an unknown handle.
@@ -183,8 +184,8 @@ close an unknown handle.
 Give every temporary or replacement session an expiry predicate before spawn,
 such as `superseded_by:<agent_id>` or `expires_when:original_resumed`. Close it
 before further dispatch when that predicate fires. Keep a session open only
-while a valid lease makes known near-term compatible reuse more valuable than
-closure.
+while its exact compatibility signature and known near-term work make reuse
+more valuable than closure.
 
 Determine role, risk, uncertainty, and quality floors before optimizing token
 cost. Security-sensitive, destructive, and control-plane changes have a deep
@@ -237,15 +238,15 @@ pasting them. Reviewers receive brief, report, and review-package paths. Agents
 write full reports to files and return only compact status, commit, tests,
 risks, and report location.
 
-## Runtime Migration Boundary
+## Session Reuse Boundary
 
-Batch compatible assignments into one bounded worker brief now when role,
-required capability, risk, write scope, base revision, dependency order, and
-review boundary align. The current runtime cannot prove assignment/session
-lease-aware follow-up, so do not claim session reuse or keep an unrestricted
-permanent role pool. Keep write-heavy execution serial and close the worker
-after its report is consumed. Adopt follow-up reuse only when runtime lease
-enforcement can prove the lifecycle contract.
+Batch compatible assignments when role, required profile, risk, write scope,
+base revision, dependency order, and review boundary align. Reuse is supported
+only when an exact session signature matches and the runtime atomically claims
+an `idle` session as `busy`. Record `reuse_count` only after the host accepts the
+follow-up. If a host lacks follow-up support, report reuse as unsupported and
+use a bounded batch or a new session. Never keep an unrestricted permanent role
+pool; write-heavy execution remains serial.
 
 ## Completion Gate
 
@@ -259,11 +260,11 @@ A task is not complete until:
   gate are recorded;
 - every configured independent review or quality gate passes, and all Critical
   and Important findings are fixed or explicitly escalated;
-- every harness-created session is `closed`, or is `failed`, `abandoned`, or
-  `externally-unknown` with `final_reason` and next action;
-- every temporary or replacement session is active under a valid lease or
-  closed when its expiry predicate fires;
-- the controller runs the final ledger audit and records progress in durable
+- every harness-created session is `closed`, or is `failed`/`unknown` with
+  `final_reason` and next action;
+- every temporary or replacement session is validly busy/idle for known
+  compatible work or closed when its expiry predicate fires;
+- the controller runs the final lifecycle audit and records progress in durable
   repository-backed state.
 
 Optional methodology absence is normal and creates no degraded-mode entry. See

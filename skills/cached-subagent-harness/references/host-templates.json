@@ -1,0 +1,35 @@
+{
+  "codex": {
+    "name": "codex",
+    "spawn_command": ["codex", "exec", "{prompt}"],
+    "followup_command": ["codex", "exec", "resume", "{session}", "{prompt}"],
+    "close_command": null,
+    "profile_arguments": {
+      "light": ["--model", "{model}"],
+      "standard": ["--model", "{model}"],
+      "deep": ["--model", "{model}"]
+    }
+  },
+  "claude": {
+    "name": "claude",
+    "spawn_command": ["claude", "-p", "{prompt}"],
+    "followup_command": ["claude", "--resume", "{session}", "-p", "{prompt}"],
+    "close_command": null,
+    "profile_arguments": {
+      "light": ["--model", "{model}"],
+      "standard": ["--model", "{model}"],
+      "deep": ["--model", "{model}"]
+    }
+  },
+  "opencode": {
+    "name": "opencode",
+    "spawn_command": ["opencode", "run", "{prompt}"],
+    "followup_command": ["opencode", "run", "--session", "{session}", "{prompt}"],
+    "close_command": null,
+    "profile_arguments": {
+      "light": ["--model", "{model}"],
+      "standard": ["--model", "{model}"],
+      "deep": ["--model", "{model}"]
+    }
+  }
+}

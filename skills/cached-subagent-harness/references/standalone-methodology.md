@@ -11,9 +11,10 @@ approved-plan contradictions the controller cannot resolve.
 
 Group related assignments only when role, required capability, risk, write
 scope, base revision, dependency order, and independence boundary are
-compatible. Execute trivial work on main. When the runtime cannot prove
-lease-aware follow-up, place compatible assignments in one bounded worker brief
-and report reuse as unsupported. Never emulate reuse with an unrestricted
+compatible. Execute trivial work on main. Reuse only after an exact signature
+match and an atomic `idle` to `busy` claim; increment reuse only after the host
+accepts the follow-up. When a host cannot follow up, use one bounded worker
+brief and report reuse as unsupported. Never emulate reuse with an unrestricted
 permanent role pool.
 
 ## Quality-Constrained Routing
@@ -51,7 +52,7 @@ is visible, but it does not make the standalone core degraded.
 | Decision | Required action |
 |---|---|
 | Trivial, no isolation value | Execute on main and record the assignment. |
-| Compatible micro-work, no lease runtime | Batch into one bounded worker brief. |
+| Compatible micro-work, host cannot follow up | Batch into one bounded worker brief. |
 | Incompatible role, model, risk, scope, base, or review boundary | Use an isolated execution path. |
 | Mandatory review trigger | Create an independent reviewer assignment. |
 | Missing optional methodology | Continue standalone without degraded mode. |

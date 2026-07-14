@@ -59,8 +59,7 @@ claiming completion.
    - `worker`: bounded writes only inside `ALLOWED_WRITE_PATHS`;
    - `reviewer`: read-only review against brief, report, and diff;
    - `fixer`: one batched fix pass for review findings.
-5. **`harnessctl ledger-audit` checks lifecycle state** before budget expansion
-   or final completion.
+5. **`harnessctl audit` checks lifecycle state** before final completion.
 6. **Controller closes superseded agents** and records any failed, abandoned, or
    externally unknown agents with explicit reasons.
 

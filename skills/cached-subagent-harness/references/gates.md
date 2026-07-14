@@ -14,7 +14,7 @@ Before any dispatch, the controller must create or update the repo report with:
 
 Do not spawn from memory. The ledger is the source of truth for agents created by this harness.
 
-Use `scripts/bin/harnessctl ledger-init --db <path>` to create the machine ledger. Mirror dense human-readable status into the repo report.
+Use `scripts/bin/harnessctl init --db <path> ...` to create compact machine state. Mirror dense human-readable status into the repo report.
 
 ## Gate 0: PSOC
 
@@ -51,7 +51,8 @@ Ledger constraints:
 - close the agent after its report is consumed and mark `closed`.
 - close temporary replacement agents immediately when their expiry condition becomes true.
 
-Use `scripts/bin/harnessctl ledger-add` before spawn and `scripts/bin/harnessctl ledger-update` after spawn, wait, report, and close.
+Use `harnessctl task add` before dispatch, `session record` after spawn,
+task/session updates after report, and `session close` at lifecycle completion.
 
 Discussion agents are read-only. Use them for product, architecture, or skill discussion only. If they identify a needed edit, they must return a proposed change or brief; the controller decides whether to create a separate worker task.
 
@@ -128,7 +129,7 @@ Before final response, audit the report ledger:
 
 Completed or closed agents may remain visible in UI. If the platform lacks agent listing, audit the handles recorded by this harness. If the user or UI reports additional unknown agents that affect budget or cleanup, request one `/agent` reconciliation and record unknown handles as `externally-unknown`.
 
-Run `scripts/bin/harnessctl ledger-audit --db <path> --mode final` before claiming completion.
+Run `scripts/bin/harnessctl audit --db <path> --run <id>` before claiming completion.
 
 ## Control Plane Safety
 

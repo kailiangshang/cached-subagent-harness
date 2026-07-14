@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="{{LANG}}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Token Harness</title>
+  <link rel="stylesheet" href="/assets/styles.css">
+  <script src="/assets/app.js" defer></script>
+</head>
+<body>
+  <div class="ambient ambient-a"></div><div class="ambient ambient-b"></div>
+  <main class="shell">
+    <header class="topbar glass">
+      <div><p class="eyebrow">TOKEN EFFICIENCY HARNESS</p><h1 id="goal">—</h1></div>
+      <div class="controls"><span id="health" class="health">● LIVE</span><button id="language" type="button">中文 / EN</button></div>
+    </header>
+    <section class="metrics" aria-label="Summary">
+      <article class="metric glass"><span data-i18n="effective">有效 Token</span><strong id="effective">—</strong></article>
+      <article class="metric glass"><span data-i18n="saved">预估节省</span><strong id="saved">—</strong></article>
+      <article class="metric glass"><span data-i18n="reuse">Session 复用</span><strong id="reuse">—</strong></article>
+      <article class="metric glass"><span data-i18n="ratio">每次 Spawn 任务数</span><strong id="ratio">—</strong></article>
+    </section>
+    <section class="grid">
+      <article class="panel glass" data-panel="tasks"><div class="panel-head"><h2 data-i18n="tasks">任务</h2><span id="task-count">0</span></div><div id="tasks" class="rows"></div></article>
+      <article class="panel glass" data-panel="agents"><div class="panel-head"><h2 data-i18n="agents">Agent / Session</h2><span id="agent-count">0</span></div><div id="agents" class="rows"></div></article>
+      <article class="panel glass economy" data-panel="economy"><div class="panel-head"><h2 data-i18n="economy">Token 经济性</h2><span id="quality">—</span></div><div id="economy" class="token-grid"></div></article>
+      <article class="panel glass" data-panel="activity"><div class="panel-head"><h2 data-i18n="activity">最近动态</h2><span id="updated">—</span></div><div id="activity" class="rows"></div></article>
+    </section>
+  </main>
+</body>
+</html>

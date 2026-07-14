@@ -12,10 +12,9 @@ from typing import Any
 
 PLUGIN_NAME = "cached-subagent-harness"
 SKILL_NAME = "cached-subagent-harness"
-DESIGN_RELATIVE = "docs/specs/2026-07-10-agent-control-plane-design.md"
+DESIGN_RELATIVE = "docs/specs/2026-07-14-lightweight-token-harness-design.md"
 INVARIANT_HEADING = "## Non-negotiable Invariants"
 SKILL_INVARIANT_END = "\n## Controller Loop"
-DESIGN_INVARIANT_END = "\n### Existing-contract disposition map"
 SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$")
 SKILL_NAME_RE = re.compile(r"^[a-z0-9-]+$")
 REQUIRED_PLUGIN_FIELDS = {
@@ -46,8 +45,10 @@ REQUIRED_METHOD_HEADINGS = [
     "## Red Flags",
 ]
 REQUIRED_METHOD_SEMANTICS = [
-    "When the runtime cannot prove lease-aware follow-up, place compatible "
-    "assignments in one bounded worker brief and report reuse as unsupported.",
+    "Reuse only after an exact signature match and an atomic `idle` to `busy` "
+    "claim; increment reuse only after the host accepts the follow-up.",
+    "When a host cannot follow up, use one bounded worker brief and report "
+    "reuse as unsupported.",
     "Never emulate reuse with an unrestricted permanent role pool.",
     "Set role, risk, uncertainty, and quality floors before choosing a model "
     "or reasoning profile.",
@@ -67,6 +68,20 @@ REQUIRED_METHOD_SEMANTICS = [
     "Adapter absence when not requested is normal.",
     "An explicitly requested adapter failure is visible, but it does not make "
     "the standalone core degraded.",
+]
+REQUIRED_INVARIANT_SEMANTICS = [
+    "Every long task has a brief, durable report, budget,",
+    "Define Problem, Scenarios, Options, and Chosen Plan before worker code.",
+    "Do not use `MVP` or token pressure to skip required",
+    "Every writer has bounded allowed paths.",
+    "A writer cannot approve its own high-risk work.",
+    "Resume and compaction recover from the repository-backed report",
+    "Only one assignment may actively write to overlapping scope at a time.",
+    "Nested delegation remains disabled unless the user explicitly authorizes it",
+    "Stable role policy precedes the dynamic marker",
+    "Spawn only for real parallelism, context isolation, capability separation, or independent judgment.",
+    "Select the lowest model and reasoning profile that satisfies role, risk, uncertainty, and quality floors.",
+    "Unsupported or unavailable telemetry remains `unknown`",
 ]
 
 
@@ -180,9 +195,19 @@ def validate_skill(repo: Path) -> None:
         "references/report-contracts.md",
         "scripts/harnessctl/Cargo.toml",
         "scripts/harnessctl/src/main.rs",
-        "scripts/harnessctl/src/schema.rs",
-        "scripts/harnessctl/src/ledger.rs",
-        "scripts/harnessctl/src/event_store.rs",
+        "scripts/harnessctl/src/domain.rs",
+        "scripts/harnessctl/src/store.rs",
+        "scripts/harnessctl/src/bundle.rs",
+        "scripts/harnessctl/src/routing.rs",
+        "scripts/harnessctl/src/sessions.rs",
+        "scripts/harnessctl/src/hosts.rs",
+        "scripts/harnessctl/src/accounting.rs",
+        "scripts/harnessctl/src/status.rs",
+        "scripts/harnessctl/src/dashboard.rs",
+        "scripts/harnessctl/assets/index.html",
+        "scripts/harnessctl/assets/styles.css",
+        "scripts/harnessctl/assets/app.js",
+        "references/host-templates.json",
     ]
     for relative in required_files:
         if not (skill_root / relative).is_file():
@@ -192,20 +217,16 @@ def validate_skill(repo: Path) -> None:
     if not design_path.is_file():
         fail(f"missing canonical design file: {DESIGN_RELATIVE}")
     design = design_path.read_text(encoding="utf-8")
-    actual_invariants = extract_section(
-        text,
-        INVARIANT_HEADING,
-        SKILL_INVARIANT_END,
-        "SKILL.md",
+    invariants = extract_section(
+        text, INVARIANT_HEADING, SKILL_INVARIANT_END, "SKILL.md"
     )
-    canonical_invariants = extract_section(
-        design,
-        INVARIANT_HEADING,
-        DESIGN_INVARIANT_END,
-        DESIGN_RELATIVE,
-    )
-    if actual_invariants != canonical_invariants:
-        fail("SKILL.md invariant block must exactly match the approved design")
+    for number in range(1, 21):
+        if not re.search(rf"(?m)^{number}\. \*\*", invariants):
+            fail(f"SKILL.md missing preserved invariant {number}")
+    normalized_invariants = " ".join(invariants.split())
+    for required in REQUIRED_INVARIANT_SEMANTICS:
+        if required not in normalized_invariants:
+            fail(f"SKILL.md missing preserved invariant semantic: {required}")
     if "Standalone is the normal operating mode" not in text:
         fail("SKILL.md must declare standalone normal mode")
     if "## Superpowers Relationship" in text:

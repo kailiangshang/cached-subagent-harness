@@ -108,45 +108,60 @@ if "$bin" check-prompt --file "$tmp_dir/bogus-role.prompt" >/dev/null 2>&1; then
   exit 1
 fi
 
-"$bin" ledger-init --db "$tmp_dir/harness.db" --max-concurrent 2 --max-total 4
-"$bin" ledger-add \
+"$bin" init \
   --db "$tmp_dir/harness.db" \
-  --handle agent-1 \
+  --run verify-run \
+  --goal "verify lightweight token harness" \
+  --repo-root "$repo_root" \
+  --report "$tmp_dir/report.md"
+"$bin" task add \
+  --db "$tmp_dir/harness.db" \
+  --run verify-run \
+  --task verify-task \
+  --package verify-package \
+  --title "verify lifecycle" \
+  --sequence 1 \
   --role worker \
-  --task verify \
-  --status running \
-  --write-scope issue_feedback_agent/services,issue_feedback_agent/tests \
-  --report-path "$tmp_dir/report.md" \
-  --next-action wait
-"$bin" ledger-audit --db "$tmp_dir/harness.db" --mode budget
+  --complexity standard \
+  --risk medium \
+  --uncertainty standard \
+  --write-scope scripts \
+  --scope-hash verify-scope \
+  --revision verify-revision \
+  --profile standard
+"$bin" session record \
+  --db "$tmp_dir/harness.db" \
+  --run verify-run \
+  --session verify-session \
+  --host codex \
+  --handle verify-handle \
+  --role worker \
+  --profile standard \
+  --routing-status unknown \
+  --package verify-package \
+  --scope-hash verify-scope \
+  --revision verify-revision \
+  --status starting
+"$bin" usage add \
+  --db "$tmp_dir/harness.db" \
+  --run verify-run \
+  --usage verify-usage \
+  --phase work \
+  --source host \
+  --quality unknown
+"$bin" status --db "$tmp_dir/harness.db" --run verify-run --json true > "$tmp_dir/status.json"
+"$bin" bundle --db "$tmp_dir/harness.db" --run verify-run > "$tmp_dir/bundles.json"
+"$bin" host-command --host codex --operation spawn --profile standard --model gpt-5 --prompt verify > "$tmp_dir/host-command.json"
 
-if "$bin" ledger-audit --db "$tmp_dir/harness.db" --mode final >/dev/null 2>&1; then
-  echo "error: final audit unexpectedly passed with running agent" >&2
+if "$bin" audit --db "$tmp_dir/harness.db" --run verify-run >/dev/null 2>&1; then
+  echo "error: final audit unexpectedly passed with active work" >&2
   exit 1
 fi
 
-"$bin" ledger-update --db "$tmp_dir/harness.db" --handle agent-1 --status closed --waited true --next-action done
-"$bin" ledger-audit --db "$tmp_dir/harness.db" --mode final
-
-"$bin" ledger-init --db "$tmp_dir/final-exception.db" --max-concurrent 2 --max-total 4
-"$bin" ledger-add \
-  --db "$tmp_dir/final-exception.db" \
-  --handle agent-2 \
-  --role explorer \
-  --task failed-check \
-  --status failed \
-  --report-path "$tmp_dir/report.md" \
-  --next-action inspect
-
-if "$bin" ledger-audit --db "$tmp_dir/final-exception.db" --mode final >/dev/null 2>&1; then
-  echo "error: final audit unexpectedly passed for failed agent without reason" >&2
-  exit 1
-fi
-
-"$bin" ledger-update \
-  --db "$tmp_dir/final-exception.db" \
-  --handle agent-2 \
-  --reason "tool unavailable during verification"
-"$bin" ledger-audit --db "$tmp_dir/final-exception.db" --mode final
+"$bin" task update --db "$tmp_dir/harness.db" --task verify-task --status running --next-action implement
+"$bin" task update --db "$tmp_dir/harness.db" --task verify-task --status reported --next-action verify
+"$bin" task update --db "$tmp_dir/harness.db" --task verify-task --status accepted
+"$bin" session close --db "$tmp_dir/harness.db" --session verify-session --reason complete
+"$bin" audit --db "$tmp_dir/harness.db" --run verify-run
 
 echo "verification passed"
