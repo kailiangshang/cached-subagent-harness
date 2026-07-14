@@ -77,3 +77,21 @@ Fix range reviewed: `d16a993..95853f8`. No full suite was rerun; `git diff --che
 
 Focused evidence: 34/34 Rust tests and Clippy with warnings denied pass after
 the second fix pass.
+
+## Final Re-review
+
+Tiny fix range reviewed: `95853f8..0c39d8f`. No full tests were run; `git diff --check 95853f8..0c39d8f` passed.
+
+1. **Authoritative reuse idempotency and relevant estimate sample count — Open.** Reuse idempotency is now **closed**: `reuse_accepted` is authoritative task state, acceptance uses a compare-and-set inside the immediate transaction, and the regression deletes all activity before retrying (`skills/cached-subagent-harness/scripts/harnessctl/src/store.rs:43`, `:551`; `src/sessions.rs:275`). However, sample-count relevance is not fully closed. `estimate_sample_count` is incremented before the three-sample eligibility check (`src/accounting.rs:110`), so an accepted-reuse group with one or two samples is included even though that group contributes nothing to `estimated_saved_tokens`. When another group qualifies, the UI can therefore report more samples than the estimate actually used. **Required fix:** increment the displayed count only after `samples.len() >= 3` (or expose separate eligible/observed counts with explicit labels) and add a fixture containing one qualifying group plus one under-threshold accepted-reuse group.
+
+2. **Requested/actual model and estimate-method dashboard disclosure — Closed.** Agent rows now label and render requested and actual models separately in both languages, and Token Economy renders `median overhead · host/profile` as the estimate method (`skills/cached-subagent-harness/scripts/harnessctl/assets/app.js:2`, `:19`, `:29`). The dashboard test now requires both `requested_model` and the median method in the served asset (`src/dashboard.rs:182`).
+
+**Final assessment: Ready No.** The idempotency and dashboard gaps are closed, but the estimate sample count remains materially misleading for mixed qualifying/under-threshold groups.
+
+## Final Resolution
+
+The remaining sample-count finding is fixed: only groups that both have
+accepted reuse and meet the three-exact-sample threshold contribute to
+`estimate_sample_count`. A mixed fixture with one qualifying group and one
+under-threshold accepted-reuse group now reports only the three samples actually
+used by the median estimate. Focused accounting tests (5/5) and Clippy pass.

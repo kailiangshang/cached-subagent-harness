@@ -107,10 +107,10 @@ pub(crate) fn efficiency_report(snapshot: &StoreSnapshot) -> EfficiencyReport {
         let Some(accepted_reuses) = accepted_reuses.filter(|count| *count > 0) else {
             continue;
         };
-        estimate_sample_count += samples.len();
         if samples.len() < 3 {
             continue;
         }
+        estimate_sample_count += samples.len();
         samples.sort_unstable();
         let group_saving = samples[samples.len() / 2].checked_mul(accepted_reuses);
         estimated_saved_tokens = match (estimated_saved_tokens, group_saving) {
@@ -310,7 +310,7 @@ mod tests {
                 .collect();
             let report = efficiency_report(&snapshot(rows, 2));
             assert_eq!(report.estimated_saved_tokens, None);
-            assert_eq!(report.estimate_sample_count, usize::from(count > 0));
+            assert_eq!(report.estimate_sample_count, 0);
         }
     }
 
@@ -330,5 +330,30 @@ mod tests {
         let report = efficiency_report(&unaccepted);
         assert_eq!(report.estimated_saved_tokens, None);
         assert_eq!(report.assignments_per_spawn, Some(0.0));
+    }
+
+    #[test]
+    fn sample_count_excludes_under_threshold_groups() {
+        let rows = vec![
+            usage("u1", "s1", UsagePhase::Bootstrap, Some(100)),
+            usage("u2", "s2", UsagePhase::Bootstrap, Some(300)),
+            usage("u3", "s3", UsagePhase::Bootstrap, Some(200)),
+            usage("u4", "s4", UsagePhase::Bootstrap, Some(900)),
+        ];
+        let mut data = snapshot(rows, 2);
+        let mut extra = data.sessions[0].clone();
+        extra.session_id = "s4".into();
+        extra.host = "claude".into();
+        extra.reuse_count = 1;
+        data.sessions.push(extra);
+        for index in 0..2 {
+            let mut task = data.tasks[0].clone();
+            task.task_id = format!("s4-task-{index}");
+            task.session_id = Some("s4".into());
+            data.tasks.push(task);
+        }
+        let report = efficiency_report(&data);
+        assert_eq!(report.estimated_saved_tokens, Some(400));
+        assert_eq!(report.estimate_sample_count, 3);
     }
 }
