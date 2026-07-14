@@ -1,7 +1,7 @@
 (() => {
   const copy = {
-    "zh-CN": { effective:"有效 Token", saved:"预估节省", reuse:"Session 复用", ratio:"每次 Spawn 任务数", tasks:"任务", agents:"Agent / Session", economy:"Token 经济性", activity:"最近动态", empty:"暂无数据", input:"输入", output:"输出", reasoning:"推理", cacheRead:"缓存读取", cacheWrite:"缓存写入" },
-    "en-US": { effective:"Effective tokens", saved:"Estimated saved", reuse:"Session reuse", ratio:"Assignments per spawn", tasks:"Tasks", agents:"Agents / Sessions", economy:"Token economy", activity:"Recent activity", empty:"No data", input:"Input", output:"Output", reasoning:"Reasoning", cacheRead:"Cache read", cacheWrite:"Cache write" }
+    "zh-CN": { effective:"有效 Token", saved:"预估节省", reuse:"Session 复用", ratio:"每次 Spawn 任务数", tasks:"任务", agents:"Agent / Session", economy:"Token 经济性", activity:"最近动态", empty:"暂无数据", input:"输入", output:"输出", reasoning:"推理", cacheRead:"缓存读取", cacheWrite:"缓存写入", requested:"请求模型", actual:"实际模型", method:"估算方法" },
+    "en-US": { effective:"Effective tokens", saved:"Estimated saved", reuse:"Session reuse", ratio:"Assignments per spawn", tasks:"Tasks", agents:"Agents / Sessions", economy:"Token economy", activity:"Recent activity", empty:"No data", input:"Input", output:"Output", reasoning:"Reasoning", cacheRead:"Cache read", cacheWrite:"Cache write", requested:"Requested model", actual:"Actual model", method:"Estimate method" }
   };
   let language = localStorage.getItem("harness-language") || document.documentElement.lang || "zh-CN";
   if (!copy[language]) language = "zh-CN";
@@ -16,7 +16,7 @@
     rows.forEach(item => {
       const row = text("div", "row", "");
       if (kind === "task") { row.append(text("span","id",item.task_id), text("span","pill",item.status), text("span","meta",item.title), text("span","meta",item.required_profile)); }
-      if (kind === "agent") { row.append(text("span","id",item.session_id), text("span","pill",item.status), text("span","meta",`${item.host} · ${item.role} · ${item.profile} · ${item.actual_model || "—"} · ${item.current_task_id || "—"}`), text("span","meta",`×${item.reuse_count} · ${item.last_used_at}`)); }
+      if (kind === "agent") { row.append(text("span","id",item.session_id), text("span","pill",item.status), text("span","meta",`${item.host} · ${item.role} · ${item.profile} · ${copy[language].requested}: ${item.requested_model || "—"} · ${copy[language].actual}: ${item.actual_model || "—"} · ${item.current_task_id || "—"}`), text("span","meta",`×${item.reuse_count} · ${item.last_used_at}`)); }
       if (kind === "activity") { row.append(text("span","id",item.kind), text("span","meta",item.summary), text("span","meta",item.task_id || "—"), text("span","meta",item.occurred_at)); }
       node.appendChild(row);
     });
@@ -26,7 +26,7 @@
     [["input",copy[language].input],["output",copy[language].output],["reasoning",copy[language].reasoning],["cache_read",copy[language].cacheRead],["cache_write",copy[language].cacheWrite]].forEach(([key,label]) => {
       const card = text("div","token",""); card.append(text("span","",label), text("strong","",value(totals[key]))); node.appendChild(card);
     });
-    [["Churn", state.efficiency.churn_rate],["Estimate samples", state.efficiency.estimate_sample_count],["Estimate quality", state.efficiency.estimate_quality]].forEach(([label,number]) => { const card = text("div","token",""); card.append(text("span","",label), text("strong","",value(number))); node.appendChild(card); });
+    [["Churn", state.efficiency.churn_rate],["Estimate samples", state.efficiency.estimate_sample_count],["Estimate quality", state.efficiency.estimate_quality],[copy[language].method,"median overhead · host/profile"]].forEach(([label,number]) => { const card = text("div","token",""); card.append(text("span","",label), text("strong","",value(number))); node.appendChild(card); });
   }
   let state = null;
   function render(data) {

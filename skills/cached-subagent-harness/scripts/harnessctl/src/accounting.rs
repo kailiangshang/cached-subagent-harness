@@ -90,13 +90,9 @@ pub(crate) fn efficiency_report(snapshot: &StoreSnapshot) -> EfficiencyReport {
                 .push(sample);
         }
     }
-    let estimate_sample_count = grouped_samples.values().map(Vec::len).sum();
+    let mut estimate_sample_count = 0;
     let mut estimated_saved_tokens = None;
     for ((host, profile), mut samples) in grouped_samples {
-        if samples.len() < 3 {
-            continue;
-        }
-        samples.sort_unstable();
         let accepted_reuses = snapshot
             .sessions
             .iter()
@@ -111,6 +107,11 @@ pub(crate) fn efficiency_report(snapshot: &StoreSnapshot) -> EfficiencyReport {
         let Some(accepted_reuses) = accepted_reuses.filter(|count| *count > 0) else {
             continue;
         };
+        estimate_sample_count += samples.len();
+        if samples.len() < 3 {
+            continue;
+        }
+        samples.sort_unstable();
         let group_saving = samples[samples.len() / 2].checked_mul(accepted_reuses);
         estimated_saved_tokens = match (estimated_saved_tokens, group_saving) {
             (None, value) => value,

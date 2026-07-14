@@ -40,6 +40,7 @@ CREATE TABLE tasks (
     status TEXT NOT NULL CHECK(status IN ('queued','running','blocked','reported','accepted','failed','cancelled')),
     session_id TEXT,
     attempt_count INTEGER NOT NULL DEFAULT 0 CHECK(typeof(attempt_count)='integer' AND attempt_count >= 0),
+    reuse_accepted INTEGER NOT NULL DEFAULT 0 CHECK(reuse_accepted IN (0,1)),
     next_action TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
@@ -563,16 +564,25 @@ impl Store {
                 |row| row.get(0),
             )
             .map_err(|error| error.to_string())?;
-        let already_accepted: bool = transaction
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM activity WHERE session_id=?1 AND task_id=?2 AND kind='reuse')",
-                params![session_id, task_id],
-                |row| row.get(0),
+        let accepted = transaction
+            .execute(
+                "UPDATE tasks SET reuse_accepted=1 WHERE task_id=?1 AND session_id=?2 AND reuse_accepted=0",
+                params![task_id, session_id],
             )
             .map_err(|error| error.to_string())?;
-        if already_accepted {
-            transaction.commit().map_err(|error| error.to_string())?;
-            return Ok(());
+        if accepted == 0 {
+            let already_accepted: bool = transaction
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM tasks WHERE task_id=?1 AND session_id=?2 AND reuse_accepted=1)",
+                    params![task_id, session_id],
+                    |row| row.get(0),
+                )
+                .map_err(|error| error.to_string())?;
+            if already_accepted {
+                transaction.commit().map_err(|error| error.to_string())?;
+                return Ok(());
+            }
+            return Err("follow-up task is not linked to this session".into());
         }
         transaction
             .execute(
@@ -787,6 +797,14 @@ impl Store {
             .into_iter()
             .find(|task| task.task_id == task_id)
             .ok_or_else(|| format!("task not found in run: {task_id}"))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn clear_activity_for_test(&mut self) -> Result<(), String> {
+        self.conn
+            .execute("DELETE FROM activity", [])
+            .map(|_| ())
+            .map_err(|error| error.to_string())
     }
 
     pub(crate) fn final_audit(&self, run_id: &str) -> Result<(), Vec<String>> {

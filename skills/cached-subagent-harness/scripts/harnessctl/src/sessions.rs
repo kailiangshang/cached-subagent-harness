@@ -299,6 +299,7 @@ mod tests {
         };
         decide(&mut store, &request).unwrap();
         accept_followup(&mut store, "session-1", "task-1").unwrap();
+        store.clear_activity_for_test().unwrap();
         accept_followup(&mut store, "session-1", "task-1").unwrap();
         assert_eq!(store.snapshot("run-1").unwrap().sessions[0].reuse_count, 1);
     }

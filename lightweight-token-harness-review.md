@@ -49,3 +49,31 @@ profile-floor rejection, duplicate acceptance, six-task/one-spawn/five-followup,
 mixed-host estimate rejection, unaccepted reuse rejection, custom host loading,
 safe status JSON, and dashboard field contracts. Clippy passes with warnings
 denied. Final repository verification is rerun after this fix commit.
+
+## Re-review
+
+Fix range reviewed: `d16a993..95853f8`. No full suite was rerun; `git diff --check d16a993..95853f8` passed.
+
+1. **Authoritative routing and atomic reuse — Closed.** `cmd_decide` now loads the stored task and derives its route demand/signature from that record (`skills/cached-subagent-harness/scripts/harnessctl/src/main.rs:550`). `add_task` rejects a `required_profile` below the computed safety floor (`src/store.rs:843`), and `claim_idle_session` re-reads and compares the authoritative task fields inside the same immediate transaction before selecting or mutating a session (`src/store.rs:457`). Focused tests cover malicious relabeling and the six-task reuse path (`src/sessions.rs:219`, `:307`).
+
+2. **Idempotent accepted reuse and truthful accounting — Open.** The ratios and host/profile grouping are materially corrected, and tests now cover mixed hosts and unaccepted reuse (`src/accounting.rs:43`, `:59`, `:317`). However, duplicate acceptance is detected by querying the informational `activity` feed (`src/store.rs:566`), even though the approved architecture says deleting activity must not change authoritative current state. Deleting/pruning that feed makes the same `(session, task)` acceptable again and inflates `reuse_count`; the new duplicate test does not exercise that contract. **Required fix:** persist acceptance identity in authoritative state (for example a unique assignment/acceptance row or task acceptance marker with a uniqueness constraint) and make the increment a single compare-and-set transaction independent of `activity`; add a regression test that removes activity before retrying acceptance. Also report the sample count actually used by qualifying groups, rather than summing samples from all groups (`src/accounting.rs:84`).
+
+3. **Custom templates and complete/safe dashboard projection — Open.** Runtime JSON templates now merge through `--templates`, and the public status DTO removes internal repo/report/scope/handle fields (`src/hosts.rs:10`; `src/main.rs:718`; `src/status.rs:24`). Current task, last activity, actual model, churn, estimate sample count, and estimate quality reach the page. But the Agents renderer still displays only `actual_model`, not requested and actual as separate facts (`assets/app.js:19`), and Token Economy still omits the required estimate method (`assets/app.js:24`). The added static assertions check `actual_model` and sample count only (`src/dashboard.rs:182`), so they do not catch either omission. **Required fix:** label/render requested and actual models separately, render the median-per-host/profile method, and assert those exact fields/labels in the dashboard contract test.
+
+**Final assessment: Ready No.** Finding 1 is closed; Findings 2 and 3 retain Important correctness/acceptance gaps and require another focused fix and re-review.
+
+## Second Fix Pass
+
+- Reuse acceptance identity now lives in authoritative task state
+  (`reuse_accepted`) and is updated by compare-and-set in the same immediate
+  transaction; deleting the informational activity feed no longer changes
+  idempotency. The regression test deletes all activity before retrying.
+- Estimate sample count now covers only host/profile groups that have accepted
+  reuse, while the three-sample threshold still controls whether a saving is
+  emitted.
+- Agent rows label requested and actual models separately. Token Economy now
+  shows the `median overhead · host/profile` method, sample count, and quality;
+  static dashboard tests require those fields.
+
+Focused evidence: 34/34 Rust tests and Clippy with warnings denied pass after
+the second fix pass.

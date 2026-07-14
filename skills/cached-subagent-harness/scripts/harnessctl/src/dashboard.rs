@@ -183,7 +183,9 @@ mod tests {
         assert!(app.contains("textContent"));
         assert!(app.contains("current_task_id"));
         assert!(app.contains("actual_model"));
+        assert!(app.contains("requested_model"));
         assert!(app.contains("estimate_sample_count"));
+        assert!(app.contains("median"));
         let api = get(address, "/api/status");
         assert!(api.contains("Cache-Control: no-store"));
         assert!(api.contains("\"total_effective\": null"));
