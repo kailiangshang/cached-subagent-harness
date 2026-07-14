@@ -1,10 +1,36 @@
 use crate::domain::{HostTemplate, Operation, Profile, TemplateValues};
 use std::collections::BTreeMap;
+use std::path::Path;
 
 const BUNDLED_TEMPLATES: &str = include_str!("../../../references/host-templates.json");
 
 pub(crate) fn bundled_templates() -> Result<BTreeMap<String, HostTemplate>, String> {
     serde_json::from_str(BUNDLED_TEMPLATES).map_err(|error| error.to_string())
+}
+
+pub(crate) fn load_templates(
+    custom_path: Option<&Path>,
+) -> Result<BTreeMap<String, HostTemplate>, String> {
+    let mut templates = bundled_templates()?;
+    if let Some(path) = custom_path {
+        let text = std::fs::read_to_string(path).map_err(|error| error.to_string())?;
+        let custom: BTreeMap<String, HostTemplate> =
+            serde_json::from_str(&text).map_err(|error| error.to_string())?;
+        for (name, template) in custom {
+            if name.trim().is_empty() || template.name != name {
+                return Err(format!("host template key/name mismatch: {name}"));
+            }
+            if template
+                .spawn_command
+                .first()
+                .is_none_or(|part| part.trim().is_empty())
+            {
+                return Err(format!("host template {name} has no executable"));
+            }
+            templates.insert(name, template);
+        }
+    }
+    Ok(templates)
 }
 
 pub(crate) fn render_command(
@@ -56,7 +82,7 @@ fn substitute(part: &str, values: &TemplateValues) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{bundled_templates, render_command};
+    use super::{bundled_templates, load_templates, render_command};
     use crate::domain::{Operation, Profile, TemplateValues};
 
     #[test]
@@ -109,5 +135,18 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn custom_template_file_adds_a_host_without_code_changes() {
+        let path = std::env::temp_dir().join(format!("harness-hosts-{}.json", std::process::id()));
+        std::fs::write(
+            &path,
+            r#"{"workbuddy":{"name":"workbuddy","spawn_command":["workbuddy","agent","{prompt}"],"followup_command":null,"close_command":null,"profile_arguments":{"light":[],"standard":[],"deep":[]}}}"#,
+        )
+        .unwrap();
+        let templates = load_templates(Some(&path)).unwrap();
+        assert!(templates.contains_key("workbuddy"));
+        let _ = std::fs::remove_file(path);
     }
 }

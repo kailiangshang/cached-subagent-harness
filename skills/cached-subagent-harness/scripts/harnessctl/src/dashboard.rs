@@ -179,7 +179,11 @@ mod tests {
         assert!(html.contains("Content-Security-Policy: default-src 'self'"));
         assert!(html.contains("data-panel=\"tasks\""));
         assert!(get(address, "/assets/styles.css").contains("--moonlight"));
-        assert!(get(address, "/assets/app.js").contains("textContent"));
+        let app = get(address, "/assets/app.js");
+        assert!(app.contains("textContent"));
+        assert!(app.contains("current_task_id"));
+        assert!(app.contains("actual_model"));
+        assert!(app.contains("estimate_sample_count"));
         let api = get(address, "/api/status");
         assert!(api.contains("Cache-Control: no-store"));
         assert!(api.contains("\"total_effective\": null"));

@@ -212,6 +212,25 @@ def validate_skill(repo: Path) -> None:
     for relative in required_files:
         if not (skill_root / relative).is_file():
             fail(f"missing skill file: {relative}")
+    for removed in [
+        "scripts/harnessctl/src/event_store.rs",
+        "scripts/harnessctl/src/schema.rs",
+        "scripts/harnessctl/src/ledger.rs",
+    ]:
+        if (skill_root / removed).exists():
+            fail(f"obsolete runtime file must remain deleted: {removed}")
+    runtime_text = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (skill_root / "scripts/harnessctl/src").glob("*.rs")
+    )
+    for forbidden in [
+        "control_plane_events",
+        "replay_run_into_empty",
+        "projection_field_sources",
+        "EventInput",
+    ]:
+        if forbidden in runtime_text:
+            fail(f"obsolete runtime reference remains: {forbidden}")
 
     design_path = repo / DESIGN_RELATIVE
     if not design_path.is_file():

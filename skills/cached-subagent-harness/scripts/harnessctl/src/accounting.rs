@@ -1,6 +1,7 @@
 use crate::domain::{
-    EfficiencyReport, StoreSnapshot, TokenTotals, UsagePhase, UsageQuality, UsageRecord,
+    EfficiencyReport, StoreSnapshot, TaskStatus, TokenTotals, UsagePhase, UsageQuality, UsageRecord,
 };
+use std::collections::BTreeMap;
 
 pub(crate) fn efficiency_report(snapshot: &StoreSnapshot) -> EfficiencyReport {
     let input = aggregate(&snapshot.usage, |row| row.input_tokens);
@@ -39,7 +40,14 @@ pub(crate) fn efficiency_report(snapshot: &StoreSnapshot) -> EfficiencyReport {
         })
         .unwrap_or(u64::MAX);
     let spawns = snapshot.sessions.len() as u64;
-    let assignments = spawns.checked_add(reuse_count);
+    let assignments = u64::try_from(
+        snapshot
+            .tasks
+            .iter()
+            .filter(|task| task.status == TaskStatus::Accepted && task.session_id.is_some())
+            .count(),
+    )
+    .ok();
     let assignments_per_spawn = (spawns > 0)
         .then(|| assignments.map(|count| count as f64 / spawns as f64))
         .flatten();
@@ -47,23 +55,69 @@ pub(crate) fn efficiency_report(snapshot: &StoreSnapshot) -> EfficiencyReport {
         .filter(|count| *count > 0)
         .map(|count| spawns as f64 / count as f64);
 
-    let mut overhead_samples = snapshot
-        .usage
-        .iter()
-        .filter(|row| {
-            row.quality == UsageQuality::Exact
-                && matches!(row.phase, UsagePhase::Bootstrap | UsagePhase::Context)
-        })
-        .filter_map(row_total)
-        .collect::<Vec<_>>();
-    overhead_samples.sort_unstable();
-    let estimate_sample_count = overhead_samples.len();
-    let estimated_saved_tokens = if estimate_sample_count >= 3 {
-        let median = overhead_samples[estimate_sample_count / 2];
-        median.checked_mul(reuse_count)
-    } else {
-        None
-    };
+    let accepted_by_session =
+        snapshot
+            .tasks
+            .iter()
+            .fold(BTreeMap::<String, u64>::new(), |mut counts, task| {
+                if task.status == TaskStatus::Accepted
+                    && let Some(session_id) = &task.session_id
+                {
+                    *counts.entry(session_id.clone()).or_default() += 1;
+                }
+                counts
+            });
+    let mut grouped_samples = BTreeMap::<(String, crate::domain::Profile), Vec<u64>>::new();
+    for session in &snapshot.sessions {
+        let rows = snapshot
+            .usage
+            .iter()
+            .filter(|row| {
+                row.session_id.as_deref() == Some(session.session_id.as_str())
+                    && matches!(row.phase, UsagePhase::Bootstrap | UsagePhase::Context)
+            })
+            .collect::<Vec<_>>();
+        if rows.is_empty() || rows.iter().any(|row| row.quality != UsageQuality::Exact) {
+            continue;
+        }
+        let sample = rows
+            .iter()
+            .try_fold(0_u64, |total, row| total.checked_add(row_total(row)?));
+        if let Some(sample) = sample {
+            grouped_samples
+                .entry((session.host.clone(), session.profile))
+                .or_default()
+                .push(sample);
+        }
+    }
+    let estimate_sample_count = grouped_samples.values().map(Vec::len).sum();
+    let mut estimated_saved_tokens = None;
+    for ((host, profile), mut samples) in grouped_samples {
+        if samples.len() < 3 {
+            continue;
+        }
+        samples.sort_unstable();
+        let accepted_reuses = snapshot
+            .sessions
+            .iter()
+            .filter(|session| session.host == host && session.profile == profile)
+            .try_fold(0_u64, |total, session| {
+                let accepted = accepted_by_session
+                    .get(&session.session_id)
+                    .copied()
+                    .unwrap_or(0);
+                total.checked_add(accepted.saturating_sub(1).min(session.reuse_count))
+            });
+        let Some(accepted_reuses) = accepted_reuses.filter(|count| *count > 0) else {
+            continue;
+        };
+        let group_saving = samples[samples.len() / 2].checked_mul(accepted_reuses);
+        estimated_saved_tokens = match (estimated_saved_tokens, group_saving) {
+            (None, value) => value,
+            (Some(total), Some(value)) => total.checked_add(value),
+            _ => None,
+        };
+    }
     let estimate_quality = if estimated_saved_tokens.is_some() {
         UsageQuality::Estimated
     } else {
@@ -113,8 +167,9 @@ fn row_total(row: &UsageRecord) -> Option<u64> {
 mod tests {
     use super::efficiency_report;
     use crate::domain::{
-        ActivityRecord, Profile, Role, RoutingStatus, RunRecord, SessionRecord, SessionStatus,
-        StoreSnapshot, UsagePhase, UsageQuality, UsageRecord,
+        ActivityRecord, Profile, Risk, Role, RoutingStatus, RunRecord, SessionRecord,
+        SessionStatus, StoreSnapshot, TaskRecord, TaskStatus, UsagePhase, UsageQuality,
+        UsageRecord,
     };
 
     fn usage(id: &str, session: &str, phase: UsagePhase, tokens: Option<u64>) -> UsageRecord {
@@ -154,6 +209,7 @@ mod tests {
                 status: SessionStatus::Closed,
                 current_task_id: None,
                 reuse_count: if id == "s1" { reuse_count } else { 0 },
+                last_used_at: "2026-07-14T00:00:00Z".into(),
                 final_reason: Some("done".into()),
             })
             .collect();
@@ -165,7 +221,36 @@ mod tests {
                 repo_root: "/repo".into(),
                 report_path: "/report".into(),
             },
-            tasks: Vec::new(),
+            tasks: ["s1", "s2", "s3"]
+                .into_iter()
+                .flat_map(|session_id| {
+                    let count = if session_id == "s1" {
+                        reuse_count + 1
+                    } else {
+                        1
+                    };
+                    (0..count).map(move |index| TaskRecord {
+                        task_id: format!("{session_id}-task-{index}"),
+                        run_id: "run-1".into(),
+                        package_key: "p".into(),
+                        title: "accepted".into(),
+                        sequence: index + 1,
+                        role: Role::Worker,
+                        complexity: Profile::Standard,
+                        risk: Risk::Medium,
+                        uncertainty: Profile::Standard,
+                        write_scope: vec!["src".into()],
+                        scope_hash: "scope".into(),
+                        repo_revision: "rev".into(),
+                        review_boundary: None,
+                        required_profile: Profile::Standard,
+                        status: TaskStatus::Accepted,
+                        session_id: Some(session_id.into()),
+                        attempt_count: 1,
+                        next_action: None,
+                    })
+                })
+                .collect(),
             sessions,
             usage,
             activity: Vec::<ActivityRecord>::new(),
@@ -224,7 +309,25 @@ mod tests {
                 .collect();
             let report = efficiency_report(&snapshot(rows, 2));
             assert_eq!(report.estimated_saved_tokens, None);
-            assert_eq!(report.estimate_sample_count, count);
+            assert_eq!(report.estimate_sample_count, usize::from(count > 0));
         }
+    }
+
+    #[test]
+    fn estimates_never_mix_hosts_or_unaccepted_reuse() {
+        let rows = vec![
+            usage("u1", "s1", UsagePhase::Bootstrap, Some(100)),
+            usage("u2", "s2", UsagePhase::Bootstrap, Some(300)),
+            usage("u3", "s3", UsagePhase::Bootstrap, Some(200)),
+        ];
+        let mut mixed = snapshot(rows.clone(), 2);
+        mixed.sessions[2].host = "claude".into();
+        assert_eq!(efficiency_report(&mixed).estimated_saved_tokens, None);
+
+        let mut unaccepted = snapshot(rows, 2);
+        unaccepted.tasks.clear();
+        let report = efficiency_report(&unaccepted);
+        assert_eq!(report.estimated_saved_tokens, None);
+        assert_eq!(report.assignments_per_spawn, Some(0.0));
     }
 }

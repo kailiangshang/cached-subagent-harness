@@ -214,4 +214,148 @@ mod tests {
             DispatchAction::BatchThenSpawn
         );
     }
+
+    #[test]
+    fn caller_cannot_relabel_a_worker_task_for_an_incompatible_session() {
+        let db = TestDb::new();
+        let mut store = Store::open(&db.0).unwrap();
+        store
+            .create_run("run-1", "authority", "/repo", "/report")
+            .unwrap();
+        store.add_task(&task("task-1", 1)).unwrap();
+        store
+            .add_session(&SessionInput {
+                session_id: "review-session".into(),
+                run_id: "run-1".into(),
+                host: "codex".into(),
+                handle: None,
+                role: Role::Reviewer,
+                profile: Profile::Deep,
+                requested_model: None,
+                actual_model: None,
+                routing_status: RoutingStatus::Unknown,
+                package_key: "package-a".into(),
+                scope_hash: "scope-a".into(),
+                repo_revision: "abc123".into(),
+                review_boundary: Some("review-a".into()),
+                status: SessionStatus::Idle,
+                current_task_id: None,
+            })
+            .unwrap();
+        let request = DispatchRequest {
+            run_id: "run-1".into(),
+            task_id: "task-1".into(),
+            signature: SessionSignature {
+                role: Role::Reviewer,
+                profile: Profile::Deep,
+                ..signature()
+            },
+            trivial: false,
+            isolation_required: false,
+            related_ready_count: 1,
+            delegation_value_exceeds_cost: true,
+            host_supports_followup: true,
+        };
+        let error = decide(&mut store, &request).unwrap_err();
+        assert!(error.contains("authoritative task"), "{error}");
+    }
+
+    #[test]
+    fn accepted_followup_is_idempotent() {
+        let db = TestDb::new();
+        let mut store = Store::open(&db.0).unwrap();
+        store
+            .create_run("run-1", "idempotent", "/repo", "/report")
+            .unwrap();
+        store.add_task(&task("task-1", 1)).unwrap();
+        store
+            .add_session(&SessionInput {
+                session_id: "session-1".into(),
+                run_id: "run-1".into(),
+                host: "codex".into(),
+                handle: None,
+                role: Role::Worker,
+                profile: Profile::Standard,
+                requested_model: None,
+                actual_model: None,
+                routing_status: RoutingStatus::Unknown,
+                package_key: "package-a".into(),
+                scope_hash: "scope-a".into(),
+                repo_revision: "abc123".into(),
+                review_boundary: Some("review-a".into()),
+                status: SessionStatus::Idle,
+                current_task_id: None,
+            })
+            .unwrap();
+        let request = DispatchRequest {
+            run_id: "run-1".into(),
+            task_id: "task-1".into(),
+            signature: signature(),
+            trivial: false,
+            isolation_required: false,
+            related_ready_count: 1,
+            delegation_value_exceeds_cost: true,
+            host_supports_followup: true,
+        };
+        decide(&mut store, &request).unwrap();
+        accept_followup(&mut store, "session-1", "task-1").unwrap();
+        accept_followup(&mut store, "session-1", "task-1").unwrap();
+        assert_eq!(store.snapshot("run-1").unwrap().sessions[0].reuse_count, 1);
+    }
+
+    #[test]
+    fn six_tasks_use_one_spawn_and_five_followups() {
+        let db = TestDb::new();
+        let mut store = Store::open(&db.0).unwrap();
+        store
+            .create_run("run-1", "six", "/repo", "/report")
+            .unwrap();
+        for sequence in 1..=6 {
+            store
+                .add_task(&task(&format!("task-{sequence}"), sequence))
+                .unwrap();
+        }
+        store
+            .add_session(&SessionInput {
+                session_id: "session-1".into(),
+                run_id: "run-1".into(),
+                host: "codex".into(),
+                handle: Some("spawn-1".into()),
+                role: Role::Worker,
+                profile: Profile::Standard,
+                requested_model: None,
+                actual_model: None,
+                routing_status: RoutingStatus::Unknown,
+                package_key: "package-a".into(),
+                scope_hash: "scope-a".into(),
+                repo_revision: "abc123".into(),
+                review_boundary: Some("review-a".into()),
+                status: SessionStatus::Busy,
+                current_task_id: Some("task-1".into()),
+            })
+            .unwrap();
+        release_verified(&mut store, "session-1", "task-1", "abc123").unwrap();
+        for sequence in 2..=6 {
+            let task_id = format!("task-{sequence}");
+            let request = DispatchRequest {
+                run_id: "run-1".into(),
+                task_id: task_id.clone(),
+                signature: signature(),
+                trivial: false,
+                isolation_required: false,
+                related_ready_count: 1,
+                delegation_value_exceeds_cost: true,
+                host_supports_followup: true,
+            };
+            assert_eq!(
+                decide(&mut store, &request).unwrap().action,
+                DispatchAction::ReuseSession
+            );
+            accept_followup(&mut store, "session-1", &task_id).unwrap();
+            release_verified(&mut store, "session-1", &task_id, "abc123").unwrap();
+        }
+        let snapshot = store.snapshot("run-1").unwrap();
+        assert_eq!(snapshot.sessions.len(), 1);
+        assert_eq!(snapshot.sessions[0].reuse_count, 5);
+    }
 }

@@ -1,7 +1,9 @@
 use crate::domain::{
-    ActivityInput, ActivityRecord, RunRecord, SessionInput, SessionRecord, SessionSignature,
-    SessionStatus, StoreSnapshot, TaskInput, TaskRecord, TaskStatus, UsageInput, UsageRecord,
+    ActivityInput, ActivityRecord, Profile, Role, RouteDemand, RunRecord, SessionInput,
+    SessionRecord, SessionSignature, SessionStatus, StoreSnapshot, TaskInput, TaskRecord,
+    TaskStatus, UsageInput, UsageRecord,
 };
+use crate::routing::required_profile;
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -464,6 +466,39 @@ impl Store {
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|error| error.to_string())?;
+        let authoritative = transaction
+            .query_row(
+                r#"SELECT run_id,role,required_profile,package_key,scope_hash,repo_revision,
+                           review_boundary,status
+                    FROM tasks WHERE task_id=?1"#,
+                [task_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, Option<String>>(6)?,
+                        row.get::<_, String>(7)?,
+                    ))
+                },
+            )
+            .map_err(|error| error.to_string())?;
+        let task_role = authoritative.1.parse::<Role>()?;
+        let task_profile = authoritative.2.parse::<Profile>()?;
+        let compatible = authoritative.0 == run_id
+            && authoritative.7 == TaskStatus::Queued.as_str()
+            && task_role == signature.role
+            && signature.profile >= task_profile
+            && authoritative.3 == signature.package_key
+            && authoritative.4 == signature.scope_hash
+            && authoritative.5 == signature.repo_revision
+            && authoritative.6 == signature.review_boundary;
+        if !compatible {
+            return Err("dispatch signature disagrees with authoritative task".into());
+        }
         let session_id = transaction
             .query_row(
                 r#"SELECT session_id FROM sessions
@@ -528,6 +563,17 @@ impl Store {
                 |row| row.get(0),
             )
             .map_err(|error| error.to_string())?;
+        let already_accepted: bool = transaction
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM activity WHERE session_id=?1 AND task_id=?2 AND kind='reuse')",
+                params![session_id, task_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())?;
+        if already_accepted {
+            transaction.commit().map_err(|error| error.to_string())?;
+            return Ok(());
+        }
         transaction
             .execute(
                 "UPDATE sessions SET reuse_count=reuse_count+1,last_used_at=?3 WHERE session_id=?1 AND current_task_id=?2",
@@ -643,7 +689,7 @@ impl Store {
             .prepare(
                 r#"SELECT session_id,run_id,host,handle,role,profile,requested_model,actual_model,
                            routing_status,package_key,scope_hash,repo_revision,review_boundary,status,
-                           current_task_id,reuse_count,final_reason
+                           current_task_id,reuse_count,last_used_at,final_reason
                     FROM sessions WHERE run_id=?1 ORDER BY session_id"#,
             )
             .map_err(|error| error.to_string())?;
@@ -666,7 +712,8 @@ impl Store {
                     status: parse_wire(row.get(13)?, 13)?,
                     current_task_id: row.get(14)?,
                     reuse_count: from_i64(row.get(15)?, 15)?,
-                    final_reason: row.get(16)?,
+                    last_used_at: row.get(16)?,
+                    final_reason: row.get(17)?,
                 })
             })
             .map_err(|error| error.to_string())?
@@ -732,6 +779,14 @@ impl Store {
             usage,
             activity,
         })
+    }
+
+    pub(crate) fn task(&self, run_id: &str, task_id: &str) -> Result<TaskRecord, String> {
+        self.snapshot(run_id)?
+            .tasks
+            .into_iter()
+            .find(|task| task.task_id == task_id)
+            .ok_or_else(|| format!("task not found in run: {task_id}"))
     }
 
     pub(crate) fn final_audit(&self, run_id: &str) -> Result<(), Vec<String>> {
@@ -816,6 +871,18 @@ fn validate_task_input(input: &TaskInput) -> Result<(), String> {
         .is_some_and(|value| value.trim().is_empty())
     {
         return Err("review_boundary must not be empty when provided".into());
+    }
+    let floor = required_profile(&RouteDemand {
+        complexity: input.complexity,
+        risk: input.risk,
+        role: input.role,
+        uncertainty: input.uncertainty,
+    });
+    if input.required_profile < floor {
+        return Err(format!(
+            "required_profile {} is below safety floor {floor}",
+            input.required_profile
+        ));
     }
     Ok(())
 }
@@ -1228,5 +1295,33 @@ mod tests {
             .unwrap_err();
         assert!(error.contains("final_reason"), "{error}");
         assert!(store.snapshot("run-1").unwrap().sessions.is_empty());
+    }
+
+    #[test]
+    fn task_profile_cannot_be_lower_than_its_safety_floor() {
+        let db = TestDb::new("task-profile-floor");
+        let mut store = Store::open(&db.0).unwrap();
+        store
+            .create_run("run-1", "route", "/repo", "/report")
+            .unwrap();
+        let error = store
+            .add_task(&TaskInput {
+                task_id: "task-1".into(),
+                run_id: "run-1".into(),
+                package_key: "p".into(),
+                title: "critical review".into(),
+                sequence: 1,
+                role: Role::Reviewer,
+                complexity: Profile::Standard,
+                risk: Risk::Critical,
+                uncertainty: Profile::Standard,
+                write_scope: vec!["none".into()],
+                scope_hash: "scope".into(),
+                repo_revision: "rev".into(),
+                review_boundary: None,
+                required_profile: Profile::Light,
+            })
+            .unwrap_err();
+        assert!(error.contains("safety floor"), "{error}");
     }
 }

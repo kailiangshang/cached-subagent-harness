@@ -16,7 +16,7 @@
     rows.forEach(item => {
       const row = text("div", "row", "");
       if (kind === "task") { row.append(text("span","id",item.task_id), text("span","pill",item.status), text("span","meta",item.title), text("span","meta",item.required_profile)); }
-      if (kind === "agent") { row.append(text("span","id",item.session_id), text("span","pill",item.status), text("span","meta",`${item.host} · ${item.role} · ${item.profile}`), text("span","meta",`×${item.reuse_count}`)); }
+      if (kind === "agent") { row.append(text("span","id",item.session_id), text("span","pill",item.status), text("span","meta",`${item.host} · ${item.role} · ${item.profile} · ${item.actual_model || "—"} · ${item.current_task_id || "—"}`), text("span","meta",`×${item.reuse_count} · ${item.last_used_at}`)); }
       if (kind === "activity") { row.append(text("span","id",item.kind), text("span","meta",item.summary), text("span","meta",item.task_id || "—"), text("span","meta",item.occurred_at)); }
       node.appendChild(row);
     });
@@ -26,8 +26,11 @@
     [["input",copy[language].input],["output",copy[language].output],["reasoning",copy[language].reasoning],["cache_read",copy[language].cacheRead],["cache_write",copy[language].cacheWrite]].forEach(([key,label]) => {
       const card = text("div","token",""); card.append(text("span","",label), text("strong","",value(totals[key]))); node.appendChild(card);
     });
+    [["Churn", state.efficiency.churn_rate],["Estimate samples", state.efficiency.estimate_sample_count],["Estimate quality", state.efficiency.estimate_quality]].forEach(([label,number]) => { const card = text("div","token",""); card.append(text("span","",label), text("strong","",value(number))); node.appendChild(card); });
   }
+  let state = null;
   function render(data) {
+    state = data;
     el("goal").textContent = data.run.goal;
     el("effective").textContent = value(data.efficiency.totals.total_effective);
     el("saved").textContent = value(data.efficiency.estimated_saved_tokens);

@@ -1,17 +1,62 @@
 use crate::accounting::efficiency_report;
-use crate::domain::{Language, StatusView};
+use crate::domain::{
+    ActivityStatusView, Language, RunStatusView, SessionStatusView, StatusView, TaskStatusView,
+};
 use crate::store::Store;
 
 pub(crate) fn build_status(store: &Store, run_id: &str) -> Result<StatusView, String> {
     let snapshot = store.snapshot(run_id)?;
     let efficiency = efficiency_report(&snapshot);
-    let mut recent_activity = snapshot.activity.clone();
+    let mut recent_activity = snapshot
+        .activity
+        .iter()
+        .map(|activity| ActivityStatusView {
+            activity_id: activity.activity_id,
+            task_id: activity.task_id.clone(),
+            session_id: activity.session_id.clone(),
+            kind: activity.kind.clone(),
+            summary: activity.summary.clone(),
+            occurred_at: activity.occurred_at.clone(),
+        })
+        .collect::<Vec<_>>();
     recent_activity.reverse();
     recent_activity.truncate(20);
     Ok(StatusView {
-        run: snapshot.run,
-        tasks: snapshot.tasks,
-        sessions: snapshot.sessions,
+        run: RunStatusView {
+            run_id: snapshot.run.run_id,
+            goal: snapshot.run.goal,
+            status: snapshot.run.status,
+        },
+        tasks: snapshot
+            .tasks
+            .into_iter()
+            .map(|task| TaskStatusView {
+                task_id: task.task_id,
+                package_key: task.package_key,
+                title: task.title,
+                role: task.role,
+                required_profile: task.required_profile,
+                status: task.status,
+                session_id: task.session_id,
+            })
+            .collect(),
+        sessions: snapshot
+            .sessions
+            .into_iter()
+            .map(|session| SessionStatusView {
+                session_id: session.session_id,
+                host: session.host,
+                role: session.role,
+                profile: session.profile,
+                requested_model: session.requested_model,
+                actual_model: session.actual_model,
+                routing_status: session.routing_status,
+                status: session.status,
+                current_task_id: session.current_task_id,
+                reuse_count: session.reuse_count,
+                last_used_at: session.last_used_at,
+            })
+            .collect(),
         efficiency,
         recent_activity,
     })
@@ -107,6 +152,10 @@ mod tests {
         let json = render_json(&view).unwrap();
         assert!(json.contains("\"total_effective\": null"));
         assert!(json.contains("task-1"));
+        assert!(!json.contains("repo_root"));
+        assert!(!json.contains("write_scope"));
+        assert!(!json.contains("report_path"));
+        assert!(!json.contains("\"handle\""));
         drop(store);
         let _ = fs::remove_file(&path);
         let _ = fs::remove_file(path.with_extension("db-shm"));

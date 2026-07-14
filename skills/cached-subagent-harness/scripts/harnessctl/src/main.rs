@@ -549,27 +549,31 @@ fn cmd_session(args: &[String]) -> Result<(), String> {
 
 fn cmd_decide(args: &[String]) -> Result<(), String> {
     let parsed = parse_args(args)?;
+    let run_id = required_flag(&parsed, "run")?;
+    let task_id = required_flag(&parsed, "task")?;
+    let mut store = open_store(&parsed)?;
+    let task = store.task(&run_id, &task_id)?;
     let demand = domain::RouteDemand {
-        complexity: parse_value(&parsed, "complexity")?,
-        risk: parse_value(&parsed, "risk")?,
-        role: parse_value(&parsed, "role")?,
-        uncertainty: parse_value(&parsed, "uncertainty")?,
+        complexity: task.complexity,
+        risk: task.risk,
+        role: task.role,
+        uncertainty: task.uncertainty,
     };
     let manual = flag_one(&parsed, "profile")
         .map(|value| value.parse::<Profile>())
         .transpose()?;
     let route_decision = route(&demand, manual);
     let request = DispatchRequest {
-        run_id: required_flag(&parsed, "run")?,
-        task_id: required_flag(&parsed, "task")?,
+        run_id,
+        task_id,
         signature: SessionSignature {
             host: required_flag(&parsed, "host")?,
-            role: demand.role,
+            role: task.role,
             profile: route_decision.profile,
-            package_key: required_flag(&parsed, "package")?,
-            scope_hash: required_flag(&parsed, "scope-hash")?,
-            repo_revision: required_flag(&parsed, "revision")?,
-            review_boundary: flag_one(&parsed, "review-boundary"),
+            package_key: task.package_key,
+            scope_hash: task.scope_hash,
+            repo_revision: task.repo_revision,
+            review_boundary: task.review_boundary,
         },
         trivial: parse_bool_value(&parsed, "trivial", false)?,
         isolation_required: parse_bool_value(&parsed, "isolation-required", false)?,
@@ -582,7 +586,6 @@ fn cmd_decide(args: &[String]) -> Result<(), String> {
         )?,
         host_supports_followup: parse_bool_value(&parsed, "host-supports-followup", true)?,
     };
-    let mut store = open_store(&parsed)?;
     let dispatch = decide(&mut store, &request)?;
     store.append_activity(&ActivityInput {
         run_id: request.run_id,
@@ -713,7 +716,8 @@ fn cmd_bundle(args: &[String]) -> Result<(), String> {
 fn cmd_host_command(args: &[String]) -> Result<(), String> {
     let parsed = parse_args(args)?;
     let host = required_flag(&parsed, "host")?;
-    let templates = hosts::bundled_templates()?;
+    let custom_templates = flag_one(&parsed, "templates");
+    let templates = hosts::load_templates(custom_templates.as_deref().map(Path::new))?;
     let template = templates
         .get(&host)
         .ok_or_else(|| format!("unknown host template: {host}"))?;
@@ -784,7 +788,7 @@ fn usage() -> &'static str {
   harnessctl watch --db DB --run ID [--interval-ms 1500] [--iterations N]
   harnessctl audit --db DB --run ID
   harnessctl bundle --db DB --run ID
-  harnessctl host-command --host codex|claude|opencode --operation spawn|followup|close --profile light|standard|deep ...
+  harnessctl host-command --host HOST --operation spawn|followup|close --profile light|standard|deep [--templates FILE] ...
   harnessctl dashboard --db DB --run ID [--bind 127.0.0.1] [--port 7347] [--lang zh-CN|en-US]
 "#
 }

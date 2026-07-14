@@ -182,6 +182,7 @@ pub(crate) struct SessionRecord {
     pub status: SessionStatus,
     pub current_task_id: Option<String>,
     pub reuse_count: u64,
+    pub last_used_at: String,
     pub final_reason: Option<String>,
 }
 
@@ -363,11 +364,54 @@ pub(crate) struct EfficiencyReport {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct StatusView {
-    pub run: RunRecord,
-    pub tasks: Vec<TaskRecord>,
-    pub sessions: Vec<SessionRecord>,
+    pub run: RunStatusView,
+    pub tasks: Vec<TaskStatusView>,
+    pub sessions: Vec<SessionStatusView>,
     pub efficiency: EfficiencyReport,
-    pub recent_activity: Vec<ActivityRecord>,
+    pub recent_activity: Vec<ActivityStatusView>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct RunStatusView {
+    pub run_id: String,
+    pub goal: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct TaskStatusView {
+    pub task_id: String,
+    pub package_key: String,
+    pub title: String,
+    pub role: Role,
+    pub required_profile: Profile,
+    pub status: TaskStatus,
+    pub session_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct SessionStatusView {
+    pub session_id: String,
+    pub host: String,
+    pub role: Role,
+    pub profile: Profile,
+    pub requested_model: Option<String>,
+    pub actual_model: Option<String>,
+    pub routing_status: RoutingStatus,
+    pub status: SessionStatus,
+    pub current_task_id: Option<String>,
+    pub reuse_count: u64,
+    pub last_used_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ActivityStatusView {
+    pub activity_id: u64,
+    pub task_id: Option<String>,
+    pub session_id: Option<String>,
+    pub kind: String,
+    pub summary: String,
+    pub occurred_at: String,
 }
 
 #[cfg(test)]
