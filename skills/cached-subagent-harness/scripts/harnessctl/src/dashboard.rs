@@ -177,18 +177,51 @@ mod tests {
         let html = get(address, "/");
         assert!(html.starts_with("HTTP/1.1 200"));
         assert!(html.contains("Content-Security-Policy: default-src 'self'"));
-        assert!(html.contains("data-panel=\"tasks\""));
-        assert!(get(address, "/assets/styles.css").contains("--moonlight"));
+        for marker in [
+            "data-view=\"run-bar\"",
+            "data-view=\"outcome-band\"",
+            "data-view=\"task-board\"",
+            "data-view=\"session-dock\"",
+            "data-view=\"evidence-deck\"",
+        ] {
+            assert!(html.contains(marker), "missing {marker}");
+        }
+        assert!(
+            html.contains("id=\"language-next\""),
+            "language toggle target must exist"
+        );
+        let styles = get(address, "/assets/styles.css");
+        assert!(styles.contains("--moonlight"));
+        assert!(styles.contains("font-size: 14px"));
+        assert!(styles.contains("prefers-reduced-transparency"));
+        assert!(styles.contains("@supports not"));
         let app = get(address, "/assets/app.js");
         assert!(app.contains("textContent"));
+        assert!(!app.contains("innerHTML"));
         assert!(app.contains("current_task_id"));
         assert!(app.contains("actual_model"));
         assert!(app.contains("requested_model"));
         assert!(app.contains("estimate_sample_count"));
         assert!(app.contains("median"));
+        assert!(app.contains("phase_totals"));
+        assert!(app.contains("updated_at"));
+        assert!(app.contains("progressOf"));
+        assert!(app.contains("packagesOf"));
+        assert!(app.contains("assignmentsFor"));
+        assert!(app.contains("latestFor"));
+        assert!(app.contains("lastGoodSnapshot"));
+        let product_assets = format!("{html}\n{app}").to_lowercase();
+        for forbidden in ["baseline", "experiment tab", "a/b comparison"] {
+            assert!(
+                !product_assets.contains(forbidden),
+                "product asset leaked comparison UI: {forbidden}"
+            );
+        }
         let api = get(address, "/api/status");
         assert!(api.contains("Cache-Control: no-store"));
         assert!(api.contains("\"total_effective\": null"));
+        assert!(api.contains("\"phase_totals\":"));
+        assert!(api.contains("\"updated_at\":"));
         assert!(get(address, "/health").contains("{\"status\":\"ok\"}"));
         assert!(get(address, "/missing").starts_with("HTTP/1.1 404"));
         let _ = fs::remove_file(&path);

@@ -94,6 +94,15 @@ baseline and Harness paths and retain only sanitized aggregate evidence.
   held the destination executable. `/proc/3377341/exe` confirmed the exact
   inode; after deliberately stopping that preview, the identical verification
   command passed. No source fix was required.
+- Task 2 preview served successfully from the rebuilt embedded binary on
+  `127.0.0.1:7347`; `/health` and `/api/status` returned the expected local
+  run state.
+- Desktop zh-CN, desktop en-US, and compact 390px screenshots were visually
+  inspected for hierarchy, clipping, bilingual copy, first-viewport density,
+  and restrained Moonlight Indigo glass treatment. Firefox 152 could not map
+  its software framebuffer in this environment, so the installed Playwright
+  Chromium binary was used for this visual-only checkpoint; the Web runtime
+  remains browser-independent.
 
 ## Changed Files
 
@@ -105,6 +114,10 @@ baseline and Harness paths and retain only sanitized aggregate evidence.
 - `skills/cached-subagent-harness/scripts/harnessctl/src/accounting.rs`
 - `skills/cached-subagent-harness/scripts/harnessctl/src/status.rs`
 - `skills/cached-subagent-harness/scripts/harnessctl/src/main.rs`
+- `skills/cached-subagent-harness/scripts/harnessctl/src/dashboard.rs`
+- `skills/cached-subagent-harness/scripts/harnessctl/assets/index.html`
+- `skills/cached-subagent-harness/scripts/harnessctl/assets/styles.css`
+- `skills/cached-subagent-harness/scripts/harnessctl/assets/app.js`
 
 ## Tests
 
@@ -121,6 +134,16 @@ baseline and Harness paths and retain only sanitized aggregate evidence.
 - `cargo test --manifest-path .../Cargo.toml` — PASS, 40 tests.
 - `cargo clippy --manifest-path .../Cargo.toml --all-targets -- -D warnings` —
   PASS.
+- Task 2 RED: the embedded-page contract first failed on the missing results
+  hierarchy; after the page replacement, a focused regression RED failed on
+  the missing `language-next` DOM target used by the language toggle.
+- `cargo test ... dashboard::tests` — PASS, 2 tests.
+- `node --check .../assets/app.js` — PASS.
+- `cargo test --manifest-path .../Cargo.toml` — PASS, 40 tests after Task 2.
+- `cargo fmt --check --manifest-path .../Cargo.toml` — PASS after Task 2.
+- `cargo clippy --manifest-path .../Cargo.toml --all-targets -- -D warnings` —
+  PASS after Task 2.
+- `git diff --check` — PASS after Task 2.
 
 ## Review Findings
 
@@ -136,10 +159,10 @@ Pending implementation and independent review.
 
 ## Next Actions
 
-1. Add failing Task 1 tests.
-2. Implement typed run state, freshness, and phase totals.
-3. Redesign the single-run Dashboard.
-4. Make and execute the Signal Sweep fixture.
+1. Add the failing identical-starter Signal Sweep fixture test.
+2. Implement and verify the dependency-free runnable starter.
+3. Execute the isolated equal-quality real A/B.
+4. Populate the final Harness-only preview from real run facts.
 5. Run independent review, full verification, and final audit.
 
 ## External Agent Reconciliation

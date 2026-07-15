@@ -3,29 +3,163 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
   <title>Token Harness</title>
   <link rel="stylesheet" href="/assets/styles.css">
   <script src="/assets/app.js" defer></script>
 </head>
 <body>
-  <div class="ambient ambient-a"></div><div class="ambient ambient-b"></div>
-  <main class="shell">
-    <header class="topbar glass">
-      <div><p class="eyebrow">TOKEN EFFICIENCY HARNESS</p><h1 id="goal">—</h1></div>
-      <div class="controls"><span id="health" class="health">● LIVE</span><button id="language" type="button">中文 / EN</button></div>
+  <div class="ambient" aria-hidden="true"></div>
+  <div class="canvas-grid" aria-hidden="true"></div>
+
+  <div class="app-shell">
+    <header class="run-bar glass" data-view="run-bar">
+      <div class="brand-lockup">
+        <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+        <div>
+          <p class="product-name">TOKEN HARNESS</p>
+          <p class="product-edition" data-i18n="productEdition">Results Console</p>
+        </div>
+      </div>
+
+      <div class="run-heading">
+        <div class="run-heading-line">
+          <span class="eyebrow" data-i18n="currentRun">Current run</span>
+          <span id="run-status" class="state-badge" data-state="unknown">—</span>
+        </div>
+        <h1 id="goal">—</h1>
+        <div class="run-meta mono">
+          <span id="run-id">—</span>
+          <span class="meta-separator" aria-hidden="true"></span>
+          <span><span data-i18n="dataUpdated">Data updated</span> <time id="data-updated">—</time></span>
+        </div>
+      </div>
+
+      <div class="run-controls">
+        <span id="health" class="connection-badge" data-state="connecting">
+          <i aria-hidden="true"></i><span data-i18n="connecting">Connecting</span>
+        </span>
+        <button id="language" class="language-button" type="button" aria-label="Switch language">
+          <span id="language-current">中</span><span class="language-divider">/</span><span id="language-next">EN</span>
+        </button>
+      </div>
     </header>
-    <section class="metrics" aria-label="Summary">
-      <article class="metric glass"><span data-i18n="effective">有效 Token</span><strong id="effective">—</strong></article>
-      <article class="metric glass"><span data-i18n="saved">预估节省</span><strong id="saved">—</strong></article>
-      <article class="metric glass"><span data-i18n="reuse">Session 复用</span><strong id="reuse">—</strong></article>
-      <article class="metric glass"><span data-i18n="ratio">每次 Spawn 任务数</span><strong id="ratio">—</strong></article>
+
+    <section class="outcome-band" data-view="outcome-band" aria-labelledby="outcome-title">
+      <h2 id="outcome-title" class="visually-hidden" data-i18n="runOutcome">Run outcome</h2>
+
+      <article class="progress-card glass">
+        <div class="card-kicker">
+          <span data-i18n="deliveryProgress">Delivery progress</span>
+          <span id="progress-rate" class="mono">—</span>
+        </div>
+        <div class="progress-value-line">
+          <strong id="progress-value">—</strong>
+          <span data-i18n="acceptedTasks">accepted tasks</span>
+        </div>
+        <div id="progress-rail" class="progress-rail" role="img" aria-label="Task progress"></div>
+        <div id="progress-legend" class="progress-legend"></div>
+      </article>
+
+      <article class="outcome-card glass-accent">
+        <div class="outcome-icon token-icon" aria-hidden="true">T</div>
+        <div class="outcome-copy">
+          <span data-i18n="effectiveTokens">Effective tokens</span>
+          <strong id="effective" class="mono">—</strong>
+        </div>
+        <span id="total-quality" class="quality-tag">—</span>
+      </article>
+
+      <article class="outcome-card glass">
+        <div class="outcome-icon reuse-icon" aria-hidden="true">↻</div>
+        <div class="outcome-copy">
+          <span data-i18n="sessionReuse">Session reuse</span>
+          <strong id="reuse" class="mono">—</strong>
+        </div>
+        <small data-i18n="acceptedFollowups">accepted follow-ups</small>
+      </article>
+
+      <article class="outcome-card glass">
+        <div class="outcome-icon spawn-icon" aria-hidden="true">⌁</div>
+        <div class="outcome-copy">
+          <span data-i18n="assignmentsPerSpawn">Assignments / spawn</span>
+          <strong id="ratio" class="mono">—</strong>
+        </div>
+        <small><span data-i18n="churn">Churn</span> <span id="churn" class="mono">—</span></small>
+      </article>
+
+      <article class="outcome-card glass">
+        <div class="outcome-icon saving-icon" aria-hidden="true">↓</div>
+        <div class="outcome-copy">
+          <span data-i18n="avoidedContext">Avoided context</span>
+          <strong id="saved" class="mono">—</strong>
+        </div>
+        <small id="estimate-note">—</small>
+      </article>
     </section>
-    <section class="grid">
-      <article class="panel glass" data-panel="tasks"><div class="panel-head"><h2 data-i18n="tasks">任务</h2><span id="task-count">0</span></div><div id="tasks" class="rows"></div></article>
-      <article class="panel glass" data-panel="agents"><div class="panel-head"><h2 data-i18n="agents">Agent / Session</h2><span id="agent-count">0</span></div><div id="agents" class="rows"></div></article>
-      <article class="panel glass economy" data-panel="economy"><div class="panel-head"><h2 data-i18n="economy">Token 经济性</h2><span id="quality">—</span></div><div id="economy" class="token-grid"></div></article>
-      <article class="panel glass" data-panel="activity"><div class="panel-head"><h2 data-i18n="activity">最近动态</h2><span id="updated">—</span></div><div id="activity" class="rows"></div></article>
+
+    <main class="operational-grid">
+      <section class="task-board glass" data-view="task-board" aria-labelledby="tasks-title">
+        <div class="section-head">
+          <div>
+            <p class="section-kicker" data-i18n="workstream">Workstream</p>
+            <h2 id="tasks-title" data-i18n="tasks">Tasks</h2>
+          </div>
+          <span id="task-count" class="section-count mono">0</span>
+        </div>
+        <div class="column-guide task-column-guide" aria-hidden="true">
+          <span data-i18n="task">Task</span>
+          <span data-i18n="assignment">Assignment</span>
+          <span data-i18n="latestState">Latest state</span>
+        </div>
+        <div id="task-packages" class="package-list" aria-live="polite"></div>
+      </section>
+
+      <aside class="session-dock glass" data-view="session-dock" aria-labelledby="sessions-title">
+        <div class="section-head">
+          <div>
+            <p class="section-kicker" data-i18n="execution">Execution</p>
+            <h2 id="sessions-title" data-i18n="sessions">Sessions</h2>
+          </div>
+          <span id="session-count" class="section-count mono">0</span>
+        </div>
+        <div id="sessions" class="session-list" aria-live="polite"></div>
+      </aside>
+    </main>
+
+    <section class="evidence-deck" data-view="evidence-deck">
+      <article class="token-panel glass" aria-labelledby="token-title">
+        <div class="section-head">
+          <div>
+            <p class="section-kicker" data-i18n="evidence">Evidence</p>
+            <h2 id="token-title" data-i18n="tokenEconomy">Token economy</h2>
+          </div>
+          <span id="token-quality" class="quality-tag">—</span>
+        </div>
+        <div id="token-composition" class="token-composition"></div>
+        <div class="phase-heading">
+          <span data-i18n="costByPhase">Cost by phase</span>
+          <span class="phase-scale" data-i18n="observedTotals">Observed totals</span>
+        </div>
+        <div id="phase-totals" class="phase-list"></div>
+      </article>
+
+      <article class="activity-panel glass" aria-labelledby="activity-title">
+        <div class="section-head">
+          <div>
+            <p class="section-kicker" data-i18n="auditTrail">Audit trail</p>
+            <h2 id="activity-title" data-i18n="recentActivity">Recent activity</h2>
+          </div>
+          <time id="last-refresh" class="section-count mono">—</time>
+        </div>
+        <div id="activity" class="activity-list" aria-live="polite"></div>
+      </article>
     </section>
-  </main>
+
+    <footer class="page-footer">
+      <span data-i18n="truthNotice">Facts from local Harness state · missing telemetry stays unknown</span>
+      <span class="mono">127.0.0.1</span>
+    </footer>
+  </div>
 </body>
 </html>
