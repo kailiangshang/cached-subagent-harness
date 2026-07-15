@@ -393,10 +393,19 @@ pub(crate) struct EfficiencyReport {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct StatusView {
     pub run: RunStatusView,
+    pub dispatch_policy: DispatchPolicyStatusView,
     pub tasks: Vec<TaskStatusView>,
     pub sessions: Vec<SessionStatusView>,
     pub efficiency: EfficiencyReport,
     pub recent_activity: Vec<ActivityStatusView>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct DispatchPolicyStatusView {
+    pub max_tasks_per_bundle: usize,
+    pub max_accepted_followups: u64,
+    pub max_effective_tokens: u64,
+    pub increases_require_evidence: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

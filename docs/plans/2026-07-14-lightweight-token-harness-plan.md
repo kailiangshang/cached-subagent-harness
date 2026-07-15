@@ -2,12 +2,14 @@
 
 Status: **Completed with an evidence-driven Session correction.** The original
 five-follow-up example in this plan is rejected historical RED evidence, not
-current routing policy. Known compatible work now batches first; later reuse is
-bounded by one accepted follow-up, 200,000 effective Tokens, and exact causal
-usage. See [Current Product State](../current-state.md) and the
-[real A/B evidence](../benchmarks/2026-07-15-signal-sweep-real-ab.md). Unchecked
-boxes below preserve the implementation recipe and do not indicate unfinished
-delivery.
+current routing policy. A second live run also rejected one four-slice long
+turn. Strictly compatible work now forms micro-batches of at most two; later
+reuse is bounded by one accepted follow-up, 200,000 effective Tokens, and exact
+causal usage. See [Current Product State](../current-state.md), the
+[corrected A/B](../benchmarks/2026-07-15-signal-sweep-corrected-ab.md), and the
+[historical follow-up A/B](../benchmarks/2026-07-15-signal-sweep-real-ab.md).
+Unchecked boxes below preserve the implementation recipe and do not indicate
+unfinished delivery.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 

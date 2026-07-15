@@ -2,7 +2,7 @@
 
 Status: current reproducible Benchmark protocol. The former repeated-follow-up
 topology is retained only in the 2026-07-15 evidence; current Harness routing
-batches known compatible slices first.
+partitions strictly compatible ready work into micro-batches of at most two.
 
 This benchmark answers a stronger question than the offline token fixture:
 
@@ -91,6 +91,11 @@ This writes:
 - `/tmp/game-dev-ab/signal-sweep-game-brief.md`;
 - `/tmp/game-dev-ab/observations-template.jsonl`.
 
+To generate the deliberate one-Session large-batch pressure topology used by
+the corrected real A/B, add `--harness-topology bounded-batch`. It writes one
+`cached_harness/batch-01.prompt` while keeping four Baseline prompts. This is a
+measurement topology, not the release router's default.
+
 The two project directories start with byte-identical, dependency-free
 `package.json`, `index.html`, and `src/main.js` files. The starter fixes the
 cross-module interfaces while leaving the game slices for the workers. Reusing
@@ -107,8 +112,12 @@ commit with the same author metadata, and require equal starter tree hashes.
 - Run writes serially in both arms; never overlap workers that can touch the
   same project.
 - Baseline uses four fresh sessions, one per worker prompt.
-- Harness follows the current routing decision. Four known compatible ready
-  slices must produce one bounded batch before any follow-up is considered.
+- The normal Harness router derives the durable compatible set and partitions
+  it into batches of at most two. It never changes role, profile, risk, scope,
+  revision, dependency, or review boundaries to make tasks compatible.
+- `--harness-topology bounded-batch` deliberately forces all four slices into
+  one execution unit to measure the rejected large-turn hypothesis. Do not
+  present that pressure topology as current routing policy.
 - Use a follow-up only for later compatible work, after normalized usage is
   recorded, and only while both the accepted-follow-up cap and total-effective
   Token cap remain.
@@ -149,14 +158,18 @@ python3 scripts/game_dev_ab_benchmark.py \
   --format markdown
 ```
 
-The report aggregates final status, event counts, workers seen, workers closed,
+The report aggregates final status, event counts, execution units seen/closed,
 noncached input, cached input, visible output, reasoning, provider totals,
-retries, and total effective Tokens. A missing category or worker observation
-remains unknown. Runtime savings are calculated only when both arms are closed,
-every expected worker has emitted each required lifecycle event, all normalized
-rows are exact and arithmetically match provider totals, and each named quality
-gate explicitly emits one `quality_passed` event. Unknown workers, duplicate
-lifecycle/gate events, and inconsistent provider splits are rejected.
+retries, and total effective Tokens. It reports the equal-quality comparable
+sample separately from retry-inclusive operational cost. The JSONL field stays
+named `worker` for backward compatibility, but it may identify a worker or a
+batch execution unit. A missing category or execution-unit observation remains
+unknown. Runtime savings are calculated only when both arms are closed, every
+expected unit has emitted each required lifecycle event, all normalized rows
+are exact and arithmetically match provider totals, and each named quality gate
+explicitly emits one `quality_passed` event. Unknown units, duplicate
+lifecycle/gate events, inconsistent provider splits, and usage attached to any
+event other than `closed` or `retry` are rejected.
 
 For Codex `turn.completed.usage`, normalize without overlap:
 
@@ -194,9 +207,9 @@ Only the third claim can prove real end-to-end savings for a specific CLI,
 model, cache policy, and task. The offline estimates are regression tests and
 planning signals, not billing guarantees.
 
-The 2026-07-15 real run is recorded in
-`docs/benchmarks/2026-07-15-signal-sweep-real-ab.md`. It rejected the former
-one-Session/three-follow-up strategy at 5.90× Baseline total effective Tokens
-and drove the current batch-first, budget-bounded policy.
+The 2026-07-15 real runs are recorded in the corrected and historical evidence
+reports. Repeated follow-ups cost 5.90× Baseline. A single four-slice fresh
+Session still cost 1.91× Baseline before retry overhead. These RED results drove
+the current strictly compatible, at-most-two micro-batch policy.
 
 See [Current Product State](current-state.md) for the release claim boundary.

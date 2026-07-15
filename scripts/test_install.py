@@ -11,6 +11,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = REPO_ROOT / "scripts" / "install.sh"
+BUILD_SCRIPT = REPO_ROOT / "scripts" / "build-harnessctl.sh"
 
 
 class InstallScriptTests(unittest.TestCase):
@@ -203,6 +204,67 @@ fi
         self.assertEqual(result.returncode, 0)
         self.assertIn("--with-superpowers", result.stdout)
         self.assertIn("standalone", result.stdout.lower())
+
+
+class BuildScriptTests(unittest.TestCase):
+    def test_running_binary_is_replaced_atomically(self) -> None:
+        sleep_binary = shutil.which("sleep")
+        true_binary = shutil.which("true")
+        self.assertIsNotNone(sleep_binary)
+        self.assertIsNotNone(true_binary)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            skill_dir = root / "cached-subagent-harness"
+            crate_dir = skill_dir / "scripts" / "harnessctl"
+            release_dir = crate_dir / "target" / "release"
+            bin_dir = skill_dir / "scripts" / "bin"
+            fake_bin = root / "fake-bin"
+            release_dir.mkdir(parents=True)
+            bin_dir.mkdir(parents=True)
+            fake_bin.mkdir()
+            (crate_dir / "Cargo.toml").write_text(
+                '[package]\nname = "harnessctl"\nversion = "0.0.0"\n',
+                encoding="utf-8",
+            )
+
+            staged_binary = release_dir / "harnessctl"
+            live_binary = bin_dir / "harnessctl"
+            shutil.copy2(true_binary, staged_binary)
+            shutil.copy2(sleep_binary, live_binary)
+            staged_binary.chmod(0o755)
+            live_binary.chmod(0o755)
+
+            fake_cargo = fake_bin / "cargo"
+            fake_cargo.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+            fake_cargo.chmod(0o755)
+
+            running = subprocess.Popen(
+                [str(live_binary), "30"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            try:
+                env = os.environ.copy()
+                env["PATH"] = f"{fake_bin}:{env['PATH']}"
+                env["SKILL_DIR"] = str(skill_dir)
+                result = subprocess.run(
+                    ["bash", str(BUILD_SCRIPT)],
+                    cwd=REPO_ROOT,
+                    env=env,
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+            finally:
+                running.terminate()
+                running.wait(timeout=5)
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(
+                subprocess.run([str(live_binary)], check=False).returncode,
+                0,
+            )
 
 
 if __name__ == "__main__":

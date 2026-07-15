@@ -600,6 +600,74 @@ h3 {
   background: var(--red-soft);
 }
 
+.policy-bar {
+  display: grid;
+  grid-template-columns: minmax(150px, .42fr) minmax(0, 1.5fr) minmax(220px, .72fr);
+  gap: 18px;
+  align-items: center;
+  margin: 10px 0;
+  padding: 12px 17px;
+  border-radius: var(--radius-panel);
+}
+
+.policy-heading h2 {
+  margin-top: 3px;
+  font-size: 16px;
+}
+
+.policy-facts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(105px, 1fr));
+  gap: 7px;
+}
+
+.policy-fact {
+  min-width: 0;
+  padding: 7px 9px;
+  border: 1px solid rgba(42, 61, 91, .08);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, .38);
+}
+
+.policy-fact span,
+.route-fact span,
+.policy-note {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.policy-fact strong,
+.route-fact strong {
+  display: block;
+  overflow: hidden;
+  margin-top: 3px;
+  color: var(--ink-soft);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.policy-note {
+  grid-column: 1 / -1;
+  padding-left: 2px;
+}
+
+.route-fact {
+  min-width: 0;
+  padding-left: 16px;
+  border-left: 1px solid var(--line);
+}
+
+.route-fact small {
+  display: block;
+  overflow: hidden;
+  margin-top: 3px;
+  color: var(--faint);
+  font-size: 9.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .operational-grid {
   display: grid;
   grid-template-columns: minmax(0, 1.65fr) minmax(320px, .75fr);
@@ -1115,6 +1183,13 @@ h3 {
   margin-top: 3px;
 }
 
+.activity-summary {
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .activity-time {
   color: var(--faint);
   font-size: 10px;
@@ -1189,6 +1264,17 @@ h3 {
     grid-template-columns: 1fr;
   }
 
+  .policy-bar {
+    grid-template-columns: minmax(140px, .35fr) minmax(0, 1fr);
+  }
+
+  .route-fact {
+    grid-column: 1 / -1;
+    padding: 9px 0 0;
+    border-top: 1px solid var(--line);
+    border-left: 0;
+  }
+
   .task-board,
   .session-dock {
     min-height: auto;
@@ -1255,6 +1341,22 @@ h3 {
   .progress-card,
   .outcome-card {
     min-height: 112px;
+  }
+
+  .policy-bar {
+    grid-template-columns: 1fr;
+    gap: 10px;
+    padding: 14px;
+    border-radius: 16px;
+  }
+
+  .policy-facts {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .policy-note,
+  .route-fact {
+    grid-column: 1 / -1;
   }
 
   .progress-card,

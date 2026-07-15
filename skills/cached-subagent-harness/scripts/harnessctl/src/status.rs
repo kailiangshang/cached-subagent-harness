@@ -1,7 +1,10 @@
 use crate::accounting::efficiency_report;
+use crate::bundle::DEFAULT_MAX_TASKS_PER_BUNDLE;
 use crate::domain::{
-    ActivityStatusView, Language, RunStatusView, SessionStatusView, StatusView, TaskStatusView,
+    ActivityStatusView, DispatchPolicyStatusView, Language, RunStatusView, SessionStatusView,
+    StatusView, TaskStatusView,
 };
+use crate::sessions::{DEFAULT_MAX_SESSION_EFFECTIVE_TOKENS, DEFAULT_MAX_SESSION_REUSES};
 use crate::store::Store;
 
 pub(crate) fn build_status(store: &Store, run_id: &str) -> Result<StatusView, String> {
@@ -27,6 +30,12 @@ pub(crate) fn build_status(store: &Store, run_id: &str) -> Result<StatusView, St
             goal: snapshot.run.goal,
             status: snapshot.run.status,
             updated_at: snapshot.run.updated_at,
+        },
+        dispatch_policy: DispatchPolicyStatusView {
+            max_tasks_per_bundle: DEFAULT_MAX_TASKS_PER_BUNDLE,
+            max_accepted_followups: DEFAULT_MAX_SESSION_REUSES,
+            max_effective_tokens: DEFAULT_MAX_SESSION_EFFECTIVE_TOKENS,
+            increases_require_evidence: true,
         },
         tasks: snapshot
             .tasks
@@ -152,6 +161,10 @@ mod tests {
         assert!(render_text(&view, Language::EnUs).contains("Tasks"));
         let json = render_json(&view).unwrap();
         assert!(json.contains("\"updated_at\":"), "{json}");
+        assert!(json.contains("\"dispatch_policy\":"), "{json}");
+        assert!(json.contains("\"max_tasks_per_bundle\": 2"), "{json}");
+        assert!(json.contains("\"max_accepted_followups\": 1"), "{json}");
+        assert!(json.contains("\"max_effective_tokens\": 200000"), "{json}");
         assert!(json.contains("\"phase_totals\":"), "{json}");
         assert!(json.contains("\"total_effective\": null"));
         assert!(json.contains("task-1"));

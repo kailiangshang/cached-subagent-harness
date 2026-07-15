@@ -476,6 +476,24 @@ fn parse_reuse_budget(parsed: &ParsedArgs) -> Result<domain::ReuseBudget, String
     Ok(budget)
 }
 
+fn parse_bundle_limit(parsed: &ParsedArgs) -> Result<usize, String> {
+    let requested = parse_u64_value_or(
+        parsed,
+        "max-tasks",
+        bundle::DEFAULT_MAX_TASKS_PER_BUNDLE as u64,
+    )?;
+    if requested == 0 {
+        return Err("--max-tasks must be at least 1".into());
+    }
+    if requested > bundle::DEFAULT_MAX_TASKS_PER_BUNDLE as u64 {
+        return Err(
+            "raising the bundle task limit requires durable evidence; this CLI only permits lowering the release default"
+                .into(),
+        );
+    }
+    usize::try_from(requested).map_err(|error| format!("invalid --max-tasks: {error}"))
+}
+
 fn open_store(parsed: &ParsedArgs) -> Result<Store, String> {
     Store::open(Path::new(&required_flag(parsed, "db")?))
 }
@@ -754,12 +772,17 @@ fn cmd_audit(args: &[String]) -> Result<(), String> {
 
 fn cmd_bundle(args: &[String]) -> Result<(), String> {
     let parsed = parse_args(args)?;
+    let max_tasks = parse_bundle_limit(&parsed)?;
     let store = open_store(&parsed)?;
     let snapshot = store.snapshot(&required_flag(&parsed, "run")?)?;
+    let bundles = if max_tasks == bundle::DEFAULT_MAX_TASKS_PER_BUNDLE {
+        bundle::bundle_ready(&snapshot.tasks)
+    } else {
+        bundle::bundle_ready_with_limit(&snapshot.tasks, max_tasks)
+    };
     println!(
         "{}",
-        serde_json::to_string_pretty(&bundle::bundle_ready(&snapshot.tasks))
-            .map_err(|error| error.to_string())?
+        serde_json::to_string_pretty(&bundles).map_err(|error| error.to_string())?
     );
     Ok(())
 }
@@ -839,7 +862,7 @@ fn usage() -> &'static str {
   harnessctl status --db DB --run ID [--json true] [--lang zh-CN|en-US]
   harnessctl watch --db DB --run ID [--interval-ms 1500] [--iterations N]
   harnessctl audit --db DB --run ID
-  harnessctl bundle --db DB --run ID
+  harnessctl bundle --db DB --run ID [--max-tasks N]
   harnessctl host-command --host HOST --operation spawn|followup|close --profile light|standard|deep [--templates FILE] ...
   harnessctl dashboard --db DB --run ID [--bind 127.0.0.1] [--port 7347] [--lang zh-CN|en-US]
 "#
@@ -923,6 +946,31 @@ mod tests {
                 max_effective_tokens: 100_000,
             }
         );
+    }
+
+    #[test]
+    fn bundle_limit_flags_can_only_lower_the_evidence_backed_default() {
+        let raised = parse_args(
+            &["--max-tasks", "3"]
+                .into_iter()
+                .map(str::to_string)
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
+        let error = parse_bundle_limit(&raised).unwrap_err();
+        assert!(error.contains("durable evidence"), "{error}");
+
+        let lowered = parse_args(
+            &["--max-tasks", "1"]
+                .into_iter()
+                .map(str::to_string)
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
+        assert_eq!(parse_bundle_limit(&lowered).unwrap(), 1);
+
+        let defaulted = parse_args(&[]).unwrap();
+        assert_eq!(parse_bundle_limit(&defaulted).unwrap(), 2);
     }
 
     #[test]

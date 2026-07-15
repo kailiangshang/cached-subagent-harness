@@ -3,6 +3,11 @@
 Date: 2026-07-15
 Status: comparable quality, exact Codex CLI telemetry, original reuse strategy rejected
 
+This report is the first historical RED arm. A later equal-quality run also
+rejected the proposed four-slice large batch. The current policy and latest
+claim boundary are in
+[`2026-07-15-signal-sweep-corrected-ab.md`](2026-07-15-signal-sweep-corrected-ab.md).
+
 ## Decision
 
 The live run disproved the original assumption that a compatible Session should
@@ -11,11 +16,11 @@ Codex cache hit rates were high, but the resumed Session's cumulative context
 grew much faster than the saved bootstrap cost. The Harness arm used 5.90× the
 Baseline's total effective Token count after including one rejected retry.
 
-This result is intentionally retained. The runtime and Skill now batch all
-known compatible ready work before considering a follow-up, and a later
-follow-up is eligible only while both an accepted-follow-up cap and an observed
-effective-token budget remain. No positive live saving claim is made for the
-corrected policy until it receives a separate real run.
+This result is intentionally retained. The runtime and Skill now partition
+strictly compatible ready work into micro-batches of at most two before
+considering a follow-up. A later follow-up is eligible only while both an
+accepted-follow-up cap and an observed effective-token budget remain. No
+positive live saving claim is made.
 
 ## Fairness Boundary
 
@@ -115,9 +120,10 @@ not prevent cumulative processed context from dominating total Token use.
 This experiment is evidence against unlimited Session continuation, not
 evidence against stable prompts, safe model routing, or bounded batching. The
 correct release claim is narrower: the known 5.90× regression is now prevented
-by routing and budget gates. A future live run may measure the corrected
-single-batch path, but until then the product must display the exact Harness
-total and must not label the corrected policy as proven Token saving.
+by routing and budget gates. The later four-slice single-batch measurement was
+also negative and is recorded in the corrected report. The product must display
+exact Harness totals and must not label the current micro-batch policy as proven
+Token saving.
 
 Raw prompts, JSONL streams, generated source, authentication artifacts, and
 Session logs remain outside the repository.

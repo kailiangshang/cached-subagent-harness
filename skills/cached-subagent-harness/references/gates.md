@@ -66,7 +66,12 @@ Use exactly one write-active `worker` at a time. One worker may execute one
 bounded batch of compatible assignments when role, required capability, risk,
 write scope, base revision, dependency order, and review boundary align.
 Derive all known compatible ready assignments from durable queued state and
-batch them before attempting a follow-up; never trust a caller-supplied count.
+partition them into strictly compatible micro-batches of at most two by
+default before attempting a follow-up; never trust a caller-supplied count.
+Do not relax or normalize any compatibility field to manufacture a batch.
+`harnessctl bundle --max-tasks N` may lower the default but cannot raise it; a
+larger batch or higher follow-up limit requires a versioned policy backed by
+equal-quality exact-usage evidence.
 Every reusable session has an accepted-follow-up cap and total effective token
 budget. Runtime flags may lower but not raise the release defaults. Record
 complete exact normalized usage linked to the current assignment before

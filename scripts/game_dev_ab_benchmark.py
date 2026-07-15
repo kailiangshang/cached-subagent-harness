@@ -36,6 +36,7 @@ DEFAULT_WORKERS = 4
 DEFAULT_MIN_CACHE_ADJUSTED_SAVINGS_PCT = 30.0
 DEFAULT_MIN_STABLE_PREFIX_RATIO_PCT = 45.0
 MODES = ("baseline", "cached_harness")
+HARNESS_TOPOLOGIES = ("per-slice", "bounded-batch")
 REQUIRED_RUNTIME_EVENTS = ("spawned", "running", "reported", "closed")
 NORMALIZED_TOKEN_FIELDS = (
     "input_tokens",
@@ -296,6 +297,56 @@ Write the required report and stay inside ALLOWED_WRITE_PATHS.
 """
 
 
+def _batch_write_scope(workers: int) -> list[str]:
+    return sorted(
+        {
+            allowed_path
+            for index in range(workers)
+            for allowed_path in worker_slice(index)["allowed_write_paths"]
+        }
+    )
+
+
+def build_cached_batch_brief(work_dir: Path, workers: int) -> str:
+    slices = [worker_slice(index) for index in range(workers)]
+    skill_path = (
+        Path(__file__).resolve().parents[1]
+        / "skills"
+        / "cached-subagent-harness"
+        / "SKILL.md"
+    )
+    slice_text = "\n\n".join(
+        "\n".join(
+            [
+                f"{index + 1}. WORKER={slice_info['id']}",
+                f"   SLICE={slice_info['title']}",
+                f"   TASK={slice_info['task']}",
+                f"   QUALITY_GATE={slice_info['quality_gate']}",
+                "   ALLOWED_WRITE_PATHS="
+                + ",".join(slice_info["allowed_write_paths"]),
+            ]
+        )
+        for index, slice_info in enumerate(slices)
+    )
+    return f"""Bounded worker batch for the approved Signal Sweep design.
+BATCH_ID=signal-sweep-batch-01
+SESSION_TOPOLOGY=one-fresh-session-zero-followups
+SKILL_PATH={skill_path}
+SHARED_BRIEF_PATH={work_dir / "signal-sweep-game-brief.md"}
+REPORT_PATH={work_dir / "cached-batch-01-report.md"}
+ALLOWED_WRITE_PATHS={",".join(_batch_write_scope(workers))}
+
+Read SKILL_PATH and SHARED_BRIEF_PATH before editing. Complete these ordered
+slices inside one bounded assignment and one final review boundary:
+
+{slice_text}
+
+Use TDD within each slice, then run the complete project gates once.
+Do not spawn or delegate nested agents. Do not resume or request a follow-up.
+Write one dense report covering every slice and stay inside ALLOWED_WRITE_PATHS.
+"""
+
+
 def render_cached_prompts(harnessctl: Path, work_dir: Path, workers: int) -> list[str]:
     shared_brief = work_dir / "signal-sweep-game-brief.md"
     ledger = work_dir / "cached-harness-agent-ledger.db"
@@ -327,6 +378,46 @@ def render_cached_prompts(harnessctl: Path, work_dir: Path, workers: int) -> lis
             args.extend(["--allowed-write-paths", allowed_path])
         prompts.append(run_harnessctl(harnessctl, args))
     return prompts
+
+
+def render_cached_batch_prompt(
+    harnessctl: Path, work_dir: Path, workers: int
+) -> str:
+    shared_brief = work_dir / "signal-sweep-game-brief.md"
+    assignment_brief = work_dir / "cached-batch-01-brief.md"
+    ledger = work_dir / "cached-harness-agent-ledger.db"
+    skill_path = (
+        Path(__file__).resolve().parents[1]
+        / "skills"
+        / "cached-subagent-harness"
+        / "SKILL.md"
+    )
+    shared_brief.write_text(GAME_DEV_BRIEF, encoding="utf-8")
+    assignment_brief.write_text(
+        build_cached_batch_brief(work_dir, workers), encoding="utf-8"
+    )
+    args = [
+        "render-prompt",
+        "--role",
+        "worker",
+        "--brief",
+        str(assignment_brief),
+        "--report",
+        str(work_dir / "cached-batch-01-report.md"),
+        "--ledger",
+        str(ledger),
+        "--base-commit",
+        "HEAD",
+        "--context",
+        str(skill_path),
+        "--context",
+        str(shared_brief),
+        "--harness-command",
+        "npm test",
+    ]
+    for allowed_path in _batch_write_scope(workers):
+        args.extend(["--allowed-write-paths", allowed_path])
+    return run_harnessctl(harnessctl, args)
 
 
 def load_observations(path: Path) -> list[dict[str, Any]]:
@@ -443,6 +534,66 @@ def _expected_worker_ids(workers: int) -> tuple[str, ...]:
     return tuple(worker["id"] for worker in WORKER_SLICES[:workers])
 
 
+def per_slice_runtime_topology(workers: int) -> dict[str, dict[str, Any]]:
+    units = list(_expected_worker_ids(workers))
+    return {
+        "baseline": {
+            "strategy": "fresh_per_slice",
+            "units": units,
+            "assignment_count": workers,
+            "session_count": workers,
+            "followup_count": 0,
+        },
+        "cached_harness": {
+            "strategy": "harness_per_slice",
+            "units": list(units),
+            "assignment_count": workers,
+            "session_count": workers,
+            "followup_count": 0,
+        },
+    }
+
+
+def corrected_runtime_topology(workers: int) -> dict[str, dict[str, Any]]:
+    topology = per_slice_runtime_topology(workers)
+    topology["cached_harness"] = {
+        "strategy": "bounded_batch",
+        "units": ["batch-01"],
+        "assignment_count": workers,
+        "session_count": 1,
+        "followup_count": 0,
+    }
+    return topology
+
+
+def _validated_runtime_topology(
+    workers: int,
+    runtime_topology: dict[str, dict[str, Any]] | None,
+) -> dict[str, dict[str, Any]]:
+    topology = runtime_topology or per_slice_runtime_topology(workers)
+    if set(topology) != set(MODES):
+        raise ValueError(f"runtime topology must define exactly {MODES}")
+    for mode in MODES:
+        facts = topology[mode]
+        units = facts.get("units")
+        if (
+            not isinstance(units, list)
+            or not units
+            or any(not isinstance(unit, str) or not unit for unit in units)
+            or len(set(units)) != len(units)
+        ):
+            raise ValueError(f"runtime topology has invalid units for {mode}")
+        for field in ("assignment_count", "session_count", "followup_count"):
+            value = facts.get(field)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"runtime topology has invalid {mode}.{field}")
+        if facts["assignment_count"] != workers:
+            raise ValueError(
+                f"runtime topology {mode}.assignment_count must equal workers"
+            )
+    return topology
+
+
 def _usage_observation_is_exact(row: dict[str, Any]) -> bool:
     if row.get("usage_observed") is not True:
         return False
@@ -478,20 +629,31 @@ def summarize_observations(
     observations: list[dict[str, Any]],
     *,
     workers: int,
+    runtime_topology: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, dict[str, Any]]:
-    expected_workers = set(_expected_worker_ids(workers))
+    topology = _validated_runtime_topology(workers, runtime_topology)
+    expected_workers_by_mode = {
+        mode: set(topology[mode]["units"]) for mode in MODES
+    }
     expected_quality_gates = {gate["name"] for gate in QUALITY_GATES}
     summary: dict[str, dict[str, Any]] = {
         mode: {
             "event_count": 0,
+            "execution_units_seen": 0,
+            "execution_units_closed": 0,
             "workers_seen": 0,
             "workers_closed": 0,
             "final_status": "not-observed",
             "quality_gates_passed": False,
             "quality_gates_seen": [],
             "usage_observation_count": 0,
+            "comparable_usage_observation_count": 0,
+            "retry_usage_observation_count": 0,
+            "execution_units_with_usage": 0,
             "workers_with_usage": 0,
             "telemetry_quality": "unknown",
+            "comparable_telemetry_quality": "unknown",
+            "retry_telemetry_quality": "unknown",
             "input_tokens_total": None,
             "cache_read_tokens_total": None,
             "output_tokens_total": None,
@@ -500,20 +662,37 @@ def summarize_observations(
             "provider_input_tokens_total": None,
             "provider_output_tokens_total": None,
             "total_effective_tokens": None,
+            "comparable_total_effective_tokens": None,
+            "retry_total_effective_tokens": None,
             "events_by_type": {},
         }
         for mode in MODES
     }
     workers_by_mode: dict[str, set[str]] = {mode: set() for mode in MODES}
     lifecycle_by_mode: dict[str, dict[str, set[str]]] = {
-        mode: {worker: set() for worker in expected_workers} for mode in MODES
+        mode: {worker: set() for worker in expected_workers_by_mode[mode]}
+        for mode in MODES
     }
     latest_event_by_worker: dict[str, dict[str, str]] = {mode: {} for mode in MODES}
     usage_rows_by_mode: dict[str, list[dict[str, Any]]] = {
         mode: [] for mode in MODES
     }
-    usage_workers_by_mode: dict[str, set[str]] = {mode: set() for mode in MODES}
     usage_rows_exact_by_mode: dict[str, list[bool]] = {mode: [] for mode in MODES}
+    comparable_rows_by_mode: dict[str, list[dict[str, Any]]] = {
+        mode: [] for mode in MODES
+    }
+    comparable_workers_by_mode: dict[str, set[str]] = {
+        mode: set() for mode in MODES
+    }
+    comparable_rows_exact_by_mode: dict[str, list[bool]] = {
+        mode: [] for mode in MODES
+    }
+    retry_rows_by_mode: dict[str, list[dict[str, Any]]] = {
+        mode: [] for mode in MODES
+    }
+    retry_rows_exact_by_mode: dict[str, list[bool]] = {
+        mode: [] for mode in MODES
+    }
     quality_gates_by_mode: dict[str, set[str]] = {mode: set() for mode in MODES}
 
     for observation in observations:
@@ -522,8 +701,9 @@ def summarize_observations(
         event = str(observation["event"])
         if mode not in MODES:
             raise ValueError(f"invalid observation mode: {mode}")
+        expected_workers = expected_workers_by_mode[mode]
         if worker not in expected_workers:
-            raise ValueError(f"unknown worker for {workers}-worker run: {worker}")
+            raise ValueError(f"unknown worker for {mode} topology: {worker}")
         mode_summary = summary[mode]
 
         mode_summary["event_count"] += 1
@@ -543,20 +723,37 @@ def summarize_observations(
             lifecycle_by_mode[mode][worker].add(event)
             latest_event_by_worker[mode][worker] = event
         if observation.get("usage_observed") is True:
+            if event not in {"closed", "retry"}:
+                raise ValueError(
+                    "usage is only supported on closed or retry events: "
+                    f"{mode}/{worker}/{event}"
+                )
             exact = _usage_observation_is_exact(observation)
             usage_rows_by_mode[mode].append(observation)
             usage_rows_exact_by_mode[mode].append(exact)
-            if exact:
-                usage_workers_by_mode[mode].add(worker)
+            if event == "closed":
+                comparable_rows_by_mode[mode].append(observation)
+                comparable_rows_exact_by_mode[mode].append(exact)
+                if exact:
+                    comparable_workers_by_mode[mode].add(worker)
+            elif event == "retry":
+                retry_rows_by_mode[mode].append(observation)
+                retry_rows_exact_by_mode[mode].append(exact)
 
     for mode in MODES:
+        expected_workers = expected_workers_by_mode[mode]
         mode_summary = summary[mode]
-        mode_summary["workers_seen"] = len(workers_by_mode[mode])
-        mode_summary["workers_closed"] = sum(
+        execution_units_seen = len(workers_by_mode[mode])
+        execution_units_closed = sum(
             1
             for worker in expected_workers
             if "closed" in lifecycle_by_mode[mode][worker]
         )
+        mode_summary["execution_units_seen"] = execution_units_seen
+        mode_summary["execution_units_closed"] = execution_units_closed
+        # Compatibility aliases for older report consumers.
+        mode_summary["workers_seen"] = execution_units_seen
+        mode_summary["workers_closed"] = execution_units_closed
         quality_gates_seen = quality_gates_by_mode[mode]
         mode_summary["quality_gates_seen"] = [
             gate["name"] for gate in QUALITY_GATES if gate["name"] in quality_gates_seen
@@ -565,23 +762,69 @@ def summarize_observations(
             quality_gates_seen == expected_quality_gates
         )
         usage_rows = usage_rows_by_mode[mode]
+        comparable_rows = comparable_rows_by_mode[mode]
+        retry_rows = retry_rows_by_mode[mode]
+        comparable_coverage = (
+            comparable_workers_by_mode[mode] == expected_workers
+            and len(comparable_rows) == len(expected_workers)
+            and all(comparable_rows_exact_by_mode[mode])
+        )
+        retry_event_count = mode_summary["events_by_type"].get("retry", 0)
+        retry_coverage = retry_event_count == len(retry_rows) and all(
+            retry_rows_exact_by_mode[mode]
+        )
         coverage = (
-            usage_workers_by_mode[mode] == expected_workers
+            comparable_coverage
+            and retry_coverage
             and all(usage_rows_exact_by_mode[mode])
         )
         mode_summary["usage_observation_count"] = len(usage_rows)
-        mode_summary["workers_with_usage"] = len(usage_workers_by_mode[mode])
+        mode_summary["comparable_usage_observation_count"] = len(comparable_rows)
+        mode_summary["retry_usage_observation_count"] = len(retry_rows)
+        execution_units_with_usage = len(comparable_workers_by_mode[mode])
+        mode_summary["execution_units_with_usage"] = execution_units_with_usage
+        mode_summary["workers_with_usage"] = execution_units_with_usage
         for field in (*NORMALIZED_TOKEN_FIELDS, *PROVIDER_TOKEN_FIELDS):
             total_name = f"{field}_total"
             mode_summary[total_name] = _complete_sum(usage_rows, field, coverage)
+            mode_summary[f"comparable_{total_name}"] = _complete_sum(
+                comparable_rows, field, comparable_coverage
+            )
+            mode_summary[f"retry_{total_name}"] = (
+                0
+                if retry_event_count == 0
+                else _complete_sum(retry_rows, field, retry_coverage)
+            )
         normalized_totals = [
             mode_summary[f"{field}_total"] for field in NORMALIZED_TOKEN_FIELDS
+        ]
+        comparable_normalized_totals = [
+            mode_summary[f"comparable_{field}_total"]
+            for field in NORMALIZED_TOKEN_FIELDS
+        ]
+        retry_normalized_totals = [
+            mode_summary[f"retry_{field}_total"]
+            for field in NORMALIZED_TOKEN_FIELDS
         ]
         if all(value is not None for value in normalized_totals):
             mode_summary["total_effective_tokens"] = sum(normalized_totals)
             mode_summary["telemetry_quality"] = "exact"
         elif usage_rows:
             mode_summary["telemetry_quality"] = "partial"
+        if all(value is not None for value in comparable_normalized_totals):
+            mode_summary["comparable_total_effective_tokens"] = sum(
+                comparable_normalized_totals
+            )
+            mode_summary["comparable_telemetry_quality"] = "exact"
+        elif comparable_rows:
+            mode_summary["comparable_telemetry_quality"] = "partial"
+        if all(value is not None for value in retry_normalized_totals):
+            mode_summary["retry_total_effective_tokens"] = sum(
+                retry_normalized_totals
+            )
+            mode_summary["retry_telemetry_quality"] = "exact"
+        elif retry_event_count:
+            mode_summary["retry_telemetry_quality"] = "partial"
         if mode_summary["event_count"] == 0:
             mode_summary["final_status"] = "not-observed"
         elif all(
@@ -590,7 +833,7 @@ def summarize_observations(
             for worker in expected_workers
         ):
             mode_summary["final_status"] = "closed"
-        elif mode_summary["workers_seen"] >= workers:
+        elif mode_summary["workers_seen"] >= len(expected_workers):
             mode_summary["final_status"] = "partial"
         else:
             mode_summary["final_status"] = "incomplete"
@@ -603,7 +846,9 @@ def build_game_dev_report(
     baseline_prompts: list[str],
     workers: int,
     observations: list[dict[str, Any]],
+    runtime_topology: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    topology = _validated_runtime_topology(workers, runtime_topology)
     effectiveness = build_effectiveness_report(
         harness_prompts=harness_prompts,
         baseline_prompts=baseline_prompts,
@@ -611,7 +856,8 @@ def build_game_dev_report(
         estimator="bytes/4",
     )
     dynamic_avg = (
-        effectiveness["harness"]["dynamic_tail_estimated_tokens_total"] / workers
+        effectiveness["harness"]["dynamic_tail_estimated_tokens_total"]
+        / len(harness_prompts)
     )
     break_even = break_even_dispatches(
         baseline_avg_tokens=effectiveness["baseline"]["avg_tokens_per_prompt"],
@@ -620,21 +866,50 @@ def build_game_dev_report(
         ],
         dynamic_tail_avg_tokens=dynamic_avg,
     )
-    observation_summary = summarize_observations(observations, workers=workers)
+    observation_summary = summarize_observations(
+        observations,
+        workers=workers,
+        runtime_topology=topology,
+    )
     observed_savings: dict[str, float | None] = {
+        "provider_input_tokens_pct": None,
+        "total_effective_tokens_pct": None,
+    }
+    comparable_sample_savings: dict[str, float | None] = {
         "provider_input_tokens_pct": None,
         "total_effective_tokens_pct": None,
     }
     baseline_observed = observation_summary["baseline"]
     cached_observed = observation_summary["cached_harness"]
-    observed_runtime_comparable = (
+    comparable_sample_valid = (
         baseline_observed["final_status"] == "closed"
         and cached_observed["final_status"] == "closed"
         and baseline_observed["quality_gates_passed"]
         and cached_observed["quality_gates_passed"]
+        and baseline_observed["comparable_telemetry_quality"] == "exact"
+        and cached_observed["comparable_telemetry_quality"] == "exact"
+    )
+    observed_runtime_comparable = (
+        comparable_sample_valid
         and baseline_observed["telemetry_quality"] == "exact"
         and cached_observed["telemetry_quality"] == "exact"
     )
+    if comparable_sample_valid and (
+        baseline_observed["comparable_provider_input_tokens_total"]
+        and cached_observed["comparable_provider_input_tokens_total"] is not None
+    ):
+        comparable_sample_savings["provider_input_tokens_pct"] = savings_pct(
+            baseline_observed["comparable_provider_input_tokens_total"],
+            cached_observed["comparable_provider_input_tokens_total"],
+        )
+    if comparable_sample_valid and (
+        baseline_observed["comparable_total_effective_tokens"]
+        and cached_observed["comparable_total_effective_tokens"] is not None
+    ):
+        comparable_sample_savings["total_effective_tokens_pct"] = savings_pct(
+            baseline_observed["comparable_total_effective_tokens"],
+            cached_observed["comparable_total_effective_tokens"],
+        )
     if observed_runtime_comparable and (
         baseline_observed["provider_input_tokens_total"]
         and cached_observed["provider_input_tokens_total"] is not None
@@ -661,6 +936,7 @@ def build_game_dev_report(
             "description": "Equivalent four-slice browser-game development task.",
         },
         "quality_gates": QUALITY_GATES,
+        "runtime_topology": topology,
         "status_protocol": {
             "required_runtime_events": list(REQUIRED_RUNTIME_EVENTS),
             "quality_gate_event": "quality_passed",
@@ -700,13 +976,17 @@ def build_game_dev_report(
             **effectiveness["savings"],
             "break_even_dispatches": break_even,
             "observed_runtime": observed_savings,
+            "observed_runtime_comparable_sample": comparable_sample_savings,
             "observed_runtime_comparable": observed_runtime_comparable,
+            "comparable_sample_valid": comparable_sample_valid,
         },
         "status_observations": observation_summary,
         "interpretation": {
             "raw_tokens": "Prompt bytes sent before provider prompt-cache effects.",
             "cache_adjusted_tokens": "Stable harness prefix counted once, dynamic tails counted per dispatch.",
             "runtime_status": "Only populated from an external observations JSONL after actual subagents run.",
+            "comparable_sample": "Closed execution-unit usage only; excludes retry attempts.",
+            "operational_total": "All exact closed and retry usage; retry-inclusive telemetry must be complete.",
         },
     }
 
@@ -775,6 +1055,7 @@ def write_artifacts(
     *,
     baseline_prompts: list[str],
     cached_prompts: list[str],
+    cached_prompt_names: list[str] | None = None,
 ) -> None:
     write_starter_project(output_dir / "baseline-project")
     write_starter_project(output_dir / "cached-harness-project")
@@ -782,6 +1063,8 @@ def write_artifacts(
     cached_dir = output_dir / "cached_harness"
     baseline_dir.mkdir(parents=True, exist_ok=True)
     cached_dir.mkdir(parents=True, exist_ok=True)
+    for prompt_path in (*baseline_dir.glob("*.prompt"), *cached_dir.glob("*.prompt")):
+        prompt_path.unlink()
     (output_dir / "signal-sweep-game-brief.md").write_text(
         GAME_DEV_BRIEF, encoding="utf-8"
     )
@@ -789,8 +1072,18 @@ def write_artifacts(
         (baseline_dir / f"worker-{index + 1:02d}.prompt").write_text(
             prompt, encoding="utf-8"
         )
-    for index, prompt in enumerate(cached_prompts):
-        (cached_dir / f"worker-{index + 1:02d}.prompt").write_text(
+    cached_names = cached_prompt_names or [
+        f"worker-{index + 1:02d}" for index in range(len(cached_prompts))
+    ]
+    if len(cached_names) != len(cached_prompts):
+        raise ValueError("cached prompt names must match cached prompts")
+    if any(
+        not name or Path(name).name != name or name.endswith(".prompt")
+        for name in cached_names
+    ):
+        raise ValueError("cached prompt names must be plain stems")
+    for name, prompt in zip(cached_names, cached_prompts):
+        (cached_dir / f"{name}.prompt").write_text(
             prompt, encoding="utf-8"
         )
     (output_dir / "observations-template.jsonl").write_text(
@@ -813,9 +1106,12 @@ def format_markdown(report: dict[str, Any]) -> str:
     def shown(value: Any) -> str:
         return "unknown" if value is None else str(value)
 
+    def shown_pct(value: Any) -> str:
+        return "unknown" if value is None else f"{value}%"
+
     return f"""# Game Dev A/B Benchmark
 
-Workload: `{report['workload']['name']}` with {report['workload']['workers']} workers.
+Workload: `{report['workload']['name']}` with {report['workload']['workers']} assignments.
 Estimator: `{report['estimator']}`. Offline estimates are not provider billing
 telemetry.
 
@@ -835,12 +1131,18 @@ Cache-adjusted estimated savings: `{report['savings']['cache_adjusted_pct']}%`
 
 Break-even dispatches: `{break_even_text}`
 
+Equal-quality comparable-sample effective Token savings:
+`{shown_pct(report['savings']['observed_runtime_comparable_sample']['total_effective_tokens_pct'])}`
+
+Retry-inclusive operational effective Token savings:
+`{shown_pct(report['savings']['observed_runtime']['total_effective_tokens_pct'])}`
+
 ## Runtime Status Observations
 
-| Mode | Final status | Events | Workers closed | Provider input | Noncached input | Cached input | Visible output | Reasoning | Effective total |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| baseline | {baseline_status['final_status']} | {baseline_status['event_count']} | {baseline_status['workers_closed']} | {shown(baseline_status['provider_input_tokens_total'])} | {shown(baseline_status['input_tokens_total'])} | {shown(baseline_status['cache_read_tokens_total'])} | {shown(baseline_status['output_tokens_total'])} | {shown(baseline_status['reasoning_tokens_total'])} | {shown(baseline_status['total_effective_tokens'])} |
-| cached_harness | {cached_status['final_status']} | {cached_status['event_count']} | {cached_status['workers_closed']} | {shown(cached_status['provider_input_tokens_total'])} | {shown(cached_status['input_tokens_total'])} | {shown(cached_status['cache_read_tokens_total'])} | {shown(cached_status['output_tokens_total'])} | {shown(cached_status['reasoning_tokens_total'])} | {shown(cached_status['total_effective_tokens'])} |
+| Mode | Final status | Events | Execution units closed | Provider input | Noncached input | Cached input | Visible output | Reasoning | Comparable total | Retry total | Operational total |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| baseline | {baseline_status['final_status']} | {baseline_status['event_count']} | {baseline_status['execution_units_closed']} | {shown(baseline_status['provider_input_tokens_total'])} | {shown(baseline_status['input_tokens_total'])} | {shown(baseline_status['cache_read_tokens_total'])} | {shown(baseline_status['output_tokens_total'])} | {shown(baseline_status['reasoning_tokens_total'])} | {shown(baseline_status['comparable_total_effective_tokens'])} | {shown(baseline_status['retry_total_effective_tokens'])} | {shown(baseline_status['total_effective_tokens'])} |
+| cached_harness | {cached_status['final_status']} | {cached_status['event_count']} | {cached_status['execution_units_closed']} | {shown(cached_status['provider_input_tokens_total'])} | {shown(cached_status['input_tokens_total'])} | {shown(cached_status['cache_read_tokens_total'])} | {shown(cached_status['output_tokens_total'])} | {shown(cached_status['reasoning_tokens_total'])} | {shown(cached_status['comparable_total_effective_tokens'])} | {shown(cached_status['retry_total_effective_tokens'])} | {shown(cached_status['total_effective_tokens'])} |
 
 Required runtime events: `{", ".join(report['status_protocol']['required_runtime_events'])}`.
 
@@ -858,6 +1160,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="Path to the built harnessctl binary.",
     )
     parser.add_argument("--workers", type=int, default=DEFAULT_WORKERS)
+    parser.add_argument(
+        "--harness-topology",
+        choices=HARNESS_TOPOLOGIES,
+        default="per-slice",
+        help="Generate per-slice Harness prompts or one bounded-batch prompt.",
+    )
     parser.add_argument(
         "--format",
         choices=("markdown", "json"),
@@ -914,18 +1222,31 @@ def main(argv: list[str] | None = None) -> int:
     with context_manager as tmp:
         work_dir = Path(tmp)
         baseline_prompts = build_baseline_prompts(work_dir, args.workers)
-        cached_prompts = render_cached_prompts(args.harnessctl, work_dir, args.workers)
+        if args.harness_topology == "bounded-batch":
+            cached_prompts = [
+                render_cached_batch_prompt(args.harnessctl, work_dir, args.workers)
+            ]
+            cached_prompt_names = ["batch-01"]
+            runtime_topology = corrected_runtime_topology(args.workers)
+        else:
+            cached_prompts = render_cached_prompts(
+                args.harnessctl, work_dir, args.workers
+            )
+            cached_prompt_names = None
+            runtime_topology = per_slice_runtime_topology(args.workers)
         if args.output_dir:
             write_artifacts(
                 args.output_dir,
                 baseline_prompts=baseline_prompts,
                 cached_prompts=cached_prompts,
+                cached_prompt_names=cached_prompt_names,
             )
         report = build_game_dev_report(
             harness_prompts=cached_prompts,
             baseline_prompts=baseline_prompts,
             workers=args.workers,
             observations=observations,
+            runtime_topology=runtime_topology,
         )
 
     errors = validate_report(

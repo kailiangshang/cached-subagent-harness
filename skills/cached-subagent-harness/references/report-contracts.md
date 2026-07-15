@@ -12,6 +12,7 @@ Agent Budget:
 Agent Ledger:
 Write Scope:
 Decision Log:
+Routing and Batch Policy:
 Evidence:
 Changed Files:
 Tests:
@@ -24,6 +25,12 @@ Final Audit:
 ```
 
 Keep entries dense. Link file paths for details; do not paste long logs, diffs, plans, or histories.
+
+`Routing and Batch Policy` records the compatible ready-set source, immutable
+compatibility signature, selected model/reasoning floor, batch count and size,
+release default, any lower runtime override, and the evidence reference for an
+approved increase. Record failed dispatch attempts in operational token cost;
+keep the clean comparable sample separate rather than deleting retry cost.
 
 Optional methodology absence is not degraded. Populate `Degraded Mode Notes`
 only when a required harness/runtime capability is unavailable or an explicitly

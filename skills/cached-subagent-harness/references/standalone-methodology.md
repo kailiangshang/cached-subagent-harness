@@ -12,7 +12,12 @@ approved-plan contradictions the controller cannot resolve.
 Group related assignments only when role, required capability, risk, write
 scope, base revision, dependency order, and independence boundary are
 compatible. Execute trivial work on main. Batch known compatible ready
-assignments before attempting follow-up reuse. Derive the compatible ready set
+assignments before attempting follow-up reuse. Partition the ready set into
+strictly compatible micro-batches of at most two assignments by default. Do
+not relax or normalize role, required capability, risk, write scope, base
+revision, dependency order, or review boundary to manufacture a batch. A
+larger batch or a higher follow-up limit requires versioned durable evidence
+from equal-quality exact-usage comparisons. Derive the compatible ready set
 from durable queued state rather than a caller-supplied count. Reuse only after
 an exact signature match and an atomic `idle` to `busy` claim; increment reuse
 only after the host accepts the follow-up. Every reusable session has an
@@ -26,9 +31,9 @@ runtime CLI can lower reuse limits but rejects increases until a versioned
 durable policy authorizes them. Refresh a queued task's base revision only
 through a compare-and-swap update while the task is unassigned; otherwise
 replan or register it when ready. A busy session has one current task; an idle
-or terminal session has none. When a host cannot follow up, use one bounded
-worker brief and report reuse as unsupported. Never emulate reuse with an
-unrestricted permanent role pool.
+or terminal session has none. When a host cannot follow up, use
+evidence-bounded micro-batches or new Sessions and report reuse as unsupported.
+Never emulate reuse with an unrestricted permanent role pool.
 
 ## Quality-Constrained Routing
 
@@ -65,7 +70,7 @@ is visible, but it does not make the standalone core degraded.
 | Decision | Required action |
 |---|---|
 | Trivial, no isolation value | Execute on main and record the assignment. |
-| Known compatible ready work | Derive the durable queued set and batch it before follow-up reuse. |
+| Known compatible ready work | Derive the durable queued set and partition it into strictly compatible batches of at most two. |
 | One later compatible task, exact assignment usage and both budgets remain | Atomically claim the idle session. |
 | Usage unknown or either reuse budget exhausted | Close the reuse path; use main, batch, or spawn. |
 | Requested limit exceeds a release default | Reject it until a versioned durable policy carries the evidence. |
@@ -79,6 +84,8 @@ is visible, but it does not make the standalone core degraded.
 | Rationalization | Contract |
 |---|---|
 | One plan item needs one fresh agent | Assignment boundaries are not session boundaries; batch compatible work. |
+| One Session always saves more context than two | Long turns repeatedly process growing tool and code context; keep batches evidence-bounded. |
+| Similar tasks can share a batch if profiles are normalized | Compatibility fields are safety and quality boundaries, not batching knobs. |
 | A cache hit makes unlimited follow-ups cheap | Cached input still grows; both follow-up count and effective tokens are capped. |
 | Superpowers is missing, so quality is degraded | The standalone kernel owns the complete gates. |
 | The cheapest model always saves tokens | Count retries, escalation, review, and fixer work. |
@@ -88,7 +95,9 @@ is visible, but it does not make the standalone core degraded.
 ## Red Flags
 
 - Fresh agents for compatible micro-assignments without a recorded reason.
-- Repeated follow-ups when the work was ready for one batch.
+- A batch with more than two assignments without versioned equal-quality exact-usage evidence.
+- Rewriting profile, risk, scope, revision, dependency, or review boundaries to make tasks appear compatible.
+- Repeated follow-ups when the work was ready for evidence-bounded micro-batches.
 - Reuse based on a caller-supplied ready count, stale/non-exact usage, or an
   exhausted session budget.
 - A busy session without one current task, or an idle/terminal session that

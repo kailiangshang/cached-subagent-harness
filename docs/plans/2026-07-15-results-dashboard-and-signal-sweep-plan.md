@@ -42,8 +42,11 @@ without changing product scope. Remaining release work uses these corrections:
 - terminal Sessions clear their current assignment and audit enforces it.
 
 The original Task 4 topology remains the RED evidence, not a release
-recommendation. No positive live saving claim is permitted for the corrected
-policy until a separate real run measures it.
+recommendation. A later separate run measured the proposed four-slice fresh
+batch and found it still cost 1.91× Baseline before retries. The current release
+therefore uses strictly compatible micro-batches of at most two and makes no
+positive live saving claim. See the
+[corrected evidence](../benchmarks/2026-07-15-signal-sweep-corrected-ab.md).
 
 ## Global Constraints
 

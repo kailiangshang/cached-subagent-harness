@@ -4,8 +4,8 @@
 
 Implemented and current for the lightweight core. The 2026-07-15 results
 Dashboard design refines the presentation section, and the real Signal Sweep
-evidence replaces the original repeated-follow-up hypothesis with the
-batch-first, budget-bounded contract already incorporated below.
+evidence rejects both repeated follow-ups and one unbounded ready-work batch.
+The evidence-bounded micro-batch contract is incorporated below.
 
 The approved direction replaces the over-designed control-plane architecture
 with a small standalone harness whose primary outcome is lower total effective
@@ -20,8 +20,10 @@ increment 1 remain binding.
 Live evidence correction (2026-07-15): the original example of one Session
 plus five sequential follow-ups is invalid. A real four-assignment Signal Sweep
 run consumed 5.90× the equal-quality Baseline because resumed context grew on
-every turn. The corrected contract below is batch-first and budget-bounded; the
-negative run remains the RED evidence.
+every turn. A second run placed all four slices in one fresh turn and still
+consumed 1.91× Baseline before retries because the growing tool/code context was
+reprocessed inside the turn. The contract below therefore uses strictly
+compatible micro-batches of at most two; both negative runs remain RED evidence.
 
 ## Problem
 
@@ -46,7 +48,8 @@ The product optimizes one objective:
 
 The following mechanisms are core and unchanged:
 
-1. Combine compatible related tasks into one bounded work package.
+1. Partition compatible related tasks into strictly compatible micro-batches
+   of at most two by default.
 2. Reuse a compatible agent session only for later work that was not available
    to the original batch and remains inside explicit follow-up and Token caps.
 3. Route `light`, `standard`, and `deep` work to the lowest safe profile.
@@ -230,7 +233,7 @@ For each ready task, the controller chooses:
 
 ```text
 trivial and no isolation needed -> execute_on_main
-compatible related tasks exist  -> batch_then_spawn
+compatible related tasks exist  -> micro_batch_then_spawn (max 2 by default)
 compatible idle session within both budgets -> reuse_session
 delegation benefit exceeds cost -> spawn_session
 otherwise                        -> execute_on_main
@@ -242,7 +245,13 @@ the controller records the reuse; rejected follow-up does not increment
 `reuse_count` but its consumed Tokens remain retry cost.
 
 Known compatible ready work is always derived from durable queued state and
-batched before follow-up reuse; a caller-supplied count is not authoritative.
+partitioned into strictly compatible micro-batches before follow-up reuse; a
+caller-supplied count is not authoritative. Role, required profile, risk, write
+scope, base revision, dependency order, and review boundary are immutable
+compatibility facts, not knobs to make a larger batch. `harnessctl bundle`
+defaults to two assignments and `--max-tasks` may only lower that limit. A
+larger batch requires a versioned durable policy backed by equal-quality exact
+usage evidence.
 Each reusable Session has an accepted-follow-up cap and an observed
 total-effective Token cap. Runtime defaults are one follow-up and 200,000
 Tokens. Flags may lower these release defaults but cannot raise them; a future
@@ -406,7 +415,7 @@ display fields.
 
 - exact task-bundling compatibility dimensions;
 - atomic session claim and concurrent double-claim rejection;
-- batch-first ordering and accepted-follow-up/Token budget exhaustion;
+- micro-batch-first ordering and accepted-follow-up/Token budget exhaustion;
 - authoritative queued-set derivation, exact fresh usage, and cross-run
   ownership rejection;
 - compare-and-swap queued revision refresh and terminal task-link cleanup;
@@ -420,7 +429,8 @@ display fields.
 
 ### Integration tests
 
-- six compatible ready tasks use one bounded batch rather than five follow-ups;
+- six compatible ready tasks form three ordered two-task micro-batches rather
+  than one growing turn or five follow-ups;
 - later compatible work can use only the configured budgeted follow-ups;
 - one incompatible dimension forces a new execution path;
 - a host without follow-up batches compatible work before one spawn;
@@ -459,8 +469,9 @@ Implementation will:
 
 ## Acceptance Criteria
 
-- Six compatible ready tasks require one bounded batch and no preplanned
-  follow-up chain.
+- Six compatible ready tasks require three ordered two-task micro-batches and
+  no preplanned follow-up chain. Runtime overrides may lower but not raise the
+  two-task release default.
 - Later reuse stops on unknown usage, either exhausted budget, or a changed
   signature. Only exact current-assignment usage strictly after durable
   follow-up acceptance can release it; busy Sessions have one current task and

@@ -1,5 +1,7 @@
 use crate::domain::{TaskBundle, TaskRecord, TaskStatus};
 
+pub(crate) const DEFAULT_MAX_TASKS_PER_BUNDLE: usize = 2;
+
 pub(crate) fn compatible_for_batch(left: &TaskRecord, right: &TaskRecord) -> bool {
     left.status == TaskStatus::Queued
         && right.status == TaskStatus::Queued
@@ -19,6 +21,14 @@ pub(crate) fn compatible_for_batch(left: &TaskRecord, right: &TaskRecord) -> boo
 }
 
 pub(crate) fn bundle_ready(tasks: &[TaskRecord]) -> Vec<TaskBundle> {
+    bundle_ready_with_limit(tasks, DEFAULT_MAX_TASKS_PER_BUNDLE)
+}
+
+pub(crate) fn bundle_ready_with_limit(
+    tasks: &[TaskRecord],
+    max_tasks_per_bundle: usize,
+) -> Vec<TaskBundle> {
+    assert!(max_tasks_per_bundle > 0, "bundle limit must be positive");
     let mut ready = tasks
         .iter()
         .filter(|task| task.status == TaskStatus::Queued && task.session_id.is_none())
@@ -31,10 +41,10 @@ pub(crate) fn bundle_ready(tasks: &[TaskRecord]) -> Vec<TaskBundle> {
     });
     let mut bundles: Vec<TaskBundle> = Vec::new();
     for task in ready {
-        if let Some(bundle) = bundles
-            .iter_mut()
-            .find(|bundle| compatible_for_batch(&bundle.tasks[0], &task))
-        {
+        if let Some(bundle) = bundles.last_mut().filter(|bundle| {
+            bundle.tasks.len() < max_tasks_per_bundle
+                && compatible_for_batch(&bundle.tasks[0], &task)
+        }) {
             bundle.tasks.push(task);
         } else {
             bundles.push(TaskBundle {
@@ -91,16 +101,41 @@ mod tests {
     }
 
     #[test]
-    fn six_compatible_tasks_form_one_ordered_bundle() {
+    fn six_compatible_tasks_are_partitioned_into_evidence_bounded_micro_batches() {
         let tasks = (1..=6)
             .rev()
             .map(|sequence| task(&format!("task-{sequence}"), sequence))
             .collect::<Vec<_>>();
         let bundles = bundle_ready(&tasks);
-        assert_eq!(bundles.len(), 1);
-        assert_eq!(bundles[0].tasks.len(), 6);
+        assert_eq!(bundles.len(), 3);
+        assert_eq!(bundles[0].tasks.len(), 2);
+        assert_eq!(bundles[1].tasks.len(), 2);
+        assert_eq!(bundles[2].tasks.len(), 2);
         assert_eq!(bundles[0].tasks[0].sequence, 1);
-        assert_eq!(bundles[0].tasks[5].sequence, 6);
+        assert_eq!(bundles[2].tasks[1].sequence, 6);
+    }
+
+    #[test]
+    fn incompatible_task_prevents_backfilling_an_earlier_bundle() {
+        let first = task("task-a-1", 1);
+        let mut boundary = task("task-b-2", 2);
+        boundary.package_key = "package-b".into();
+        let third = task("task-a-3", 3);
+
+        let bundles = bundle_ready(&[third, boundary, first]);
+        let flattened = bundles
+            .iter()
+            .flat_map(|bundle| bundle.tasks.iter().map(|task| task.sequence))
+            .collect::<Vec<_>>();
+
+        assert_eq!(flattened, vec![1, 2, 3]);
+        assert_eq!(
+            bundles
+                .iter()
+                .map(|bundle| bundle.tasks.len())
+                .collect::<Vec<_>>(),
+            vec![1, 1, 1]
+        );
     }
 
     #[test]

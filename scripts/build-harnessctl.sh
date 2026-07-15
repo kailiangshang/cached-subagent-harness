@@ -18,6 +18,13 @@ fi
 
 cargo build --release --manifest-path "$crate_dir/Cargo.toml"
 mkdir -p "$bin_dir"
-cp "$crate_dir/target/release/harnessctl" "$bin_dir/harnessctl"
-chmod +x "$bin_dir/harnessctl"
+tmp_bin="$(mktemp "$bin_dir/.harnessctl.XXXXXX")"
+cleanup() {
+  rm -f "$tmp_bin"
+}
+trap cleanup EXIT
+cp "$crate_dir/target/release/harnessctl" "$tmp_bin"
+chmod +x "$tmp_bin"
+mv -f "$tmp_bin" "$bin_dir/harnessctl"
+trap - EXIT
 echo "built $bin_dir/harnessctl"

@@ -180,6 +180,7 @@ mod tests {
         for marker in [
             "data-view=\"run-bar\"",
             "data-view=\"outcome-band\"",
+            "data-view=\"dispatch-policy\"",
             "data-view=\"task-board\"",
             "data-view=\"session-dock\"",
             "data-view=\"evidence-deck\"",
@@ -204,6 +205,13 @@ mod tests {
         assert!(app.contains("estimate_sample_count"));
         assert!(app.contains("median"));
         assert!(app.contains("phase_totals"));
+        assert!(app.contains("dispatch_policy"));
+        assert!(app.contains("max_tasks_per_bundle"));
+        assert!(app.contains("max_accepted_followups"));
+        assert!(app.contains("max_effective_tokens"));
+        assert!(app.contains("复用资格 Token 上限"));
+        assert!(app.contains("Reuse eligibility Token cap"));
+        assert!(app.contains("item.summary"));
         assert!(app.contains("updated_at"));
         assert!(app.contains("progressOf"));
         assert!(app.contains("packagesOf"));

@@ -16,17 +16,17 @@ supporting evidence surface rather than a second control plane.
 
 ## Current Status
 
-The lightweight runtime and results Dashboard are implemented and fully
-verified. The latest repository gate passed 50 Rust tests, 33 Python tests,
-Clippy with warnings denied, release validation, both offline Benchmark suites,
-and lifecycle audit. Independent final review reported no open Critical,
-Important, or Minor findings.
+The lightweight runtime and results Dashboard are implemented. The release
+gates cover Rust/Python tests, Clippy, release validation, both offline
+Benchmark suites, lifecycle audit, and independent review.
 
-The first real Signal Sweep A/B run is deliberately retained as negative
-evidence: the rejected repeated-follow-up strategy used `17,551,878` effective
-Tokens versus Baseline's `2,974,064` (`5.90x`, or `-490.16%` saving). The
-runtime now batches known compatible work first and bounds any later reuse, but
-that corrected policy has not yet earned a positive live-saving claim.
+Two real Signal Sweep A/B runs are deliberately retained as negative evidence.
+The original one-Session/three-follow-up arm cost `5.90×` Baseline. Its proposed
+replacement—one four-slice Session—still cost `5,053,165` effective Tokens
+against a fresh `2,642,029` Baseline (`1.91×`, or `-91.26%` saving) before
+counting `659,823` retry Tokens. The release therefore uses strictly compatible
+micro-batches of at most two assignments by default and makes no positive live
+Token-saving claim for batching or reuse.
 
 See [Current Product State](docs/current-state.md) for the canonical behavior,
 terminology, evidence boundary, and document map.
@@ -54,9 +54,10 @@ claiming completion.
   Options, and Chosen Plan before code changes.
 - 🪪 **Stable identity, dynamic tail**: reusable rules stay in a stable prompt
   prefix; task-specific paths and values stay after `--- DYNAMIC TASK CONTEXT ---`.
-- 📦 **Batch before reuse**: known compatible ready work becomes one bounded
-  package; a Session follow-up is only for later work that was not available to
-  that batch.
+- 📦 **Evidence-bounded micro-batches**: known compatible ready work is
+  partitioned into batches of at most two assignments before reuse. Profile,
+  risk, scope, revision, dependency, and review boundaries are never weakened
+  to make a batch.
 - 🧠 **Quality-constrained routing**: choose the lowest `light`, `standard`, or
   `deep` profile that still satisfies role, risk, uncertainty, and quality
   floors.
@@ -85,8 +86,9 @@ claiming completion.
 2. **Controller creates durable state**: report path, lifecycle ledger, agent
    budget, and write scopes.
 3. **`harnessctl bundle` and `decide` select the execution shape**: main,
-   bounded batch, compatible reuse, or a new Session. Model routing happens
-   only after safety floors are fixed.
+   evidence-bounded micro-batch, compatible reuse, or a new Session. The bundle
+   default is two assignments and runtime flags may only lower it. Model
+   routing happens only after safety floors are fixed.
 4. **`harnessctl render-prompt` generates dispatch prompts** with a stable
    prefix and a small dynamic tail.
 5. **Subagents work inside role gates**:
@@ -120,7 +122,8 @@ where prompt-cache behavior is irrelevant.
 ## What It Adds 📦
 
 - Stable prompt prefixes with dynamic task context at the tail.
-- Compatible-task batching before Session continuation.
+- Strictly compatible micro-batching, at most two Tasks by default, before
+  Session continuation.
 - `light`, `standard`, and `deep` routing with explicit safety floors.
 - One accepted follow-up and 200,000 effective Tokens as conservative default
   Session reuse limits; command-line overrides may only lower them.
@@ -301,7 +304,8 @@ skills/cached-subagent-harness/scripts/bin/harnessctl dashboard \
 
 Open `http://127.0.0.1:7347`. The Moonlight Indigo liquid-glass page supports
 zh-CN and en-US and shows progress, Tasks, Session chains, requested/actual
-models, token quality, phase totals, and factual activity. CLI JSON and the Web
+models, current routing and release limits, token quality, phase totals, and
+factual activity summaries. CLI JSON and the Web
 page use the same limited `StatusView`. It structurally excludes `repo_root`,
 `report_path`, `write_scope`, Host handles, and task-internal next actions.
 Run goals, Task titles, and activity summaries are caller-provided display text
@@ -334,24 +338,25 @@ planning signals.
 
 ### Real Signal Sweep Evidence
 
-The completed 2026-07-15 Codex CLI run produced equal-quality implementations
-with exact telemetry:
+Two completed 2026-07-15 Codex CLI runs produced equal-quality implementations
+with exact telemetry. Both candidate context-reuse strategies were more
+expensive than fresh narrow Sessions:
 
-| Metric | Baseline | Rejected repeated-follow-up arm |
-|---|---:|---:|
-| Total effective Tokens | 2,974,064 | 17,551,878 |
-| Harness / Baseline | 1.00x | 5.90x |
-| Saving | n/a | -490.16% |
+| Experiment | Baseline | Harness sample | Relative cost | Saving |
+|---|---:|---:|---:|---:|
+| Repeated follow-ups | 2,974,064 | 17,551,878 | 5.90× | -490.16% |
+| Four-slice large batch, comparable sample | 2,642,029 | 5,053,165 | 1.91× | -91.26% |
+| Large batch, retries included | 2,642,029 | 5,712,988 | 2.16× | -116.23% |
 
 This rejects the old rule “resume the same Session for every compatible later
 assignment.” High cache-hit rates did not offset cumulative resumed context.
-The current policy batches all known compatible ready work first, defaults to
-at most one accepted later follow-up and 200,000 effective Tokens per reusable
-Session, and requires exact causal usage before another reuse. It prevents the
-measured unbounded continuation path; a separate live run is still required to
-prove positive savings for the corrected policy.
+The current policy partitions strictly compatible work into micro-batches of at
+most two, defaults to at most one accepted later follow-up and 200,000 effective
+Tokens per reusable Session, and requires exact causal usage before reuse.
+Larger limits require versioned equal-quality exact-usage evidence.
 
-See [Signal Sweep Real A/B Evidence](docs/benchmarks/2026-07-15-signal-sweep-real-ab.md).
+See the [corrected large-batch evidence](docs/benchmarks/2026-07-15-signal-sweep-corrected-ab.md)
+and the [historical follow-up evidence](docs/benchmarks/2026-07-15-signal-sweep-real-ab.md).
 
 ### Prompt-shape Regression
 

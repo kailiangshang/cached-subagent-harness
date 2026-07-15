@@ -2,9 +2,9 @@
 
 Date: 2026-07-15
 
-Status: lightweight runtime and results Dashboard complete; corrected Token
-policy verified by deterministic gates but not yet proven positive by a new
-live A/B run
+Status: lightweight runtime and results Dashboard complete; two candidate
+context-reuse strategies rejected by equal-quality real A/B evidence; current
+strict micro-batch policy remains deliberately conservative
 
 This is the shortest current-state entry point for `cached-subagent-harness`.
 It summarizes the implemented product and points to the binding contracts and
@@ -54,7 +54,7 @@ The controller applies this order:
 
 ```text
 trivial work with no isolation need              -> execute on main
-multiple compatible queued Tasks                -> one bounded batch
+multiple strictly compatible queued Tasks       -> micro-batches of at most two
 one later compatible Task inside both budgets   -> reuse a Session
 delegation benefit exceeds complete cost         -> spawn a Session
 otherwise                                        -> execute on main
@@ -64,10 +64,13 @@ Compatibility includes role, required profile, risk, package, write scope,
 repository revision, dependency order, and review boundary. The ready set is
 derived from durable queued Tasks rather than a caller-provided count.
 
-Known compatible work is batched before Session reuse. A reusable Session
-defaults to at most one accepted follow-up and 200,000 total effective Tokens.
-Runtime flags may lower these values but cannot raise them. Reuse additionally
-requires:
+Known compatible work is partitioned into micro-batches before Session reuse.
+The release default is at most two assignments per batch. The controller may
+not normalize role, profile, risk, scope, revision, dependency order, or review
+boundary to manufacture compatibility. A reusable Session defaults to at most
+one accepted follow-up and 200,000 total effective Tokens. Runtime flags may
+lower any of these values but cannot raise them; increases require versioned
+equal-quality exact-usage evidence. Reuse additionally requires:
 
 - an exact compatibility signature and atomic `idle` to `busy` claim;
 - durable acceptance of the current follow-up;
@@ -128,6 +131,7 @@ reduced motion/transparency, and loopback binding by default.
 It shows only Harness facts for one Run:
 
 - progress and factual Run freshness;
+- the active dispatch-policy limits and latest factual route decision;
 - Task states, package grouping, current work, and latest activity;
 - Session host/profile/model facts and ordered assignment chains;
 - exact or explicitly qualified Token totals and phase composition;
@@ -149,38 +153,47 @@ access-controlled network or tunnel.
 ## Evidence and Claim Boundary
 
 Offline fixtures verify prompt shape and cacheability but do not prove provider
-billing savings. The real 2026-07-15 Signal Sweep experiment compared
+billing savings. Two real 2026-07-15 Signal Sweep experiments compared
 equal-quality Codex CLI runs with exact telemetry:
 
-| Metric | Baseline | Rejected repeated-follow-up arm |
-|---|---:|---:|
-| Total effective Tokens | 2,974,064 | 17,551,878 |
-| Relative cost | 1.00x | 5.90x |
-| Saving | n/a | -490.16% |
+| Experiment | Baseline | Harness sample | Relative cost | Saving |
+|---|---:|---:|---:|---:|
+| Repeated follow-ups | 2,974,064 | 17,551,878 | 5.90× | -490.16% |
+| Four-slice large batch, comparable sample | 2,642,029 | 5,053,165 | 1.91× | -91.26% |
+| Large batch, retries included | 2,642,029 | 5,712,988 | 2.16× | -116.23% |
 
-The negative result rejected unlimited compatible continuation: accumulated
-resumed context dominated despite high cache reads. It drove the current
-batch-first, one-follow-up, 200,000-Token policy and strict causal usage gate.
-
-The release may claim that the measured unbounded path is prevented. It may not
-claim that the corrected policy has proven positive live savings until a
-separate equal-quality real A/B run measures that policy.
+The first result rejected unlimited continuation. The second rejected the
+assumption that all ready work should share one long turn: repeatedly processing
+the growing tool/code context doubled cached input even with zero follow-ups.
+Together they justify the default two-assignment micro-batch, one-follow-up,
+200,000-Token policy and strict causal usage gate. The release makes no positive
+live Token-saving claim for batching or reuse.
 
 ## Verification State
 
-The completed delivery passed:
+The corrected Signal Sweep increment passed a fresh full verification on
+2026-07-15:
 
-- Rust tests: 50/50;
-- Python tests: 33/33 across the release and Benchmark suites;
+- Rust tests: 52/52;
+- Python tests: 38/38 across install, standalone contract, Token-effectiveness,
+  and game A/B suites;
 - Clippy with warnings denied and a release build;
 - release metadata and Skill validation;
 - prompt-cache, offline Token, and game A/B regression gates;
-- exact real-ledger status and final lifecycle audit;
-- two independent final reviews with zero open Critical, Important, or Minor
-  findings.
+- exact successful-run status and Dashboard health checks;
+- focused independent review, including regression-tested fixes for its two
+  Important findings;
+- final whole-diff review, two final Minor fixes, and fresh full verification
+  while live Dashboard processes remained healthy;
+- successful Benchmark and development lifecycle audits, with no Critical or
+  Important issue left open.
 
-See [`results-dashboard-implementation.md`](../results-dashboard-implementation.md)
-for the complete implementation and review trail.
+The preceding Dashboard delivery has its separate historical 50-Rust/33-Python
+verification and two-review record in
+[`results-dashboard-implementation.md`](../results-dashboard-implementation.md).
+See
+[`corrected-signal-sweep-implementation.md`](../corrected-signal-sweep-implementation.md)
+for this increment's full verification, final review, and lifecycle audit.
 
 ## Document Authority
 
@@ -189,7 +202,9 @@ for the complete implementation and review trail.
 | [`SKILL.md`](../skills/cached-subagent-harness/SKILL.md) | Binding controller constitution and workflow |
 | [`2026-07-14 lightweight design`](specs/2026-07-14-lightweight-token-harness-design.md) | Canonical lightweight architecture, amended by live evidence |
 | [`2026-07-15 Dashboard design`](specs/2026-07-15-results-dashboard-design.md) | Implemented presentation and validation boundary |
-| [`Signal Sweep evidence`](benchmarks/2026-07-15-signal-sweep-real-ab.md) | Exact historical RED result and claim limit |
+| [`Corrected Signal Sweep evidence`](benchmarks/2026-07-15-signal-sweep-corrected-ab.md) | Exact large-batch RED result and current policy correction |
+| [`Historical Signal Sweep evidence`](benchmarks/2026-07-15-signal-sweep-real-ab.md) | Exact repeated-follow-up RED result |
+| [`corrected-signal-sweep-implementation.md`](../corrected-signal-sweep-implementation.md) | Current corrected increment, verification, reviews, and audit |
 | [`results-dashboard-implementation.md`](../results-dashboard-implementation.md) | Completed delivery, tests, fixes, and final audit |
 | 2026-07-10/12 umbrella and event-runtime documents | Historical/superseded evidence only |
 | Implementation plans | Historical execution records; status banners identify completion or supersession |

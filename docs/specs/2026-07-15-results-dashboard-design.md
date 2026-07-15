@@ -2,9 +2,10 @@
 
 ## Status
 
-Implemented and verified on 2026-07-15. The separate Signal Sweep run produced
-the retained negative Token result and drove the batch-first correction already
-recorded in this specification. See
+Implemented and verified on 2026-07-15. Two separate Signal Sweep runs rejected
+both repeated continuation and one four-slice long turn. The Dashboard now
+shows the evidence-bounded dispatch limits and latest factual route without
+becoming a control plane. See
 [`results-dashboard-implementation.md`](../../results-dashboard-implementation.md)
 for delivery, review, and final-audit evidence.
 
@@ -91,7 +92,7 @@ solely to carry benchmark data.
 
 ## Information Architecture
 
-The page remains one dense, responsive view with four ordered regions.
+The page remains one dense, responsive view with five ordered regions.
 
 ### 1. Run bar
 
@@ -113,7 +114,14 @@ Lead with run progress and the token-efficiency outcome:
 Estimates carry an explicit estimated label. Unknown values render as localized
 unknown values, never as `0`.
 
-### 3. Operational grid
+### 3. Dispatch-policy strip
+
+Show the release's current maximum Tasks per micro-batch, accepted follow-up
+limit, reuse-eligibility effective-Token cap, evidence requirement for
+increases, and the latest persisted route summary. These are runtime constants
+and activity facts, not observer interpretation.
+
+### 4. Operational grid
 
 The wide column is a package-grouped task board. Each row shows title, role,
 required profile, state, assigned session, and the latest matching activity.
@@ -124,7 +132,7 @@ and actual model, routing result, current state, last persisted use, and an
 ordered chain of tasks associated with that session. A reused session therefore
 reads as one continuous work history instead of several disconnected rows.
 
-### 4. Evidence deck
+### 5. Evidence deck
 
 Show the observed token composition and recent factual activity. Token totals
 cover input, output, reasoning, cache read, and cache write. Add phase totals for
@@ -164,6 +172,8 @@ limited public projection only with facts needed by the approved layout:
 
 - persisted run `updated_at` for truthful freshness;
 - token totals grouped by usage phase, including quality.
+- evidence-bounded dispatch-policy defaults from the same runtime constants
+  enforced by `bundle` and `decide`.
 
 Task progress, package groups, session assignment chains, and latest per-task
 activity are deterministic client projections over existing public fields.
@@ -187,9 +197,11 @@ caller-provided goal, title, or activity-summary text.
 ## Signal Sweep A/B Validation
 
 Historical RED protocol only: the topology below was executed to test the old
-reuse hypothesis and produced the retained 5.90× regression. Do not use it as
-the release routing policy; the runtime now derives and batches durable queued
-work first and permits only exact-usage, budgeted later follow-ups.
+reuse hypothesis and produced the retained 5.90× regression. A later one-turn
+four-slice run also regressed to 1.91× Baseline before retries. Neither topology
+is release routing policy; the runtime now derives durable queued work,
+partitions strictly compatible assignments into batches of at most two, and
+permits only exact-usage, budgeted later follow-ups.
 
 Run two isolated implementations from the same fixed brief and starting state:
 

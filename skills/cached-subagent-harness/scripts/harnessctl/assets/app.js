@@ -18,6 +18,16 @@
       assignmentsPerSpawn: "每次 Spawn 任务数",
       churn: "Session 周转率",
       avoidedContext: "避免重复上下文",
+      routingControl: "路由控制",
+      dispatchPolicy: "调度策略",
+      microBatch: "微批次上限",
+      assignmentsMax: "最多 {count} 项",
+      followupLimit: "续接上限",
+      followupsMax: "最多 {count} 次",
+      sessionTokenBudget: "复用资格 Token 上限",
+      evidenceRequired: "提高上限需同质量精确用量证据",
+      latestRoute: "最近路由",
+      noRoute: "尚无路由决策",
       workstream: "工作流",
       tasks: "任务",
       task: "任务",
@@ -119,6 +129,16 @@
       assignmentsPerSpawn: "Assignments / spawn",
       churn: "Session churn",
       avoidedContext: "Avoided context",
+      routingControl: "Routing control",
+      dispatchPolicy: "Dispatch policy",
+      microBatch: "Micro-batch limit",
+      assignmentsMax: "Up to {count} tasks",
+      followupLimit: "Follow-up limit",
+      followupsMax: "Up to {count}",
+      sessionTokenBudget: "Reuse eligibility Token cap",
+      evidenceRequired: "Higher limits require equal-quality exact-usage evidence",
+      latestRoute: "Latest route",
+      noRoute: "No route decision yet",
       workstream: "Workstream",
       tasks: "Tasks",
       task: "Task",
@@ -392,6 +412,35 @@
     renderProgress(data.tasks);
   }
 
+  function renderPolicy(policy, activity) {
+    const root = el("policy-facts");
+    clear(root);
+    const facts = [
+      [translate("microBatch"), translate("assignmentsMax", {
+        count: number(policy && policy.max_tasks_per_bundle)
+      })],
+      [translate("followupLimit"), translate("followupsMax", {
+        count: number(policy && policy.max_accepted_followups)
+      })],
+      [translate("sessionTokenBudget"), number(policy && policy.max_effective_tokens)]
+    ];
+    facts.forEach(([label, value]) => {
+      const fact = make("div", "policy-fact");
+      fact.append(make("span", "", label), make("strong", "mono", value));
+      root.appendChild(fact);
+    });
+    if (policy && policy.increases_require_evidence) {
+      const note = make("p", "policy-note", translate("evidenceRequired"));
+      root.appendChild(note);
+    }
+
+    const route = activity.find(item => item.kind === "route") || null;
+    el("route-summary").textContent = route ? route.summary : translate("noRoute");
+    el("route-meta").textContent = route
+      ? `${route.task_id || route.session_id || "run"} · ${date(route.occurred_at)}`
+      : "—";
+  }
+
   function renderTasks(tasks, activity) {
     el("task-count").textContent = number(tasks.length);
     const root = el("task-packages");
@@ -574,7 +623,10 @@
       copyNode.appendChild(make("strong", "", kindText(item.kind)));
       const meta = make("div", "activity-meta");
       const subject = item.task_id || item.session_id || "run";
-      meta.append(make("span", "mono", subject));
+      meta.append(
+        make("span", "activity-summary", item.summary || translate("unknown")),
+        make("span", "mono", subject)
+      );
       copyNode.appendChild(meta);
       const time = make("time", "activity-time mono", date(item.occurred_at));
       time.dateTime = item.occurred_at || "";
@@ -586,6 +638,7 @@
   function render(data) {
     renderRun(data);
     renderOutcomes(data);
+    renderPolicy(data.dispatch_policy, data.recent_activity);
     renderTasks(data.tasks, data.recent_activity);
     renderSessions(data.sessions, data.tasks);
     renderTokens(data.efficiency);

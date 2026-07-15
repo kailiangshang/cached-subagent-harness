@@ -23,6 +23,13 @@ SKILL_INVARIANT_END = "\n## Controller Loop"
 REQUIRED_METHOD_SEMANTICS = [
     "Batch known compatible ready assignments before attempting follow-up "
     "reuse.",
+    "Partition the ready set into strictly compatible micro-batches of at "
+    "most two assignments by default.",
+    "Do not relax or normalize role, required capability, risk, write scope, "
+    "base revision, dependency order, or review boundary to manufacture a "
+    "batch.",
+    "A larger batch or a higher follow-up limit requires versioned durable "
+    "evidence from equal-quality exact-usage comparisons.",
     "Derive the compatible ready set from durable queued state rather than a "
     "caller-supplied count.",
     "Reuse only after an exact signature match and an atomic `idle` to `busy` "
@@ -41,8 +48,8 @@ REQUIRED_METHOD_SEMANTICS = [
     "update while the task is unassigned; otherwise replan or register it "
     "when ready.",
     "A busy session has one current task; an idle or terminal session has none.",
-    "When a host cannot follow up, use one bounded worker brief and report "
-    "reuse as unsupported.",
+    "When a host cannot follow up, use evidence-bounded micro-batches or new "
+    "Sessions and report reuse as unsupported.",
     "Never emulate reuse with an unrestricted permanent role pool.",
     "Set role, risk, uncertainty, and quality floors before choosing a model "
     "or reasoning profile.",
@@ -143,6 +150,27 @@ class StandaloneContractTests(unittest.TestCase):
         )
         for number in range(1, 21):
             self.assertRegex(invariants, rf"(?m)^{number}\. \*\*")
+
+    def test_skill_limits_batching_to_evidence_bounded_compatible_micro_batches(
+        self,
+    ) -> None:
+        skill = self.read(SKILL_PATH)
+        invariants = extract_section(
+            skill,
+            INVARIANT_HEADING,
+            SKILL_INVARIANT_END,
+        )
+        normalized = " ".join(invariants.split())
+        for required in [
+            "strictly compatible micro-batches of at most two assignments by "
+            "default",
+            "Do not relax or normalize role, required profile, risk, write "
+            "scope, base revision, dependency order, or review boundary to "
+            "manufacture compatibility.",
+            "Large batches and follow-ups require versioned durable evidence "
+            "from equal-quality exact-usage comparisons.",
+        ]:
+            self.assertIn(required, normalized)
 
     def test_skill_declares_standalone_normal_and_optional_adapters(self) -> None:
         skill = self.read("skills/cached-subagent-harness/SKILL.md")

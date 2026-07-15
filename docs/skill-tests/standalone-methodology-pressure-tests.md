@@ -8,6 +8,45 @@ routing wording. This is Skill-behavior evidence, not live Token-saving
 evidence. Current runtime and Benchmark status is summarized in
 [Current Product State](../current-state.md).
 
+2026-07-15 correction: the historical Scenario A responses below chose one
+six-item batch. A later equal-quality live pressure run showed that one
+four-slice turn cost 1.91× fresh narrow Sessions before retry overhead. Those
+responses are now RED evidence for over-batching, not current guidance. The
+Skill and runtime GREEN contract is a strictly compatible ready set partitioned
+into batches of at most two; see the correction gate below.
+
+## 2026-07-15 Over-batching RED/GREEN Gate
+
+### RED
+
+Under deadline and Token pressure, five historical current-skill replications
+selected one six-checkpoint worker batch. The exact rationalization was that one
+bounded Session avoids six dispatch and context-loading cycles. The real Signal
+Sweep large-batch run invalidated that assumption: noncached input fell, but
+cached input more than doubled as the growing tool/code history was repeatedly
+processed inside one turn.
+
+### GREEN contract
+
+For the same six strictly compatible queued Tasks, the required decision is
+three ordered two-Task micro-batches. A controller must not merge Tasks by
+normalizing capability, risk, scope, revision, dependency, or review facts. A
+larger batch or higher follow-up limit requires versioned equal-quality exact
+usage evidence.
+
+The contract is enforced at three levels:
+
+- `scripts/test_standalone_contract.py` requires the binding Skill and
+  standalone-method wording while preserving all 20 numbered invariants;
+- `bundle::tests::six_compatible_tasks_are_partitioned_into_evidence_bounded_micro_batches`
+  proves the six-to-three runtime partition;
+- `bundle_limit_flags_can_only_lower_the_evidence_backed_default` proves CLI
+  callers cannot raise the release default.
+
+This correction supersedes only the one-large-batch answer in the raw
+transcripts. Their standalone, routing-floor, lifecycle, review, and
+Superpowers-independence evidence remains historical input.
+
 ## Method
 
 Each replication used a fresh discussion context and answered the same three

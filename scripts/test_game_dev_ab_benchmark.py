@@ -87,6 +87,40 @@ class GameDevAbBenchmarkTests(unittest.TestCase):
         self.assertIn(str(work_dir / "signal-sweep-game-brief.md"), assignment)
         self.assertIn("Do not spawn or delegate nested agents", assignment)
 
+    def test_bounded_batch_artifacts_name_one_unit_and_all_four_slices(self) -> None:
+        work_dir = Path("/tmp/signal-sweep-batch-test")
+        brief = bench.build_cached_batch_brief(work_dir, workers=4)
+
+        self.assertIn("BATCH_ID=signal-sweep-batch-01", brief)
+        self.assertIn("SESSION_TOPOLOGY=one-fresh-session-zero-followups", brief)
+        for index in range(4):
+            worker = bench.worker_slice(index)
+            self.assertIn(worker["id"], brief)
+            self.assertIn(worker["title"], brief)
+            self.assertIn(worker["task"], brief)
+            self.assertIn(worker["quality_gate"], brief)
+        self.assertIn("Do not spawn or delegate nested agents", brief)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bench.write_artifacts(
+                root,
+                baseline_prompts=["base-1", "base-2", "base-3", "base-4"],
+                cached_prompts=["old-1", "old-2", "old-3", "old-4"],
+            )
+            bench.write_artifacts(
+                root,
+                baseline_prompts=["base-1", "base-2", "base-3", "base-4"],
+                cached_prompts=["batch"],
+                cached_prompt_names=["batch-01"],
+            )
+            self.assertTrue((root / "cached_harness/batch-01.prompt").is_file())
+            self.assertFalse((root / "cached_harness/worker-01.prompt").exists())
+            self.assertEqual(
+                [path.name for path in (root / "cached_harness").glob("*.prompt")],
+                ["batch-01.prompt"],
+            )
+
     def test_break_even_prefers_cached_after_prefix_is_amortized(self) -> None:
         self.assertEqual(
             bench.break_even_dispatches(
@@ -147,6 +181,7 @@ class GameDevAbBenchmarkTests(unittest.TestCase):
             report["savings"]["cache_adjusted_pct"],
             report["savings"]["raw_pct"],
         )
+        self.assertNotIn("unknown%", bench.format_markdown(report))
 
     def test_observations_are_aggregated_by_mode_and_worker(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -182,7 +217,49 @@ class GameDevAbBenchmarkTests(unittest.TestCase):
         self.assertEqual(summary["cached_harness"]["cache_read_tokens_total"], 63)
         self.assertEqual(summary["cached_harness"]["provider_input_tokens_total"], 80)
         self.assertEqual(summary["cached_harness"]["total_effective_tokens"], 110)
+        self.assertEqual(
+            summary["cached_harness"]["comparable_total_effective_tokens"], 95
+        )
+        self.assertEqual(summary["cached_harness"]["retry_total_effective_tokens"], 15)
+        self.assertEqual(summary["cached_harness"]["execution_units_closed"], 1)
+        self.assertEqual(summary["baseline"]["comparable_total_effective_tokens"], 150)
+        self.assertEqual(summary["baseline"]["retry_total_effective_tokens"], 0)
         self.assertEqual(summary["cached_harness"]["events_by_type"]["retry"], 1)
+
+    def test_usage_is_rejected_outside_closed_or_retry_events(self) -> None:
+        usage = {
+            "usage_observed": True,
+            "telemetry_quality": "exact",
+            "input_tokens": 10,
+            "cache_read_tokens": 0,
+            "output_tokens": 0,
+            "reasoning_tokens": 0,
+            "cache_write_tokens": 0,
+            "provider_input_tokens": 10,
+            "provider_output_tokens": 0,
+        }
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "usage is only supported on closed or retry events",
+        ):
+            bench.summarize_observations(
+                [
+                    {
+                        "mode": "baseline",
+                        "worker": "worker-01",
+                        "event": "running",
+                        **usage,
+                    },
+                    {
+                        "mode": "baseline",
+                        "worker": "worker-01",
+                        "event": "closed",
+                        **usage,
+                    },
+                ],
+                workers=1,
+            )
 
     def test_missing_usage_remains_unknown_instead_of_zero(self) -> None:
         summary = bench.summarize_observations(
@@ -445,6 +522,22 @@ class GameDevAbBenchmarkTests(unittest.TestCase):
                 }
                 for gate in bench.QUALITY_GATES
             )
+        observations.append(
+            {
+                "mode": "cached_harness",
+                "worker": "worker-01",
+                "event": "retry",
+                "usage_observed": True,
+                "telemetry_quality": "exact",
+                "input_tokens": 1,
+                "cache_read_tokens": 1,
+                "output_tokens": 1,
+                "reasoning_tokens": 0,
+                "cache_write_tokens": 0,
+                "provider_input_tokens": 2,
+                "provider_output_tokens": 1,
+            }
+        )
 
         report = bench.build_game_dev_report(
             harness_prompts=[
@@ -458,6 +551,12 @@ class GameDevAbBenchmarkTests(unittest.TestCase):
         self.assertTrue(report["savings"]["observed_runtime_comparable"])
         self.assertEqual(
             report["savings"]["observed_runtime"]["provider_input_tokens_pct"],
+            30.0,
+        )
+        self.assertEqual(
+            report["savings"]["observed_runtime_comparable_sample"][
+                "provider_input_tokens_pct"
+            ],
             50.0,
         )
         for mode in bench.MODES:
@@ -467,6 +566,64 @@ class GameDevAbBenchmarkTests(unittest.TestCase):
             self.assertTrue(
                 report["status_observations"][mode]["quality_gates_passed"]
             )
+
+    def test_asymmetric_runtime_topology_compares_four_fresh_workers_to_one_batch(self) -> None:
+        topology = bench.corrected_runtime_topology(workers=4)
+        observations = []
+        usage = {
+            "usage_observed": True,
+            "telemetry_quality": "exact",
+            "input_tokens": 3,
+            "cache_read_tokens": 7,
+            "output_tokens": 2,
+            "reasoning_tokens": 1,
+            "cache_write_tokens": 0,
+            "provider_input_tokens": 10,
+            "provider_output_tokens": 3,
+        }
+        for unit in topology["baseline"]["units"]:
+            for event in bench.REQUIRED_RUNTIME_EVENTS:
+                row = {"mode": "baseline", "worker": unit, "event": event}
+                if event == "closed":
+                    row.update(usage)
+                observations.append(row)
+        for event in bench.REQUIRED_RUNTIME_EVENTS:
+            row = {"mode": "cached_harness", "worker": "batch-01", "event": event}
+            if event == "closed":
+                row.update(usage)
+            observations.append(row)
+        for mode in bench.MODES:
+            unit = topology[mode]["units"][0]
+            observations.extend(
+                {
+                    "mode": mode,
+                    "worker": unit,
+                    "event": "quality_passed",
+                    "quality_gate": gate["name"],
+                }
+                for gate in bench.QUALITY_GATES
+            )
+
+        report = bench.build_game_dev_report(
+            harness_prompts=[
+                f"Stable\n{bench.DYNAMIC_MARKER}\nROLE=worker\nREPORT_PATH=/tmp/batch.md\n"
+            ],
+            baseline_prompts=["Full baseline brief. " * 100 for _ in range(4)],
+            workers=4,
+            observations=observations,
+            runtime_topology=topology,
+        )
+
+        self.assertTrue(report["savings"]["observed_runtime_comparable"])
+        self.assertEqual(report["runs"]["cached_harness"]["prompt_count"], 1)
+        self.assertEqual(report["runtime_topology"]["baseline"]["session_count"], 4)
+        self.assertEqual(report["runtime_topology"]["cached_harness"]["session_count"], 1)
+        self.assertEqual(
+            report["status_observations"]["baseline"]["workers_closed"], 4
+        )
+        self.assertEqual(
+            report["status_observations"]["cached_harness"]["workers_closed"], 1
+        )
 
 
 if __name__ == "__main__":

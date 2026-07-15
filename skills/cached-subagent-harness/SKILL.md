@@ -96,8 +96,13 @@ invariant wins.
     return only compact status and report location to the controller.
 15. **Subagents are investments.** Spawn only for real parallelism, context
     isolation, capability separation, or independent judgment. Known
-    compatible ready work is batched before follow-up reuse. Derive that ready
-    set from durable queued state, never a caller-supplied count. Reuse only
+    compatible ready work is batched before follow-up reuse. Partition it into
+    strictly compatible micro-batches of at most two assignments by default.
+    Derive that ready set from durable queued state, never a
+    caller-supplied count. Do not relax or normalize role, required profile,
+    risk, write scope, base revision, dependency order, or review boundary to
+    manufacture compatibility. Large batches and follow-ups require versioned
+    durable evidence from equal-quality exact-usage comparisons. Reuse only
     while observed total usage and the accepted-follow-up count remain inside
     their budgets.
 16. **Quality-constrained optimization.** Select the lowest model and reasoning
@@ -144,9 +149,11 @@ decision.
 
 After PSOC:
 
-- choose bounded work packages and decide whether compatible assignments can
-  share one worker batch; derive known compatible ready assignments from the
-  durable queued ledger and batch them before considering follow-up reuse;
+- choose bounded work packages and decide whether strictly compatible
+  assignments can share an evidence-bounded micro-batch; derive known
+  compatible ready assignments from the durable queued ledger, partition them
+  into batches of at most two by default, and consider follow-up reuse only
+  afterward;
 - require test-first implementation for behavior changes;
 - wait for and consume every writer or fixer report, then run focused tests and
   the project harness and record the report and commit checkpoint;
@@ -265,9 +272,14 @@ risks, and report location.
 
 Batch compatible assignments when role, required profile, risk, write scope,
 base revision, dependency order, and review boundary align. Derive the ready
-set from durable queued state, never a caller-supplied count. Reuse is
+set from durable queued state, never a caller-supplied count. Do not weaken or
+rewrite any compatibility field to create a batch. Partition compatible ready
+work into micro-batches of at most two assignments by default; `harnessctl
+bundle --max-tasks N` may lower that limit but cannot raise it. Reuse is
 supported only after all known compatible ready work has first been considered
-for one bounded batch. A follow-up requires an exact session signature, an atomic
+for those bounded batches. A larger batch or higher follow-up limit requires a
+versioned policy backed by equal-quality exact-usage evidence. A follow-up
+requires an exact session signature, an atomic
 `idle` to `busy` claim, known normalized usage, remaining accepted-follow-up
 capacity, and remaining effective-token budget. Only complete exact usage
 linked to the current assignment may return that Session to idle. Record
