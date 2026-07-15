@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 import tempfile
 import unittest
@@ -15,6 +16,65 @@ import game_dev_ab_benchmark as bench
 
 
 class GameDevAbBenchmarkTests(unittest.TestCase):
+    def test_artifacts_include_identical_runnable_starters(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bench.write_artifacts(
+                root,
+                baseline_prompts=["base"],
+                cached_prompts=["cached"],
+            )
+            baseline = root / "baseline-project"
+            cached = root / "cached-harness-project"
+
+            for relative in ("package.json", "index.html", "src/main.js"):
+                self.assertEqual(
+                    (baseline / relative).read_bytes(),
+                    (cached / relative).read_bytes(),
+                )
+
+            package = json.loads(
+                (baseline / "package.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(package["scripts"]["test"], "node --test")
+
+    def test_starter_and_brief_fix_the_integration_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp) / "project"
+            bench.write_starter_project(project)
+            main = (project / "src/main.js").read_text(encoding="utf-8")
+
+        for contract in (
+            'from "./game/engine.js"',
+            'from "./ui/app.js"',
+            'from "./session/records.js"',
+            "createInitialState",
+            "transition",
+            "mountGame",
+            "buildRunRecord",
+        ):
+            self.assertIn(contract, main)
+        self.assertIn("Approved interface contract", bench.GAME_DEV_BRIEF)
+        self.assertIn("Do not spawn or delegate nested agents", bench.GAME_DEV_BRIEF)
+        self.assertIn("src/main.js", bench.worker_slice(3)["allowed_write_paths"])
+        self.assertIn("index.html", bench.worker_slice(3)["allowed_write_paths"])
+        self.assertIn("package.json", bench.worker_slice(3)["allowed_write_paths"])
+
+    def test_artifact_regeneration_does_not_overwrite_developed_projects(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            arguments = {
+                "baseline_prompts": ["base"],
+                "cached_prompts": ["cached"],
+            }
+            bench.write_artifacts(root, **arguments)
+            main = root / "baseline-project/src/main.js"
+            main.write_text("// developed\n", encoding="utf-8")
+
+            bench.write_artifacts(root, **arguments)
+
+            self.assertEqual(main.read_text(encoding="utf-8"), "// developed\n")
+
     def test_break_even_prefers_cached_after_prefix_is_amortized(self) -> None:
         self.assertEqual(
             bench.break_even_dispatches(

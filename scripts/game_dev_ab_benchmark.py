@@ -100,6 +100,20 @@ Target implementation shape:
 - No decorative card-heavy landing page.
 - Tests for pure game-state logic before UI wiring.
 - Browser smoke evidence for desktop and mobile.
+
+Approved interface contract (the design is complete; implement this contract
+rather than redesigning it):
+- `src/game/engine.js` exports `createInitialState(options)` and
+  `transition(state, action)`. Actions cover `start`, `move`, `tick`, `pause`,
+  and `restart`; `move` carries a direction and `tick` carries `elapsedMs`.
+- `src/ui/app.js` exports `mountGame(root, { dispatch, onExport })` and returns
+  an object with `render(state)` and `destroy()`.
+- `src/session/records.js` exports `loadHighScore`, `saveHighScore`,
+  `buildRunRecord`, and `downloadRunRecord`.
+- `src/styles/game.css` owns the responsive game presentation.
+- `src/main.js`, `index.html`, and `package.json` are fixed starter wiring. The
+  integration worker may repair only their final cross-module wiring.
+- Do not spawn or delegate nested agents.
 """
 
 WORKER_SLICES = [
@@ -128,10 +142,71 @@ WORKER_SLICES = [
         "id": "worker-04",
         "title": "verification-integration",
         "task": "Wire integration tests, browser smoke checklist, and final playable workflow verification.",
-        "allowed_write_paths": ["tests", "docs/benchmarks", "playwright.config.js"],
+        "allowed_write_paths": [
+            "tests",
+            "docs/benchmarks",
+            "playwright.config.js",
+            "src/main.js",
+            "index.html",
+            "package.json",
+        ],
         "quality_gate": "interaction-smoke",
     },
 ]
+
+STARTER_INDEX = """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Signal Sweep</title>
+  <link rel="stylesheet" href="./src/styles/game.css">
+  <script type="module" src="./src/main.js"></script>
+</head>
+<body>
+  <main id="game" aria-label="Signal Sweep game" aria-live="polite"></main>
+  <noscript>Signal Sweep requires JavaScript.</noscript>
+</body>
+</html>
+"""
+
+STARTER_MAIN = """import { createInitialState, transition } from "./game/engine.js";
+import { mountGame } from "./ui/app.js";
+import {
+  buildRunRecord,
+  downloadRunRecord,
+  loadHighScore,
+  saveHighScore,
+} from "./session/records.js";
+
+const TICK_MS = 250;
+const root = document.querySelector("#game");
+
+if (!root) throw new Error("Missing #game root");
+
+let savedHighScore = loadHighScore();
+let state = createInitialState({ highScore: savedHighScore });
+let view;
+
+function dispatch(action) {
+  state = transition(state, action);
+  const nextHighScore = Math.max(savedHighScore, Number(state.score) || 0);
+  if (nextHighScore > savedHighScore) {
+    savedHighScore = nextHighScore;
+    saveHighScore(savedHighScore);
+  }
+  view.render(state);
+}
+
+view = mountGame(root, {
+  dispatch,
+  onExport: () => downloadRunRecord(buildRunRecord(state)),
+});
+view.render(state);
+
+window.setInterval(() => dispatch({ type: "tick", elapsedMs: TICK_MS }), TICK_MS);
+"""
 
 
 def worker_slice(index: int) -> dict[str, Any]:
@@ -437,12 +512,38 @@ def validate_report(
     return errors
 
 
+def write_starter_project(project_dir: Path) -> None:
+    """Write the deterministic dependency-free project used by both A/B arms."""
+    (project_dir / "src").mkdir(parents=True, exist_ok=True)
+    package = {
+        "name": "signal-sweep",
+        "version": "1.0.0",
+        "private": True,
+        "type": "module",
+        "scripts": {
+            "test": "node --test",
+            "check": "node --check src/main.js",
+            "serve": "python3 -m http.server 4173",
+        },
+    }
+    starter_files = {
+        project_dir / "package.json": json.dumps(package, indent=2) + "\n",
+        project_dir / "index.html": STARTER_INDEX,
+        project_dir / "src/main.js": STARTER_MAIN,
+    }
+    for path, content in starter_files.items():
+        if not path.exists():
+            path.write_text(content, encoding="utf-8")
+
+
 def write_artifacts(
     output_dir: Path,
     *,
     baseline_prompts: list[str],
     cached_prompts: list[str],
 ) -> None:
+    write_starter_project(output_dir / "baseline-project")
+    write_starter_project(output_dir / "cached-harness-project")
     baseline_dir = output_dir / "baseline"
     cached_dir = output_dir / "cached_harness"
     baseline_dir.mkdir(parents=True, exist_ok=True)

@@ -56,16 +56,16 @@ Latest local estimate:
 | Metric | Baseline embedded handoff | Cached harness handoff |
 |---|---:|---:|
 | Prompt count | 4 | 4 |
-| Estimated tokens total | 2892 | 2135 |
-| Average tokens per prompt | 723.0 | 533.75 |
-| Cache-adjusted estimated tokens | 2892 | 827 |
+| Estimated tokens total | 3727 | 2144 |
+| Average tokens per prompt | 931.75 | 536.0 |
+| Cache-adjusted estimated tokens | 3727 | 836 |
 | Stable prefix tokens counted once | n/a | 436 |
-| Dynamic tail tokens total | n/a | 391 |
-| Stable prefix ratio | n/a | 81.69% |
+| Dynamic tail tokens total | n/a | 400 |
+| Stable prefix ratio | n/a | 81.35% |
 
-Raw estimated savings: `26.18%`
+Raw estimated savings: `42.47%`
 
-Cache-adjusted estimated savings: `71.4%`
+Cache-adjusted estimated savings: `77.57%`
 
 Break-even dispatches: `1`
 
@@ -80,14 +80,36 @@ python3 scripts/game_dev_ab_benchmark.py \
 
 This writes:
 
+- `/tmp/game-dev-ab/baseline-project/`;
+- `/tmp/game-dev-ab/cached-harness-project/`;
 - `/tmp/game-dev-ab/baseline/worker-01.prompt` through `worker-04.prompt`;
 - `/tmp/game-dev-ab/cached_harness/worker-01.prompt` through `worker-04.prompt`;
 - `/tmp/game-dev-ab/signal-sweep-game-brief.md`;
 - `/tmp/game-dev-ab/observations-template.jsonl`.
 
-Use the generated prompts for two isolated runs against the same target repo.
-The benchmark compares prompt shape; the target repo and actual generated game
-should be evaluated by the same quality gates in both modes.
+The two project directories start with byte-identical, dependency-free
+`package.json`, `index.html`, and `src/main.js` files. The starter fixes the
+cross-module interfaces while leaving the game slices for the workers. Reusing
+the command does not overwrite developed project files, so telemetry reports
+can be regenerated safely after a run.
+
+## Real A/B Protocol
+
+Use the generated prompts in two isolated project directories. Before either
+run, initialize each project as its own Git repository, create the same starter
+commit with the same author metadata, and require equal starter tree hashes.
+
+- Use the same CLI, model, reasoning profile, sandbox, and quality gates.
+- Run writes serially in both arms; never overlap workers that can touch the
+  same project.
+- Baseline uses four fresh sessions, one per worker prompt.
+- Harness uses one session plus three accepted follow-ups in worker order.
+- Nested delegation is forbidden in both arms.
+- Capture provider telemetry exactly as exposed; absent fields remain unknown.
+
+The product Dashboard is not an A/B surface. Populate it only from the Harness
+run database. Keep Baseline results, comparison tables, and experiment controls
+in a separate sanitized benchmark report.
 
 ## Runtime Status Observations
 
