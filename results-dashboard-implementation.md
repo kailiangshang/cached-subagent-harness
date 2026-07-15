@@ -326,6 +326,17 @@ budgets.
   release metadata, Rust 50/50, Benchmark Python 15/15, Standalone 9/9,
   remaining Python 6/6 + 3/3, Clippy, prompt-cache, token-effectiveness, game
   A/B, release build, and final lifecycle audit all passed.
+- Final causal review closed the acceptance/usage defect but found one
+  fix-induced freshness regression: terminal `run update` still used raw wall
+  time and could overwrite a later logical `updated_at` during clock rollback.
+- Terminal-freshness RED fixed the active Run's `updated_at` in the future and
+  observed completion write it backward. GREEN now derives terminal
+  `updated_at`/`ended_at` strictly after the persisted boundary and writes the
+  matching close activity in the same transaction. Rust 50/50, Clippy,
+  Standalone 9/9, release validation, and diff check pass.
+- `scripts/verify.sh` — PASS on 2026-07-15 after the terminal-freshness fix,
+  with the same complete Rust 50/50, Python 6/6 + 9/9 + 3/3 + 15/15, Clippy,
+  release metadata/build, cache, Token, Benchmark, and lifecycle gates.
 
 ## Review Findings
 
@@ -336,9 +347,11 @@ pass. The arbitrary budget-raise suggestion was resolved by rejecting raises
 instead of adding a migration/table, preserving the lightweight product
 boundary. The first closure re-review closed every original finding except the
 fresh-usage causal boundary and found no Critical issue. That final defect is
-now fixed and awaits one targeted closure confirmation; final status remains
-incomplete until both reviewers return `Ready: Yes` with no open
-Critical/Important finding.
+now fixed. The spec reviewer returned `Ready: Yes`; the focused reviewer closed
+the causal defect but found a terminal freshness regression introduced by its
+logical-clock fix. That regression is now fixed and awaits one targeted
+confirmation; final status remains incomplete until both reviewers return
+`Ready: Yes` with no open Critical/Important finding.
 
 ## Risks
 
@@ -356,8 +369,9 @@ Critical/Important finding.
 
 ## Next Actions
 
-1. Obtain targeted closure confirmation for the causal-release fix from both
-   existing read-only reviewer handles.
+1. Obtain targeted closure confirmation for the terminal freshness fix from
+   the focused reviewer and a final spec confirmation from the existing
+   reviewers.
 2. Re-run all release gates and complete the final lifecycle audit.
 3. Start the Harness-only Dashboard from the exact completed Signal Sweep
    ledger and verify `/health` plus `/api/status`.

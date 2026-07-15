@@ -229,18 +229,22 @@ impl Store {
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|error| error.to_string())?;
-        let current: RunStatus = transaction
-            .query_row("SELECT status FROM runs WHERE run_id=?1", [run_id], |row| {
-                let status: String = row.get(0)?;
-                parse_wire(status, 0)
-            })
+        let (current, current_updated_at): (RunStatus, String) = transaction
+            .query_row(
+                "SELECT status,updated_at FROM runs WHERE run_id=?1",
+                [run_id],
+                |row| {
+                    let status: String = row.get(0)?;
+                    Ok((parse_wire(status, 0)?, row.get(1)?))
+                },
+            )
             .map_err(|error| error.to_string())?;
         if current != RunStatus::Active {
             return Err(format!(
                 "illegal run transition {run_id}: {current} -> {target}"
             ));
         }
-        let timestamp = now(&transaction)?;
+        let timestamp = now_after(&transaction, &current_updated_at)?;
         let changed = transaction
             .execute(
                 "UPDATE runs SET status=?2,updated_at=?3,ended_at=?3 WHERE run_id=?1 AND status='active'",
@@ -250,7 +254,7 @@ impl Store {
         if changed != 1 {
             return Err("run terminal transition lost".into());
         }
-        append_activity_tx(
+        append_activity_tx_at(
             &transaction,
             &ActivityInput {
                 run_id: run_id.into(),
@@ -263,6 +267,7 @@ impl Store {
                 },
                 summary: format!("run {target}"),
             },
+            &timestamp,
         )?;
         transaction.commit().map_err(|error| error.to_string())
     }
@@ -1627,7 +1632,28 @@ mod tests {
         store
             .update_task("task-1", TaskStatus::Accepted, None)
             .unwrap();
+        let logical_boundary = "2099-01-01T00:00:00.000Z";
+        store
+            .conn
+            .execute(
+                "UPDATE runs SET updated_at=?2 WHERE run_id=?1",
+                ["run-1", logical_boundary],
+            )
+            .unwrap();
         store.update_run("run-1", RunStatus::Complete).unwrap();
+        let (updated_at, ended_at): (String, Option<String>) = store
+            .conn
+            .query_row(
+                "SELECT updated_at,ended_at FROM runs WHERE run_id='run-1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert!(
+            updated_at.as_str() > logical_boundary,
+            "updated={updated_at} boundary={logical_boundary}"
+        );
+        assert_eq!(ended_at.as_deref(), Some(updated_at.as_str()));
         assert_eq!(
             store.snapshot("run-1").unwrap().run.status,
             RunStatus::Complete
