@@ -3,6 +3,11 @@
 Date: 2026-07-10
 Base commit: `2b2d237`
 
+Status: completed historical RED/GREEN evidence for standalone behavior and
+routing wording. This is Skill-behavior evidence, not live Token-saving
+evidence. Current runtime and Benchmark status is summarized in
+[Current Product State](../current-state.md).
+
 ## Method
 
 Each replication used a fresh discussion context and answered the same three

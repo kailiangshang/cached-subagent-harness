@@ -1,5 +1,11 @@
 # Observability Schema Increment Implementation Plan
 
+Status: **Historical / Superseded.** This event-store increment was implemented
+as a development experiment and then deliberately removed before installation
+when the product was simplified. Do not execute this plan against the current
+tree. See [Current Product State](../current-state.md). Unchecked boxes retain
+the original TDD record; they are not current backlog.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use
 > `test-driven-development` task-by-task. The controller uses
 > `cached-subagent-harness`, keeps one compatible writer session for all tasks,

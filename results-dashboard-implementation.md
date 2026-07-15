@@ -2,6 +2,10 @@
 
 Status: COMPLETE
 
+Current entry point: [Current Product State](docs/current-state.md). This report
+is the complete delivery and audit trail; its historical retries and interim
+review states are retained intentionally.
+
 ## PSOC
 
 ### Problem

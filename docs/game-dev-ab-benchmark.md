@@ -1,5 +1,9 @@
 # Game Dev A/B Benchmark
 
+Status: current reproducible Benchmark protocol. The former repeated-follow-up
+topology is retained only in the 2026-07-15 evidence; current Harness routing
+batches known compatible slices first.
+
 This benchmark answers a stronger question than the offline token fixture:
 
 Can two equivalent small-game development runs show lower prompt overhead,
@@ -194,3 +198,5 @@ The 2026-07-15 real run is recorded in
 `docs/benchmarks/2026-07-15-signal-sweep-real-ab.md`. It rejected the former
 one-Session/three-follow-up strategy at 5.90× Baseline total effective Tokens
 and drove the current batch-first, budget-bounded policy.
+
+See [Current Product State](current-state.md) for the release claim boundary.

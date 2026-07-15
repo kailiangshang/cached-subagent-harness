@@ -1,7 +1,7 @@
 {
   "name": "cached-subagent-harness",
   "version": "0.1.0",
-  "description": "Cache-aware subagent orchestration, lifecycle ledgers, and complete-development gates for agentic CLIs.",
+  "description": "Token-aware subagent batching, safe model routing, bounded session reuse, lifecycle state, and results visualization for agentic CLIs.",
   "author": {
     "name": "kailiangshang",
     "url": "https://github.com/kailiangshang"
@@ -14,6 +14,8 @@
     "codex",
     "skills",
     "subagents",
+    "token-efficiency",
+    "dashboard",
     "superpowers",
     "harness",
     "rust",
@@ -22,8 +24,8 @@
   "skills": "./skills/",
   "interface": {
     "displayName": "Cached Subagent Harness",
-    "shortDescription": "Cache-aware subagent control",
-    "longDescription": "Adds a cached-subagent-harness skill and Rust harnessctl tool for stable prompts, SQLite lifecycle ledgers, write-scope gates, review/fix loops, and final audits when coordinating subagents.",
+    "shortDescription": "Token-aware subagent control",
+    "longDescription": "Adds a standalone cached-subagent-harness Skill and compact Rust harnessctl runtime for compatible-task batching, quality-constrained model routing, bounded Session reuse, stable prompts, SQLite lifecycle state, a bilingual results Dashboard, review/fix loops, and final audits.",
     "developerName": "kailiangshang",
     "category": "Coding",
     "capabilities": [
@@ -33,9 +35,9 @@
     ],
     "defaultPrompt": [
       "Use cached-subagent-harness for this long-running refactor.",
-      "Coordinate subagents with stable prompts and a ledger.",
+      "Coordinate subagents with batch-first routing, bounded Sessions, stable prompts, and a durable ledger.",
       "Audit open subagents before finishing this task."
     ],
-    "brandColor": "#2563EB"
+    "brandColor": "#5968D7"
   }
 }

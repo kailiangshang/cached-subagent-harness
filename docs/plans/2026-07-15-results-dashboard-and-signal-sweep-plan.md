@@ -1,5 +1,11 @@
 # Results Dashboard and Signal Sweep Implementation Plan
 
+Status: **Completed on 2026-07-15.** The final repository verification and both
+independent reviews passed with no open findings. The unchecked steps below
+preserve the original execution sequence; use
+[`results-dashboard-implementation.md`](../../results-dashboard-implementation.md)
+for actual delivery, fixes, tests, and final audit.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `subagent-driven-development`
 > or `executing-plans` to implement this plan task by task. Steps use checkbox
 > (`- [ ]`) syntax for tracking. This execution uses the inline
@@ -55,8 +61,9 @@ policy until a separate real run measures it.
 - Requested and actual model values remain separate facts.
 - Keep the Web runtime dependency-free: no frontend framework, Node service,
   observer, remote asset, or new database table.
-- Bind the Dashboard to loopback by default and preserve its CSP and public-safe
-  DTO boundary.
+- Bind the Dashboard to loopback by default and preserve its CSP and limited
+  DTO boundary. The server has no authentication or TLS; caller-provided goal,
+  title, and activity-summary text must be sanitized before remote exposure.
 - Use zh-CN and en-US with operational body text at `14px`, secondary text at
   `12px`, and machine metadata at no less than `11px`.
 - Every source-changing task follows RED-GREEN-REFACTOR and ends with focused
@@ -74,7 +81,7 @@ policy until a separate real run measures it.
 - `skills/cached-subagent-harness/scripts/harnessctl/src/accounting.rs`: compute
   total and per-phase token facts with honest quality.
 - `skills/cached-subagent-harness/scripts/harnessctl/src/status.rs`: expose the
-  same public-safe facts to CLI JSON and the Dashboard.
+  same limited facts to CLI JSON and the Dashboard.
 - `skills/cached-subagent-harness/scripts/harnessctl/src/main.rs`: add the small
   `run update` command and preserve CLI composition only.
 - `skills/cached-subagent-harness/scripts/harnessctl/src/dashboard.rs`: enforce

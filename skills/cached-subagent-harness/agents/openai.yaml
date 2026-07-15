@@ -1,4 +1,5 @@
 interface:
   display_name: "Cached Subagent Harness"
-  short_description: "Long-running subagent control protocol"
-  default_prompt: "Use $cached-subagent-harness to coordinate long-running development with stable prompts, repo-backed agent lifecycle tracking, and complete-development gates."
+  short_description: "Token-aware long-running subagent control"
+  brand_color: "#5968D7"
+  default_prompt: "Use $cached-subagent-harness to coordinate this long-running development task with compatible-task batching, quality-constrained model routing, bounded Session reuse, stable prompts, durable lifecycle state, and complete-development gates."

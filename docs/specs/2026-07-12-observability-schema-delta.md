@@ -1,6 +1,13 @@
 # Observability Schema Delta
 
-Status: approved technical closure for delivery increment 2
+Status: **Historical / Superseded** implementation increment
+
+This document accurately records the former normalized event-store experiment,
+but that runtime was later removed before installation. Current Harness state
+uses compact authoritative Run, Task, Session, usage, and activity tables and
+does not replay events. Use [Current Product State](../current-state.md) and the
+[lightweight design](2026-07-14-lightweight-token-harness-design.md); retain this
+file only for audit history.
 
 Applies to the normalized SQLite schema, legacy migration, internal event
 append API, and deterministic projection/replay foundations. This document

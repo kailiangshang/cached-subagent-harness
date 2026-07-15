@@ -2,7 +2,16 @@
 
 Date: 2026-07-10
 
-Status: design approved; written specification pending user review
+Status: **Historical / Superseded** by the implemented lightweight design on
+2026-07-14
+
+This umbrella design is retained as decision history, not as an implementation
+contract. Its 20 non-negotiable principles survive in the current Skill, but
+the event store, replay system, capability scanner, adapter framework, desktop
+bridge, leases, probes, and observer described here were deliberately removed
+from product scope. Use [Current Product State](../current-state.md) and the
+[lightweight design](2026-07-14-lightweight-token-harness-design.md) for current
+behavior.
 
 ## Summary
 

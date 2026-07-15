@@ -1,5 +1,7 @@
 # Optional Superpowers Integration
 
+Status: current optional integration contract
+
 cached-subagent-harness is standalone. Superpowers integration is
 explicitly optional and is never installed, fetched, detected, or copied by the
 default installer path.
@@ -14,3 +16,6 @@ standalone completion.
 Optional methodology absence is not degraded. If explicitly requested setup
 fails, the installer reports failure while leaving the standalone core
 installed. SUPERPOWERS_REF may pin the optional clone.
+
+See [Current Product State](current-state.md) for the standalone architecture
+and current product boundary.

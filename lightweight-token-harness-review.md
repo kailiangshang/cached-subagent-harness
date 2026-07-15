@@ -1,5 +1,14 @@
 # Lightweight Token Harness Release Review
 
+Status: historical review; all findings closed
+
+Final outcome: **Ready Yes.** This file preserves the sequence of initial
+findings, fix passes, and re-reviews. The early `Ready: No` verdicts below are
+intermediate evidence, not the current release state. The last remaining
+sample-count issue closed in `49dff80`; later Dashboard closure review and full
+verification are recorded in
+[`results-dashboard-implementation.md`](results-dashboard-implementation.md).
+
 Reviewed `d16a993` against the approved design and implementation plan. This was a strict read-only, timeboxed review; no product files were changed and no full suite was rerun.
 
 ## Strengths

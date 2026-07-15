@@ -1,11 +1,14 @@
 # Dashboard Visual Baseline
 
-Status: approved
+Status: **Historical baseline / Partially retained**
 
 Approval date: 2026-07-12
 
-Applies to delivery increment 5 and every later surface that renders the
-control-plane read model.
+Moonlight Indigo, restrained liquid glass, system sans-serif, bilingual
+zh-CN/en-US behavior, and accessibility fallbacks remain current. The
+information architecture and operational body size were refined by the
+[implemented 2026-07-15 results Dashboard design](2026-07-15-results-dashboard-design.md),
+which now governs the surface. This file is retained as visual decision history.
 
 ## Decision
 

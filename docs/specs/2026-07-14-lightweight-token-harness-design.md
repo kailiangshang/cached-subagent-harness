@@ -2,10 +2,15 @@
 
 ## Status
 
-Approved direction: replace the over-designed control-plane architecture with a
-small standalone harness whose primary outcome is lower total effective token
-use at unchanged quality. The dashboard is mandatory, but it remains a read-only
-view over the same compact state used by the CLI.
+Implemented and current for the lightweight core. The 2026-07-15 results
+Dashboard design refines the presentation section, and the real Signal Sweep
+evidence replaces the original repeated-follow-up hypothesis with the
+batch-first, budget-bounded contract already incorporated below.
+
+The approved direction replaces the over-designed control-plane architecture
+with a small standalone harness whose primary outcome is lower total effective
+token use at unchanged quality. The Dashboard is mandatory, but it remains a
+read-only view over the same compact state used by the CLI.
 
 This design supersedes the implementation scope and delivery boundaries in
 `2026-07-10-agent-control-plane-design.md`. The earlier document remains history,
@@ -357,7 +362,8 @@ The established visual baseline remains:
 - restrained liquid-glass surfaces;
 - system sans-serif;
 - zh-CN and en-US;
-- 13 px body, 12 px secondary text, and metadata no smaller than 11 px;
+- 14 px operational body text, 12 px secondary text, and metadata no smaller
+  than 11 px;
 - dense Command Grid layout.
 
 The first complete page has four panels:
@@ -370,7 +376,11 @@ The first complete page has four panels:
 4. **Recent Actions**: the compact activity feed.
 
 Unknown values render as `— / Unknown`, never `0`. The language toggle is local
-to the page. No prompt, source content, secret, or long log reaches the browser.
+to the page. The projection omits structured repository/report paths, write
+scopes, Host handles, and task-internal next actions. Caller-provided goal,
+title, and activity-summary text is not sanitized, so the controller must keep
+prompts, source content, secrets, sensitive paths, and long logs out of those
+display fields.
 
 ## Error Handling
 
@@ -385,8 +395,9 @@ to the page. No prompt, source content, secret, or long log reaches the browser.
 - Unsupported follow-up selects batch or spawn; it is not emulated by a
   permanent pool.
 - Missing token telemetry marks accounting partial or unknown.
-- Dashboard bind defaults to `127.0.0.1`; non-loopback requires an explicit
-  flag and visible warning.
+- Dashboard bind defaults to `127.0.0.1`; non-loopback requires explicit
+  `--allow-remote true`. The embedded server provides no authentication or TLS,
+  so remote exposure requires a trusted, access-controlled network or tunnel.
 - A corrupted database is reported and never silently replaced.
 
 ## Testing Strategy
@@ -464,8 +475,9 @@ Implementation will:
 - Codex, Claude, and OpenCode command templates render exact argument arrays.
 - A custom compatible host template works without code changes.
 - `status`, `watch`, and the mandatory dashboard show the same state.
-- The dashboard is bilingual, loopback-only by default, and follows the approved
-  Moonlight Indigo liquid-glass baseline.
+- The dashboard is bilingual, binds to loopback by default, and follows the
+  approved Moonlight Indigo liquid-glass baseline. Remote binding is an
+  explicit unauthenticated opt-in, not a public deployment mode.
 - The installed Skill has no required Superpowers dependency.
 - The obsolete event-sourced runtime is removed.
 - Full verification and independent review pass with no open Critical or

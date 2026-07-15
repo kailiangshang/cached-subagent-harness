@@ -1,5 +1,14 @@
 # Lightweight Token-Efficiency Harness Implementation Plan
 
+Status: **Completed with an evidence-driven Session correction.** The original
+five-follow-up example in this plan is rejected historical RED evidence, not
+current routing policy. Known compatible work now batches first; later reuse is
+bounded by one accepted follow-up, 200,000 effective Tokens, and exact causal
+usage. See [Current Product State](../current-state.md) and the
+[real A/B evidence](../benchmarks/2026-07-15-signal-sweep-real-ab.md). Unchecked
+boxes below preserve the implementation recipe and do not indicate unfinished
+delivery.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Replace the unfinished event-sourced control plane with a small standalone harness that measurably reduces total effective token use through task batching, compatible session reuse, safe model routing, honest accounting, and a mandatory bilingual dashboard.

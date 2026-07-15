@@ -1,5 +1,11 @@
 # Standalone Methodology Increment Implementation Plan
 
+Status: **Completed historical plan.** The standalone-first method and optional
+Superpowers boundary remain current; later runtime and Dashboard work is
+documented in [Current Product State](../current-state.md). Unchecked boxes below
+preserve the original execution recipe and do not indicate unfinished current
+work.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use cached-subagent-harness to
 > execute this plan with durable PSOC, explicit write scope, TDD, package review,
 > and final lifecycle audit. This plan deliberately does not require

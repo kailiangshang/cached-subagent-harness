@@ -2,8 +2,11 @@
 
 ## Status
 
-Approved in conversation and confirmed from the written specification on
-2026-07-15.
+Implemented and verified on 2026-07-15. The separate Signal Sweep run produced
+the retained negative Token result and drove the batch-first correction already
+recorded in this specification. See
+[`results-dashboard-implementation.md`](../../results-dashboard-implementation.md)
+for delivery, review, and final-audit evidence.
 
 ## Problem
 
@@ -77,6 +80,11 @@ The Dashboard must not contain:
 - billing claims derived from token estimates;
 - prompts, source content, host handles, write scopes, internal paths, or long
   logs.
+
+This is a structural field boundary, not content sanitization. Run goals, Task
+titles, and activity summaries are caller-provided display text; the controller
+must keep prompts, source content, secrets, sensitive paths, and long logs out
+of them.
 
 The A/B workflow must not change the Dashboard API or persisted product schema
 solely to carry benchmark data.
@@ -152,7 +160,7 @@ facts and ordering in zh-CN and en-US.
 ## Read Model Changes
 
 `StatusView` remains the single source for CLI JSON and the Web page. Extend the
-public-safe projection only with facts needed by the approved layout:
+limited public projection only with facts needed by the approved layout:
 
 - persisted run `updated_at` for truthful freshness;
 - token totals grouped by usage phase, including quality.
@@ -161,14 +169,15 @@ Task progress, package groups, session assignment chains, and latest per-task
 activity are deterministic client projections over existing public fields.
 They require no new database table and no observer.
 
-The endpoint continues to exclude repository roots, report paths, write scopes,
-host handles, prompts, and task-internal next actions.
+The endpoint continues to exclude structured repository roots, report paths,
+write scopes, Host handles, and task-internal next actions. It does not sanitize
+caller-provided goal, title, or activity-summary text.
 
 ## Data Flow
 
 1. Lifecycle commands update the compact SQLite run, task, session, usage, and
    activity tables.
-2. `build_status` creates the public-safe single-run projection.
+2. `build_status` creates the limited single-run projection.
 3. CLI JSON and `/api/status` serialize the same projection.
 4. The embedded page polls every 1500 ms, retains the last good snapshot across
    transient errors, and marks connectivity separately from run state.
@@ -222,6 +231,9 @@ No baseline value is sent to the browser.
 - Keep long titles, IDs, models, and bilingual labels readable through wrapping
   or deliberate truncation with an accessible full value.
 - Continue to require explicit permission for non-loopback binding.
+- The embedded server has no authentication or TLS. Keep it on loopback, or put
+  an explicitly remote bind behind a trusted, access-controlled network or
+  tunnel.
 
 ## Testing
 
@@ -264,8 +276,9 @@ Follow RED-GREEN-REFACTOR for every behavior change.
   without relying on color alone.
 - Token estimates disclose their method and sample count; unavailable telemetry
   is unknown.
-- The page remains bilingual, responsive, loopback-only by default, and free of
-  baseline or A/B presentation.
+- The page remains bilingual, responsive, loopback by default, and free of
+  baseline or A/B presentation. Remote binding is an explicit unauthenticated
+  opt-in, not a public deployment mode.
 - The full `Signal Sweep` A/B run produces equal-quality outputs and a separate
   sanitized effectiveness report.
 - Repository verification and independent review finish with no open Critical

@@ -1,5 +1,8 @@
 # Token Effectiveness Task
 
+Status: current offline prompt-shape regression guard; not live Token-saving
+evidence
+
 This repository includes an offline task test for prompt size and cache shape.
 It is a CI regression guard, not a complete product benchmark. It is designed to
 answer one narrow question:
@@ -88,3 +91,6 @@ grow the dynamic tail too far, CI can fail before the skill is published.
 For a stronger comparison that uses a small game-development workload and can
 ingest real runtime status/token observations, see
 [game-dev-ab-benchmark.md](game-dev-ab-benchmark.md).
+
+The retained real result and current claim boundary are summarized in
+[Current Product State](current-state.md).
