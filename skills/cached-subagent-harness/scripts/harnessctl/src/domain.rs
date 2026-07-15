@@ -312,7 +312,6 @@ pub(crate) struct DispatchRequest {
     pub signature: SessionSignature,
     pub trivial: bool,
     pub isolation_required: bool,
-    pub related_ready_count: usize,
     pub delegation_value_exceeds_cost: bool,
     pub host_supports_followup: bool,
     pub reuse_budget: ReuseBudget,
@@ -327,6 +326,7 @@ pub(crate) struct ReuseBudget {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SessionClaimResult {
     pub session_id: Option<String>,
+    pub compatible_ready_count: usize,
     pub reason_codes: Vec<String>,
 }
 

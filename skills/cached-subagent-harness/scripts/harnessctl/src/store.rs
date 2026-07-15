@@ -442,12 +442,17 @@ impl Store {
         if let Some(task_id) = &input.current_task_id {
             let changed = transaction
                 .execute(
-                    "UPDATE tasks SET session_id=?2,updated_at=?3 WHERE task_id=?1 AND run_id=?4",
+                    r#"UPDATE tasks SET session_id=?2,updated_at=?3
+                       WHERE task_id=?1 AND run_id=?4 AND status='queued'
+                         AND session_id IS NULL"#,
                     params![task_id, input.session_id, timestamp, input.run_id],
                 )
                 .map_err(|error| error.to_string())?;
             if changed != 1 {
-                return Err("session current task does not belong to run".into());
+                return Err(
+                    "session current task is missing, active, assigned, or belongs to another run"
+                        .into(),
+                );
             }
         }
         append_activity_tx(
@@ -487,6 +492,10 @@ impl Store {
                 "illegal session transition {session_id}: {current} -> {target}"
             ));
         }
+        validate_session_assignment(target, current_task_id)?;
+        if current == SessionStatus::Busy && target == SessionStatus::Idle {
+            return Err("busy session must use verified release before becoming idle".into());
+        }
         if matches!(target, SessionStatus::Failed | SessionStatus::Unknown)
             && final_reason.is_none_or(str::is_empty)
         {
@@ -500,6 +509,24 @@ impl Store {
         let ended_at = terminal.then_some(timestamp.as_str());
         let persisted_current_task = if terminal { None } else { current_task_id };
         let activity_task_id = stored_current_task.or_else(|| current_task_id.map(str::to_string));
+        if target == SessionStatus::Busy {
+            let task_id = current_task_id
+                .ok_or_else(|| "busy session requires a current task".to_string())?;
+            let task_changed = transaction
+                .execute(
+                    r#"UPDATE tasks SET session_id=?2,updated_at=?3
+                       WHERE task_id=?1 AND run_id=?4 AND status='queued'
+                         AND (session_id IS NULL OR session_id=?2)"#,
+                    params![task_id, session_id, timestamp, run_id],
+                )
+                .map_err(|error| error.to_string())?;
+            if task_changed != 1 {
+                return Err(
+                    "session current task is missing, active, assigned, or belongs to another run"
+                        .into(),
+                );
+            }
+        }
         transaction
             .execute(
                 "UPDATE sessions SET status=?2,current_task_id=?3,last_used_at=?4,ended_at=?5,final_reason=?6 WHERE session_id=?1",
@@ -530,6 +557,36 @@ impl Store {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|error| error.to_string())?;
         let timestamp = now(&transaction)?;
+        let task_session = if let Some(task_id) = &input.task_id {
+            let (task_run_id, task_session_id): (String, Option<String>) = transaction
+                .query_row(
+                    "SELECT run_id,session_id FROM tasks WHERE task_id=?1",
+                    [task_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .map_err(|error| error.to_string())?;
+            if task_run_id != input.run_id {
+                return Err("usage task does not belong to run".into());
+            }
+            task_session_id
+        } else {
+            None
+        };
+        if let Some(session_id) = &input.session_id {
+            let session_run_id: String = transaction
+                .query_row(
+                    "SELECT run_id FROM sessions WHERE session_id=?1",
+                    [session_id],
+                    |row| row.get(0),
+                )
+                .map_err(|error| error.to_string())?;
+            if session_run_id != input.run_id {
+                return Err("usage session does not belong to run".into());
+            }
+            if input.task_id.is_some() && task_session.as_deref() != Some(session_id) {
+                return Err("usage task is not linked to session".into());
+            }
+        }
         transaction
             .execute(
                 r#"INSERT INTO usage(
@@ -563,6 +620,7 @@ impl Store {
         task_id: &str,
         signature: &SessionSignature,
         budget: ReuseBudget,
+        host_supports_followup: bool,
     ) -> Result<SessionClaimResult, String> {
         require_nonempty("run_id", run_id)?;
         require_nonempty("task_id", task_id)?;
@@ -573,7 +631,7 @@ impl Store {
         let authoritative = transaction
             .query_row(
                 r#"SELECT run_id,role,required_profile,package_key,scope_hash,repo_revision,
-                           review_boundary,status
+                           review_boundary,status,session_id
                     FROM tasks WHERE task_id=?1"#,
                 [task_id],
                 |row| {
@@ -586,6 +644,7 @@ impl Store {
                         row.get::<_, String>(5)?,
                         row.get::<_, Option<String>>(6)?,
                         row.get::<_, String>(7)?,
+                        row.get::<_, Option<String>>(8)?,
                     ))
                 },
             )
@@ -594,6 +653,7 @@ impl Store {
         let task_profile = authoritative.2.parse::<Profile>()?;
         let compatible = authoritative.0 == run_id
             && authoritative.7 == TaskStatus::Queued.as_str()
+            && authoritative.8.is_none()
             && task_role == signature.role
             && signature.profile >= task_profile
             && authoritative.3 == signature.package_key
@@ -603,13 +663,54 @@ impl Store {
         if !compatible {
             return Err("dispatch signature disagrees with authoritative task".into());
         }
+        let compatible_ready_count: i64 = transaction
+            .query_row(
+                r#"SELECT COUNT(*)
+                    FROM tasks candidate
+                    JOIN tasks target ON target.task_id=?2
+                    WHERE target.run_id=?1 AND target.status='queued'
+                      AND target.session_id IS NULL
+                      AND candidate.run_id=target.run_id
+                      AND candidate.status='queued' AND candidate.session_id IS NULL
+                      AND candidate.package_key=target.package_key
+                      AND candidate.role=target.role
+                      AND candidate.complexity=target.complexity
+                      AND candidate.risk=target.risk
+                      AND candidate.uncertainty=target.uncertainty
+                      AND candidate.write_scope=target.write_scope
+                      AND candidate.scope_hash=target.scope_hash
+                      AND candidate.repo_revision=target.repo_revision
+                      AND candidate.review_boundary IS target.review_boundary
+                      AND candidate.required_profile=target.required_profile"#,
+                params![run_id, task_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())?;
+        let compatible_ready_count = usize::try_from(compatible_ready_count)
+            .map_err(|_| "compatible ready task count is too large".to_string())?;
+        if compatible_ready_count > 1 {
+            transaction.commit().map_err(|error| error.to_string())?;
+            return Ok(SessionClaimResult {
+                session_id: None,
+                compatible_ready_count,
+                reason_codes: vec!["related_ready_tasks_batch_first".into()],
+            });
+        }
+        if !host_supports_followup {
+            transaction.commit().map_err(|error| error.to_string())?;
+            return Ok(SessionClaimResult {
+                session_id: None,
+                compatible_ready_count,
+                reason_codes: vec!["followup_unsupported".into()],
+            });
+        }
         let candidates = {
             let mut statement = transaction
                 .prepare(
                     r#"SELECT session_id FROM sessions
                     WHERE run_id=?1 AND host=?2 AND role=?3 AND profile=?4 AND package_key=?5
                       AND scope_hash=?6 AND repo_revision=?7 AND review_boundary IS ?8
-                      AND status='idle'
+                      AND status='idle' AND current_task_id IS NULL
                     ORDER BY last_used_at,session_id"#,
                 )
                 .map_err(|error| error.to_string())?;
@@ -635,6 +736,7 @@ impl Store {
             transaction.commit().map_err(|error| error.to_string())?;
             return Ok(SessionClaimResult {
                 session_id: None,
+                compatible_ready_count,
                 reason_codes: vec!["no_compatible_idle_session".into()],
             });
         }
@@ -660,6 +762,7 @@ impl Store {
                                                   OR reasoning_tokens IS NULL
                                                   OR cache_read_tokens IS NULL
                                                   OR cache_write_tokens IS NULL
+                                                  OR quality != 'exact'
                                                THEN 1 ELSE 0 END),0),
                               SUM(input_tokens + output_tokens + reasoning_tokens
                                   + cache_read_tokens + cache_write_tokens)
@@ -684,6 +787,7 @@ impl Store {
             transaction.commit().map_err(|error| error.to_string())?;
             return Ok(SessionClaimResult {
                 session_id: None,
+                compatible_ready_count,
                 reason_codes: reason_codes.into_iter().collect(),
             });
         };
@@ -699,7 +803,9 @@ impl Store {
         }
         let task_changed = transaction
             .execute(
-                "UPDATE tasks SET session_id=?2,updated_at=?3 WHERE task_id=?1 AND run_id=?4 AND status='queued'",
+                r#"UPDATE tasks SET session_id=?2,updated_at=?3
+                   WHERE task_id=?1 AND run_id=?4 AND status='queued'
+                     AND session_id IS NULL"#,
                 params![task_id, session_id, timestamp, run_id],
             )
             .map_err(|error| error.to_string())?;
@@ -710,6 +816,7 @@ impl Store {
         transaction.commit().map_err(|error| error.to_string())?;
         Ok(SessionClaimResult {
             session_id: Some(session_id),
+            compatible_ready_count,
             reason_codes: Vec::new(),
         })
     }
@@ -787,6 +894,28 @@ impl Store {
                 |row| row.get(0),
             )
             .map_err(|error| error.to_string())?;
+        let exact_usage_count: i64 = transaction
+            .query_row(
+                r#"SELECT COUNT(*) FROM usage
+                    WHERE run_id=?1 AND session_id=?2 AND task_id=?3
+                      AND quality='exact'
+                      AND input_tokens IS NOT NULL
+                      AND output_tokens IS NOT NULL
+                      AND reasoning_tokens IS NOT NULL
+                      AND cache_read_tokens IS NOT NULL
+                      AND cache_write_tokens IS NOT NULL
+                      AND observed_at >= (
+                          SELECT last_used_at FROM sessions WHERE session_id=?2
+                      )"#,
+                params![run_id, session_id, task_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())?;
+        if exact_usage_count == 0 {
+            return Err(format!(
+                "session release requires fresh exact usage for task {task_id}"
+            ));
+        }
         let timestamp = now(&transaction)?;
         let changed = transaction
             .execute(
@@ -1110,13 +1239,32 @@ fn validate_session_input(input: &SessionInput) -> Result<(), String> {
             return Err(format!("{name} must not be empty when provided"));
         }
     }
-    if matches!(input.status, SessionStatus::Failed | SessionStatus::Unknown) {
+    if matches!(
+        input.status,
+        SessionStatus::Closed | SessionStatus::Failed | SessionStatus::Unknown
+    ) {
         return Err(format!(
             "{} session requires final_reason and must be created through a lifecycle transition",
             input.status
         ));
     }
+    validate_session_assignment(input.status, input.current_task_id.as_deref())?;
     Ok(())
+}
+
+fn validate_session_assignment(
+    status: SessionStatus,
+    current_task_id: Option<&str>,
+) -> Result<(), String> {
+    match status {
+        SessionStatus::Busy if current_task_id.is_none() => {
+            Err("busy session requires a current task".into())
+        }
+        SessionStatus::Idle if current_task_id.is_some() => {
+            Err("idle session cannot retain a current task".into())
+        }
+        _ => Ok(()),
+    }
 }
 
 fn validate_usage_input(input: &UsageInput) -> Result<(), String> {
@@ -1497,6 +1645,90 @@ mod tests {
     }
 
     #[test]
+    fn usage_cannot_cross_run_or_linked_session_boundaries() {
+        let (_db, mut store) = seeded_store("usage-ownership");
+        store
+            .create_run("run-2", "separate run", "/repo-2", "/report-2")
+            .unwrap();
+        store
+            .add_task(&TaskInput {
+                task_id: "task-2".into(),
+                run_id: "run-2".into(),
+                package_key: "package-b".into(),
+                title: "other task".into(),
+                sequence: 1,
+                role: Role::Worker,
+                complexity: Profile::Standard,
+                risk: Risk::Medium,
+                uncertainty: Profile::Standard,
+                write_scope: vec!["src".into()],
+                scope_hash: "scope-b".into(),
+                repo_revision: "def456".into(),
+                review_boundary: Some("review-b".into()),
+                required_profile: Profile::Standard,
+            })
+            .unwrap();
+        store
+            .add_session(&SessionInput {
+                session_id: "session-2".into(),
+                run_id: "run-2".into(),
+                host: "codex".into(),
+                handle: None,
+                role: Role::Worker,
+                profile: Profile::Standard,
+                requested_model: None,
+                actual_model: None,
+                routing_status: RoutingStatus::Unknown,
+                package_key: "package-b".into(),
+                scope_hash: "scope-b".into(),
+                repo_revision: "def456".into(),
+                review_boundary: Some("review-b".into()),
+                status: SessionStatus::Busy,
+                current_task_id: Some("task-2".into()),
+            })
+            .unwrap();
+
+        let usage = |usage_id: &str, task_id: Option<&str>, session_id: Option<&str>| UsageInput {
+            usage_id: usage_id.into(),
+            run_id: "run-1".into(),
+            task_id: task_id.map(str::to_string),
+            session_id: session_id.map(str::to_string),
+            phase: UsagePhase::Work,
+            input_tokens: Some(1),
+            output_tokens: Some(1),
+            reasoning_tokens: Some(0),
+            cache_read_tokens: Some(0),
+            cache_write_tokens: Some(0),
+            source: "host".into(),
+            quality: UsageQuality::Exact,
+        };
+        let before_run_1 = store.snapshot("run-1").unwrap();
+        let before_run_2 = store.snapshot("run-2").unwrap();
+
+        assert!(
+            store
+                .record_usage(&usage("usage-wrong-task-run", Some("task-2"), None))
+                .is_err()
+        );
+        assert!(
+            store
+                .record_usage(&usage("usage-wrong-session-run", None, Some("session-2")))
+                .is_err()
+        );
+        assert!(
+            store
+                .record_usage(&usage(
+                    "usage-wrong-task-session",
+                    Some("task-1"),
+                    Some("session-2"),
+                ))
+                .is_err()
+        );
+        assert_eq!(store.snapshot("run-1").unwrap(), before_run_1);
+        assert_eq!(store.snapshot("run-2").unwrap(), before_run_2);
+    }
+
+    #[test]
     fn final_audit_requires_terminal_tasks_and_sessions() {
         let (_db, mut store) = seeded_store("final-audit");
         store
@@ -1566,6 +1798,110 @@ mod tests {
             .unwrap_err();
         assert!(error.contains("final_reason"), "{error}");
         assert!(store.snapshot("run-1").unwrap().sessions.is_empty());
+    }
+
+    #[test]
+    fn nonterminal_session_state_and_task_links_are_enforced_atomically() {
+        for (label, status, current_task_id) in [
+            ("idle-with-task", SessionStatus::Idle, Some("task-1")),
+            ("busy-without-task", SessionStatus::Busy, None),
+        ] {
+            let (_db, mut store) = seeded_store(label);
+            let before = store.snapshot("run-1").unwrap();
+            let error = store
+                .add_session(&SessionInput {
+                    session_id: "session-1".into(),
+                    run_id: "run-1".into(),
+                    host: "codex".into(),
+                    handle: None,
+                    role: Role::Worker,
+                    profile: Profile::Standard,
+                    requested_model: None,
+                    actual_model: None,
+                    routing_status: RoutingStatus::Unknown,
+                    package_key: "package-a".into(),
+                    scope_hash: "scope-a".into(),
+                    repo_revision: "abc123".into(),
+                    review_boundary: Some("review-a".into()),
+                    status,
+                    current_task_id: current_task_id.map(str::to_string),
+                })
+                .unwrap_err();
+            assert!(error.contains("current task"), "{label}: {error}");
+            assert_eq!(store.snapshot("run-1").unwrap(), before);
+        }
+
+        let (_db, mut store) = seeded_store("duplicate-task-owner");
+        store
+            .add_session(&SessionInput {
+                session_id: "session-1".into(),
+                run_id: "run-1".into(),
+                host: "codex".into(),
+                handle: None,
+                role: Role::Worker,
+                profile: Profile::Standard,
+                requested_model: None,
+                actual_model: None,
+                routing_status: RoutingStatus::Unknown,
+                package_key: "package-a".into(),
+                scope_hash: "scope-a".into(),
+                repo_revision: "abc123".into(),
+                review_boundary: Some("review-a".into()),
+                status: SessionStatus::Busy,
+                current_task_id: Some("task-1".into()),
+            })
+            .unwrap();
+        let before = store.snapshot("run-1").unwrap();
+        assert!(
+            store
+                .add_session(&SessionInput {
+                    session_id: "session-2".into(),
+                    run_id: "run-1".into(),
+                    host: "codex".into(),
+                    handle: None,
+                    role: Role::Worker,
+                    profile: Profile::Standard,
+                    requested_model: None,
+                    actual_model: None,
+                    routing_status: RoutingStatus::Unknown,
+                    package_key: "package-a".into(),
+                    scope_hash: "scope-a".into(),
+                    repo_revision: "abc123".into(),
+                    review_boundary: Some("review-a".into()),
+                    status: SessionStatus::Busy,
+                    current_task_id: Some("task-1".into()),
+                })
+                .is_err()
+        );
+        assert_eq!(store.snapshot("run-1").unwrap(), before);
+
+        let (_db, mut store) = seeded_store("invalid-session-update");
+        store
+            .add_session(&SessionInput {
+                session_id: "session-1".into(),
+                run_id: "run-1".into(),
+                host: "codex".into(),
+                handle: None,
+                role: Role::Worker,
+                profile: Profile::Standard,
+                requested_model: None,
+                actual_model: None,
+                routing_status: RoutingStatus::Unknown,
+                package_key: "package-a".into(),
+                scope_hash: "scope-a".into(),
+                repo_revision: "abc123".into(),
+                review_boundary: Some("review-a".into()),
+                status: SessionStatus::Starting,
+                current_task_id: None,
+            })
+            .unwrap();
+        let before = store.snapshot("run-1").unwrap();
+        assert!(
+            store
+                .update_session("session-1", SessionStatus::Busy, None, None)
+                .is_err()
+        );
+        assert_eq!(store.snapshot("run-1").unwrap(), before);
     }
 
     #[test]

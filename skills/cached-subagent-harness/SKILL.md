@@ -69,8 +69,9 @@ invariant wins.
 10. **Close deliberately.** Close expired, failed, abandoned, cancelled, and
     superseded sessions promptly. Every temporary or replacement session has an
     explicit expiry predicate before spawn; when it fires, close that session
-    before further dispatch. Terminal sessions never retain a current
-    assignment. Keep a session open only while its compatibility signature,
+    before further dispatch. Busy sessions have one current task; idle sessions
+    have none. Terminal sessions never retain a current assignment. Keep a
+    session open only while its compatibility signature,
     known near-term work, and remaining reuse budget make reuse more valuable
     than closure. Final audit closes or explicitly finalizes every session.
 11. **No uncontrolled fan-out.** Nested delegation remains disabled unless the
@@ -78,8 +79,9 @@ invariant wins.
 12. **Budget every session.** Every reusable session has both an
     accepted-follow-up cap and a total effective token budget. Initial per-run
     defaults remain at most two open delegated sessions and four total spawned
-    sessions. Idle reusable sessions count against the open limit. Raising any
-    limit requires an evidence-backed budget.
+    sessions. Idle reusable sessions count against the open limit. Runtime
+    flags may lower reuse limits but cannot raise them; a future increase
+    requires a versioned durable policy backed by evidence.
 
 ### P2: Context and token discipline
 
@@ -94,9 +96,10 @@ invariant wins.
     return only compact status and report location to the controller.
 15. **Subagents are investments.** Spawn only for real parallelism, context
     isolation, capability separation, or independent judgment. Known
-    compatible ready work is batched before follow-up reuse. Reuse only while
-    observed total usage and the accepted-follow-up count remain inside their
-    budgets.
+    compatible ready work is batched before follow-up reuse. Derive that ready
+    set from durable queued state, never a caller-supplied count. Reuse only
+    while observed total usage and the accepted-follow-up count remain inside
+    their budgets.
 16. **Quality-constrained optimization.** Select the lowest model and reasoning
     profile that satisfies role, risk, uncertainty, and quality floors. Count
     retries, escalation, review, and fixer work in total token use.
@@ -106,8 +109,10 @@ invariant wins.
 17. **Requested is not actual.** Record requested and observed host, model,
     reasoning, budget, status, and usage separately.
 18. **Unknown is honest.** Unsupported or unavailable telemetry remains
-    `unknown`; never convert it to zero, success, or an inferred fact. Unknown
-    session usage closes the follow-up reuse path because remaining budget
+    `unknown`; never convert it to zero, success, or an inferred fact. Only
+    complete exact usage linked to the current assignment can release a
+    session for reuse, and usage run/task/session ownership must agree. Unknown
+    or non-exact session usage closes the reuse path because remaining budget
     cannot be proven.
 19. **Facts do not depend on an LLM.** Validated host results, lifecycle
     operations, and compact current state produce dashboard facts. The display
@@ -139,8 +144,8 @@ decision.
 After PSOC:
 
 - choose bounded work packages and decide whether compatible assignments can
-  share one worker batch; batch known compatible ready assignments before
-  considering follow-up reuse;
+  share one worker batch; derive known compatible ready assignments from the
+  durable queued ledger and batch them before considering follow-up reuse;
 - require test-first implementation for behavior changes;
 - wait for and consume every writer or fixer report, then run focused tests and
   the project harness and record the report and commit checkpoint;
@@ -194,10 +199,13 @@ before further dispatch when that predicate fires. Keep a session open only
 while its exact compatibility signature and known near-term work make reuse
 more valuable than closure. Give every reusable session an accepted-follow-up
 cap and total effective token budget. `harnessctl decide` defaults to one
-accepted follow-up and 200,000 effective tokens; lower either value freely and
-raise it only with recorded evidence. Record normalized non-overlapping usage
-before release. Unknown usage, either exhausted budget, or a changed signature
-ends reuse. A terminal session always has `current_task_id=null`.
+accepted follow-up and 200,000 effective tokens. Its flags may lower either
+value but reject increases until a versioned durable policy carries the
+supporting evidence. Record complete exact normalized usage linked to the
+current assignment before release. Usage run, task, and session ownership must
+agree. Unknown or non-exact usage, either exhausted budget, or a changed
+signature ends reuse. Busy sessions have one current task; idle and terminal
+sessions always have `current_task_id=null`.
 
 Determine role, risk, uncertainty, and quality floors before optimizing token
 cost. Security-sensitive, destructive, and control-plane changes have a deep
@@ -253,11 +261,14 @@ risks, and report location.
 ## Session Reuse Boundary
 
 Batch compatible assignments when role, required profile, risk, write scope,
-base revision, dependency order, and review boundary align. Reuse is supported
-only after all known compatible ready work has first been considered for one
-bounded batch. A follow-up requires an exact session signature, an atomic
+base revision, dependency order, and review boundary align. Derive the ready
+set from durable queued state, never a caller-supplied count. Reuse is
+supported only after all known compatible ready work has first been considered
+for one bounded batch. A follow-up requires an exact session signature, an atomic
 `idle` to `busy` claim, known normalized usage, remaining accepted-follow-up
-capacity, and remaining effective-token budget. Record `reuse_count` only after
+capacity, and remaining effective-token budget. Only complete exact usage
+linked to the current assignment may return that Session to idle. Record
+`reuse_count` only after
 the host accepts the follow-up. Refresh a still-unassigned queued task's base
 revision with the compare-and-swap `task refresh-revision` command; if its
 intent, scope, or compatibility changed, replan or register it only when ready.
@@ -278,8 +289,8 @@ A task is not complete until:
 - every configured independent review or quality gate passes, and all Critical
   and Important findings are fixed or explicitly escalated;
 - every harness-created session is `closed`, or is `failed`/`unknown` with
-  `final_reason` and next action; every terminal session has no current
-  assignment;
+  `final_reason` and next action; every busy session has one current task and
+  every idle or terminal session has none;
 - every temporary or replacement session is validly busy/idle for known
   compatible work or closed when its expiry predicate fires;
 - the controller runs the final lifecycle audit and records progress in durable

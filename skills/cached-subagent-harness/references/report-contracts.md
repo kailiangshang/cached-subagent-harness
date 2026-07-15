@@ -63,7 +63,11 @@ Lifecycle rules:
 - set `write_scope=none` for read-only roles; set explicit paths for `worker` and `fixer`.
 - for temporary replacement agents, record the expiry condition in `next_action`, then close the agent when it is superseded.
 - for reusable sessions, record accepted-follow-up and total effective-token
-  limits in `session_budget`; terminal rows have no current assignment.
+  limits in `session_budget`; runtime overrides may lower release defaults but
+  cannot raise them. Busy rows have one current task; idle and terminal rows
+  have none.
+- record usage only when run, task, and session ownership agree. A reusable
+  release requires complete exact usage linked to that current assignment.
 
 ## Status Names
 

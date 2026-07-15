@@ -437,11 +437,50 @@ def _complete_sum(rows: list[dict[str, Any]], field: str, coverage: bool) -> int
     return sum(value for value in values if value is not None)
 
 
+def _expected_worker_ids(workers: int) -> tuple[str, ...]:
+    if workers < 1 or workers > len(WORKER_SLICES):
+        raise ValueError(f"workers must be between 1 and {len(WORKER_SLICES)}")
+    return tuple(worker["id"] for worker in WORKER_SLICES[:workers])
+
+
+def _usage_observation_is_exact(row: dict[str, Any]) -> bool:
+    if row.get("usage_observed") is not True:
+        return False
+    quality = str(row.get("telemetry_quality", "unknown"))
+    if quality not in {"exact", "partial", "estimated", "unsupported", "unknown"}:
+        raise ValueError(f"invalid telemetry_quality: {quality}")
+    values = {
+        field: _optional_token(row.get(field), field)
+        for field in (*NORMALIZED_TOKEN_FIELDS, *PROVIDER_TOKEN_FIELDS)
+    }
+    complete = all(value is not None for value in values.values())
+    if quality == "exact" and not complete:
+        raise ValueError("exact telemetry row is missing required token fields")
+    if complete:
+        if (
+            values["input_tokens"] + values["cache_read_tokens"]
+            != values["provider_input_tokens"]
+        ):
+            raise ValueError(
+                "input_tokens + cache_read_tokens must equal provider_input_tokens"
+            )
+        if (
+            values["output_tokens"] + values["reasoning_tokens"]
+            != values["provider_output_tokens"]
+        ):
+            raise ValueError(
+                "output_tokens + reasoning_tokens must equal provider_output_tokens"
+            )
+    return quality == "exact" and complete
+
+
 def summarize_observations(
     observations: list[dict[str, Any]],
     *,
     workers: int,
 ) -> dict[str, dict[str, Any]]:
+    expected_workers = set(_expected_worker_ids(workers))
+    expected_quality_gates = {gate["name"] for gate in QUALITY_GATES}
     summary: dict[str, dict[str, Any]] = {
         mode: {
             "event_count": 0,
@@ -449,6 +488,7 @@ def summarize_observations(
             "workers_closed": 0,
             "final_status": "not-observed",
             "quality_gates_passed": False,
+            "quality_gates_seen": [],
             "usage_observation_count": 0,
             "workers_with_usage": 0,
             "telemetry_quality": "unknown",
@@ -465,38 +505,70 @@ def summarize_observations(
         for mode in MODES
     }
     workers_by_mode: dict[str, set[str]] = {mode: set() for mode in MODES}
+    lifecycle_by_mode: dict[str, dict[str, set[str]]] = {
+        mode: {worker: set() for worker in expected_workers} for mode in MODES
+    }
     latest_event_by_worker: dict[str, dict[str, str]] = {mode: {} for mode in MODES}
     usage_rows_by_mode: dict[str, list[dict[str, Any]]] = {
         mode: [] for mode in MODES
     }
     usage_workers_by_mode: dict[str, set[str]] = {mode: set() for mode in MODES}
+    usage_rows_exact_by_mode: dict[str, list[bool]] = {mode: [] for mode in MODES}
+    quality_gates_by_mode: dict[str, set[str]] = {mode: set() for mode in MODES}
 
     for observation in observations:
         mode = str(observation["mode"])
         worker = str(observation["worker"])
         event = str(observation["event"])
+        if mode not in MODES:
+            raise ValueError(f"invalid observation mode: {mode}")
+        if worker not in expected_workers:
+            raise ValueError(f"unknown worker for {workers}-worker run: {worker}")
         mode_summary = summary[mode]
 
         mode_summary["event_count"] += 1
         events_by_type = mode_summary["events_by_type"]
         events_by_type[event] = events_by_type.get(event, 0) + 1
         if event == "quality_passed":
-            mode_summary["quality_gates_passed"] = True
+            quality_gate = str(observation.get("quality_gate", ""))
+            if quality_gate not in expected_quality_gates:
+                raise ValueError(f"invalid or missing quality_gate: {quality_gate}")
+            if quality_gate in quality_gates_by_mode[mode]:
+                raise ValueError(f"duplicate quality gate event: {mode}/{quality_gate}")
+            quality_gates_by_mode[mode].add(quality_gate)
         workers_by_mode[mode].add(worker)
         if event in REQUIRED_RUNTIME_EVENTS:
+            if event in lifecycle_by_mode[mode][worker]:
+                raise ValueError(f"duplicate lifecycle event: {mode}/{worker}/{event}")
+            lifecycle_by_mode[mode][worker].add(event)
             latest_event_by_worker[mode][worker] = event
         if observation.get("usage_observed") is True:
+            exact = _usage_observation_is_exact(observation)
             usage_rows_by_mode[mode].append(observation)
-            usage_workers_by_mode[mode].add(worker)
+            usage_rows_exact_by_mode[mode].append(exact)
+            if exact:
+                usage_workers_by_mode[mode].add(worker)
 
     for mode in MODES:
         mode_summary = summary[mode]
         mode_summary["workers_seen"] = len(workers_by_mode[mode])
         mode_summary["workers_closed"] = sum(
-            1 for event in latest_event_by_worker[mode].values() if event == "closed"
+            1
+            for worker in expected_workers
+            if "closed" in lifecycle_by_mode[mode][worker]
+        )
+        quality_gates_seen = quality_gates_by_mode[mode]
+        mode_summary["quality_gates_seen"] = [
+            gate["name"] for gate in QUALITY_GATES if gate["name"] in quality_gates_seen
+        ]
+        mode_summary["quality_gates_passed"] = (
+            quality_gates_seen == expected_quality_gates
         )
         usage_rows = usage_rows_by_mode[mode]
-        coverage = len(usage_workers_by_mode[mode]) >= workers
+        coverage = (
+            usage_workers_by_mode[mode] == expected_workers
+            and all(usage_rows_exact_by_mode[mode])
+        )
         mode_summary["usage_observation_count"] = len(usage_rows)
         mode_summary["workers_with_usage"] = len(usage_workers_by_mode[mode])
         for field in (*NORMALIZED_TOKEN_FIELDS, *PROVIDER_TOKEN_FIELDS):
@@ -512,7 +584,11 @@ def summarize_observations(
             mode_summary["telemetry_quality"] = "partial"
         if mode_summary["event_count"] == 0:
             mode_summary["final_status"] = "not-observed"
-        elif mode_summary["workers_closed"] >= workers:
+        elif all(
+            set(REQUIRED_RUNTIME_EVENTS).issubset(lifecycle_by_mode[mode][worker])
+            and latest_event_by_worker[mode].get(worker) == "closed"
+            for worker in expected_workers
+        ):
             mode_summary["final_status"] = "closed"
         elif mode_summary["workers_seen"] >= workers:
             mode_summary["final_status"] = "partial"
@@ -600,6 +676,8 @@ def build_game_dev_report(
                 "provider_input_tokens",
                 "provider_output_tokens",
                 "usage_observed",
+                "telemetry_quality",
+                "quality_gate",
                 "elapsed_ms",
                 "note",
             ],

@@ -23,15 +23,22 @@ SKILL_INVARIANT_END = "\n## Controller Loop"
 REQUIRED_METHOD_SEMANTICS = [
     "Batch known compatible ready assignments before attempting follow-up "
     "reuse.",
+    "Derive the compatible ready set from durable queued state rather than a "
+    "caller-supplied count.",
     "Reuse only after an exact signature match and an atomic `idle` to `busy` "
     "claim; increment reuse only after the host accepts the follow-up.",
     "Every reusable session has an accepted-follow-up cap and a total "
     "effective token budget; unknown usage, either exhausted budget, or a "
     "changed compatibility signature closes the reuse path.",
+    "Only complete exact usage linked to the current assignment can release a "
+    "session for reuse.",
+    "Usage run, task, and session ownership must agree.",
+    "The runtime CLI can lower reuse limits but rejects increases until a "
+    "versioned durable policy authorizes them.",
     "Refresh a queued task's base revision only through a compare-and-swap "
     "update while the task is unassigned; otherwise replan or register it "
     "when ready.",
-    "A terminal session has no current assignment.",
+    "A busy session has one current task; an idle or terminal session has none.",
     "When a host cannot follow up, use one bounded worker brief and report "
     "reuse as unsupported.",
     "Never emulate reuse with an unrestricted permanent role pool.",

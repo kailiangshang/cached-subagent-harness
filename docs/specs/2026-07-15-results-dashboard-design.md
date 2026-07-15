@@ -177,12 +177,18 @@ host handles, prompts, and task-internal next actions.
 
 ## Signal Sweep A/B Validation
 
+Historical RED protocol only: the topology below was executed to test the old
+reuse hypothesis and produced the retained 5.90× regression. Do not use it as
+the release routing policy; the runtime now derives and batches durable queued
+work first and permits only exact-usage, budgeted later follow-ups.
+
 Run two isolated implementations from the same fixed brief and starting state:
 
 - baseline: four serial, fresh Codex sessions, each receiving the complete
   embedded handoff;
-- Harness: one compatible Codex session receiving the initial assignment and
-  three accepted follow-ups using stable instructions and path-based context.
+- rejected Harness arm: one compatible Codex session receiving the initial
+  assignment and three accepted follow-ups using stable instructions and
+  path-based context.
 
 Use the same model, reasoning profile, sandbox policy, ordered work slices, and
 quality gates. Serialize write-heavy work in both modes. Capture Codex JSONL

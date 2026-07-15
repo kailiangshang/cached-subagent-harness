@@ -162,6 +162,7 @@ budgets.
 - `skills/cached-subagent-harness/references/gates.md`
 - `skills/cached-subagent-harness/references/report-contracts.md`
 - `skills/cached-subagent-harness/scripts/harnessctl/src/domain.rs`
+- `skills/cached-subagent-harness/scripts/harnessctl/src/bundle.rs`
 - `skills/cached-subagent-harness/scripts/harnessctl/src/store.rs`
 - `skills/cached-subagent-harness/scripts/harnessctl/src/sessions.rs`
 - `skills/cached-subagent-harness/scripts/harnessctl/src/accounting.rs`
@@ -175,6 +176,7 @@ budgets.
 - `scripts/test_game_dev_ab_benchmark.py`
 - `scripts/test_standalone_contract.py`
 - `scripts/validate-release.py`
+- `scripts/verify.sh`
 - `docs/game-dev-ab-benchmark.md`
 
 ## Tests
@@ -260,12 +262,62 @@ budgets.
   changes; rebuilt the release binary and passed release metadata, Rust 44/44,
   Python 6/6 + 9/9 + 3/3 + 12/12, Clippy, Standalone install, prompt-cache,
   token-effectiveness, game A/B, and final lifecycle audit gates.
+- Independent review RED: both reviewers returned `Ready: No`, with zero
+  Critical findings. Their overlapping Important findings reduced to five
+  root causes: caller-asserted batching, stale/non-exact release evidence,
+  cross-run usage ownership, contradictory Session/task state, and incomplete
+  Benchmark comparability proof. A sixth policy gap allowed CLI budget raises
+  without durable evidence.
+- Authoritative-batch RED: three compatible queued tasks plus a falsified ready
+  count of one selected `ReuseSession`. The count field is removed; one
+  `BEGIN IMMEDIATE` decision now derives the full compatible unassigned queued
+  set, and assigned queued tasks cannot be bundled or claimed twice.
+- Usage-gate RED: all-numeric partial/estimated/unsupported/unknown rows proved
+  a reuse budget, and old exact rows could release a later assignment. Reuse
+  now requires every counted row to be exact and complete; release requires a
+  complete exact task/session observation at or after the accepted assignment's
+  last-use boundary.
+- Ownership RED: independently valid foreign keys allowed a usage row to mix a
+  Run with another Run's Task or Session. Transactional checks now reject task,
+  Session, and linked task/Session mismatches without changing either Run.
+- Session-state RED: `idle + current_task`, `busy + no task`, and duplicate task
+  ownership were accepted. State-shape validation, unassigned-only linking,
+  verified busy-to-idle release, null-only idle claims, and terminal cleanup now
+  enforce one owner.
+- Budget-policy RED: CLI flags could raise the one-follow-up/200,000-Token
+  defaults without persistent evidence. Current runtime flags are lower-only;
+  increases are rejected until a future versioned durable policy exists.
+- Benchmark-evidence RED: closed-only workers, unknown worker IDs, inconsistent
+  provider splits, and one generic quality event could produce comparable exact
+  savings. The report now requires every named Worker lifecycle event, exact
+  normalized arithmetic, exact expected worker IDs, and one event per named
+  quality gate; duplicates and inconsistent splits fail closed.
+- `cargo test --manifest-path .../Cargo.toml` — PASS, 50 tests after review
+  fixes.
+- `cargo clippy --manifest-path .../Cargo.toml --all-targets -- -D warnings` —
+  PASS after review fixes.
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest
+  scripts/test_game_dev_ab_benchmark.py` — PASS, 15 tests after review fixes.
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest
+  scripts/test_standalone_contract.py` — PASS, 9 tests after review fixes.
+- `python3 scripts/validate-release.py .`, Skill quick validation,
+  `node --check`, current diff check, and full `8c6263b` range diff check —
+  PASS after review fixes.
+- `scripts/verify.sh` — PASS on 2026-07-15 after the complete review-fix pass;
+  rebuilt the release binary and passed release metadata, Rust 50/50,
+  Benchmark Python 15/15, Standalone 9/9, remaining Python 6/6 + 3/3,
+  Clippy, prompt-cache, token-effectiveness, game A/B, and final lifecycle
+  audit gates.
 
 ## Review Findings
 
-Implementation self-check found no open correctness issue. Independent
-spec/compliance and code/security reviews remain the next gate; all Critical
-and Important findings must be closed before final status.
+Initial spec/compliance review by `final_reviewer` and code/security review by
+`focused_reviewer`: zero Critical findings, `Ready: No`. All Important findings
+were reproduced or verified against source and addressed in one controller fix
+pass. The arbitrary budget-raise suggestion was resolved by rejecting raises
+instead of adding a migration/table, preserving the lightweight product
+boundary. Closure re-review is pending; final status remains incomplete until
+both reviewers return `Ready: Yes` with no open Critical/Important finding.
 
 ## Risks
 
@@ -283,10 +335,10 @@ and Important findings must be closed before final status.
 
 ## Next Actions
 
-1. Run independent spec/compliance and code/security reviews using the two
-   existing read-only reviewer handles.
-2. Batch-fix any Critical or Important findings and re-review.
-3. Re-run all release gates, commit the implementation, and complete the final
+1. Commit the review-fix checkpoint and run closure re-review with both existing
+   read-only reviewer handles.
+2. Close any remaining Critical or Important finding.
+3. Re-run all release gates and complete the final
    lifecycle audit.
 4. Start the Harness-only Dashboard from the exact completed Signal Sweep
    ledger and verify `/health` plus `/api/status`.
@@ -294,8 +346,10 @@ and Important findings must be closed before final status.
 ## External Agent Reconciliation
 
 The environment exposes existing `final_reviewer` and `focused_reviewer`
-handles. They were not spawned by this task and remain outside the task budget
-until one is deliberately assigned the final read-only review.
+handles. They were not spawned by this task and remain outside the spawn
+budget. Both were deliberately assigned read-only final review, waited, and
+reported `Ready: No` without modifying the checkout; both will be reused once
+for closure review.
 
 ## Degraded Mode Notes
 

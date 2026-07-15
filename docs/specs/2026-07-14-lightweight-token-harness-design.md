@@ -236,12 +236,17 @@ itself without an explicit controller command. After a host accepts a follow-up,
 the controller records the reuse; rejected follow-up does not increment
 `reuse_count` but its consumed Tokens remain retry cost.
 
-Known compatible ready work is always batched before follow-up reuse. Each
-reusable Session has an accepted-follow-up cap and an observed total-effective
-Token cap. Runtime defaults are one follow-up and 200,000 Tokens. Missing or
+Known compatible ready work is always derived from durable queued state and
+batched before follow-up reuse; a caller-supplied count is not authoritative.
+Each reusable Session has an accepted-follow-up cap and an observed
+total-effective Token cap. Runtime defaults are one follow-up and 200,000
+Tokens. Flags may lower these release defaults but cannot raise them; a future
+increase requires a versioned durable evidence policy. Missing, non-exact, or
 non-normalizable usage, either exhausted cap, or a changed signature makes the
-Session ineligible. A queued task may refresh a still-valid base revision only
-through a compare-and-swap update while unassigned.
+Session ineligible. Only complete exact usage linked to the current assignment
+can release it to idle, and usage run/task/session ownership must agree. A
+queued task may refresh a still-valid base revision only through a
+compare-and-swap update while unassigned.
 
 ## Model Routing
 
@@ -329,11 +334,12 @@ as the cheaper successful result.
 2. `task add` records ready work and its floors.
 3. `task refresh-revision` compare-and-swaps a still-valid queued task after a
    verified checkpoint when needed.
-4. `decide` returns main, batch, reuse, or spawn with reasons and explicit
-   Session budgets.
+4. `decide` derives compatible queued work and returns main, batch, reuse, or
+   spawn with reasons and lower-only Session budget flags.
 5. `session record` stores the actual host handle and requested/actual model.
 6. `task update` records progress, report, acceptance, or failure.
-7. `usage add` records normalized observed phase usage before release/reuse.
+7. `usage add` atomically validates ownership and records exact normalized
+   assignment usage before release/reuse.
 8. `status`, `watch`, and `dashboard` read the same current-state queries.
 9. `audit` rejects unfinished tasks, nonterminal Sessions, or terminal Sessions
    that retain a current assignment.
@@ -368,7 +374,9 @@ to the page. No prompt, source content, secret, or long log reaches the browser.
 - Invalid state transitions fail without partial writes.
 - A busy or incompatible session cannot be reused.
 - Known compatible ready work batches before an idle Session is considered.
-- Unknown usage or an exhausted Session budget makes reuse ineligible.
+- Non-exact/stale usage, an ownership mismatch, or an exhausted Session budget
+  makes reuse ineligible.
+- Busy Sessions have one current task; idle and terminal Sessions have none.
 - Missing host template fields produce a configuration error before command
   rendering.
 - Unsupported follow-up selects batch or spawn; it is not emulated by a
@@ -385,6 +393,8 @@ to the page. No prompt, source content, secret, or long log reaches the browser.
 - exact task-bundling compatibility dimensions;
 - atomic session claim and concurrent double-claim rejection;
 - batch-first ordering and accepted-follow-up/Token budget exhaustion;
+- authoritative queued-set derivation, exact fresh usage, and cross-run
+  ownership rejection;
 - compare-and-swap queued revision refresh and terminal task-link cleanup;
 - session reuse invalidation by every signature field;
 - profile floors and manual elevation;
@@ -438,7 +448,9 @@ Implementation will:
 - Six compatible ready tasks require one bounded batch and no preplanned
   follow-up chain.
 - Later reuse stops on unknown usage, either exhausted budget, or a changed
-  signature; terminal Sessions have no current assignment.
+  signature. Only exact current-assignment usage can release it; busy Sessions
+  have one current task and idle/terminal Sessions have none.
+- Runtime budget flags can lower but never raise release defaults.
 - Changing any reuse-signature field prevents reuse.
 - Light, standard, and deep routing is deterministic and provider-neutral.
 - Requested and actual model data remain separate.

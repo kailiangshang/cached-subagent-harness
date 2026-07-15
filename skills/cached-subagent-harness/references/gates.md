@@ -65,10 +65,14 @@ Discussion agents are read-only. Use them for product, architecture, or skill di
 Use exactly one write-active `worker` at a time. One worker may execute one
 bounded batch of compatible assignments when role, required capability, risk,
 write scope, base revision, dependency order, and review boundary align.
-Batch all known compatible ready assignments before attempting a follow-up.
+Derive all known compatible ready assignments from durable queued state and
+batch them before attempting a follow-up; never trust a caller-supplied count.
 Every reusable session has an accepted-follow-up cap and total effective token
-budget. Record normalized usage before release; unknown usage, either exhausted
-budget, or a changed signature makes the session ineligible for reuse.
+budget. Runtime flags may lower but not raise the release defaults. Record
+complete exact normalized usage linked to the current assignment before
+release, and require run/task/session ownership to agree; non-exact usage,
+either exhausted budget, or a changed signature makes the session ineligible
+for reuse.
 
 Worker constraints:
 
@@ -134,7 +138,8 @@ Before final response, audit the report ledger:
 - every harness-created agent is `closed`; or
 - the row is `failed`, `abandoned`, or `externally-unknown` with `final_reason` and next action.
 - every temporary replacement agent spawned in the current turn is either the active chosen agent or is closed as superseded.
-- every terminal session has no current assignment.
+- every busy session has one current task; every idle or terminal session has
+  no current assignment.
 
 Completed or closed agents may remain visible in UI. If the platform lacks agent listing, audit the handles recorded by this harness. If the user or UI reports additional unknown agents that affect budget or cleanup, request one `/agent` reconciliation and record unknown handles as `externally-unknown`.
 

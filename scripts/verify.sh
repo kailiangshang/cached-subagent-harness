@@ -133,8 +133,7 @@ fi
   --db "$tmp_dir/harness.db" \
   --run verify-run \
   --task verify-task \
-  --host codex \
-  --related-ready 1 > "$tmp_dir/decision.json"
+  --host codex > "$tmp_dir/decision.json"
 "$bin" session record \
   --db "$tmp_dir/harness.db" \
   --run verify-run \

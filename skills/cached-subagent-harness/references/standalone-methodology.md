@@ -12,16 +12,21 @@ approved-plan contradictions the controller cannot resolve.
 Group related assignments only when role, required capability, risk, write
 scope, base revision, dependency order, and independence boundary are
 compatible. Execute trivial work on main. Batch known compatible ready
-assignments before attempting follow-up reuse. Reuse only after an exact
-signature match and an atomic `idle` to `busy` claim; increment reuse only after
-the host accepts the follow-up. Every reusable session has an accepted-follow-up
-cap and a total effective token budget; unknown usage, either exhausted budget,
-or a changed compatibility signature closes the reuse path. Refresh a queued
-task's base revision only through a compare-and-swap update while the task is
-unassigned; otherwise replan or register it when ready. A terminal session has
-no current assignment. When a host cannot follow up, use one bounded worker
-brief and report reuse as unsupported. Never emulate reuse with an unrestricted
-permanent role pool.
+assignments before attempting follow-up reuse. Derive the compatible ready set
+from durable queued state rather than a caller-supplied count. Reuse only after
+an exact signature match and an atomic `idle` to `busy` claim; increment reuse
+only after the host accepts the follow-up. Every reusable session has an
+accepted-follow-up cap and a total effective token budget; unknown usage, either
+exhausted budget, or a changed compatibility signature closes the reuse path.
+Only complete exact usage linked to the current assignment can release a
+session for reuse. Usage run, task, and session ownership must agree. The
+runtime CLI can lower reuse limits but rejects increases until a versioned
+durable policy authorizes them. Refresh a queued task's base revision only
+through a compare-and-swap update while the task is unassigned; otherwise
+replan or register it when ready. A busy session has one current task; an idle
+or terminal session has none. When a host cannot follow up, use one bounded
+worker brief and report reuse as unsupported. Never emulate reuse with an
+unrestricted permanent role pool.
 
 ## Quality-Constrained Routing
 
@@ -58,9 +63,10 @@ is visible, but it does not make the standalone core degraded.
 | Decision | Required action |
 |---|---|
 | Trivial, no isolation value | Execute on main and record the assignment. |
-| Known compatible ready work | Batch into one bounded worker brief before follow-up reuse. |
-| One later compatible task, usage and follow-up budgets remain | Atomically claim the idle session. |
+| Known compatible ready work | Derive the durable queued set and batch it before follow-up reuse. |
+| One later compatible task, exact assignment usage and both budgets remain | Atomically claim the idle session. |
 | Usage unknown or either reuse budget exhausted | Close the reuse path; use main, batch, or spawn. |
+| Requested limit exceeds a release default | Reject it until a versioned durable policy carries the evidence. |
 | Queued task still valid after a verified commit | Compare-and-swap its base revision before routing. |
 | Incompatible role, model, risk, scope, base, or review boundary | Use an isolated execution path. |
 | Mandatory review trigger | Create an independent reviewer assignment. |
@@ -81,8 +87,10 @@ is visible, but it does not make the standalone core degraded.
 
 - Fresh agents for compatible micro-assignments without a recorded reason.
 - Repeated follow-ups when the work was ready for one batch.
-- Reuse with unknown usage or an exhausted session budget.
-- A terminal session that still names a current task.
+- Reuse based on a caller-supplied ready count, stale/non-exact usage, or an
+  exhausted session budget.
+- A busy session without one current task, or an idle/terminal session that
+  still names one.
 - Calling unrequested optional-method absence degraded.
 - Selecting a route before role/risk/quality floors.
 - Skipping tests, review, documentation, or audit to save tokens.

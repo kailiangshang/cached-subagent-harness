@@ -1,6 +1,6 @@
 # Signal Sweep Real A/B Evidence
 
-Date: 2026-07-15  
+Date: 2026-07-15
 Status: comparable quality, exact Codex CLI telemetry, original reuse strategy rejected
 
 ## Decision
@@ -92,20 +92,23 @@ not prevent cumulative processed context from dominating total Token use.
 
 ## Corrections Driven by This RED Case
 
-1. `BatchThenSpawn` now wins before idle-session reuse whenever multiple
-   compatible assignments are already ready.
+1. `BatchThenSpawn` now wins before idle-session reuse whenever the durable
+   queued ledger contains multiple compatible assignments; a caller-supplied
+   ready count is not authoritative.
 2. `harnessctl decide` defaults each reusable Session to one accepted follow-up
-   and 200,000 effective Tokens. Both are explicit decision inputs; unknown
-   usage or either exhausted limit makes reuse ineligible.
-3. Usage must be normalized and recorded before a Session can be reclaimed.
-   Missing telemetry is not treated as zero.
+   and 200,000 effective Tokens. Runtime flags may lower but cannot raise these
+   defaults; unknown usage or either exhausted limit makes reuse ineligible.
+3. Complete exact normalized usage linked to the current assignment must be
+   recorded before a Session can be reclaimed, and run/task/session ownership
+   must agree. Missing or non-exact telemetry is not treated as zero.
 4. A queued task's base revision can be refreshed only with a compare-and-swap
    update while it remains unassigned.
 5. Terminal Sessions clear `current_task_id`, and final audit rejects legacy
    terminal rows that retain an assignment.
 6. The Benchmark counts cached, reasoning, and retry Token categories and
-   computes observed savings only after both arms explicitly pass equal quality
-   gates.
+   computes observed savings only after every expected worker completes all
+   lifecycle events, provider totals match normalized splits, and both arms
+   explicitly pass every named quality gate.
 
 ## Interpretation Limit
 

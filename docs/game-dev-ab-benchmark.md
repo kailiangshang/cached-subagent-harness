@@ -56,16 +56,16 @@ Latest local estimate:
 | Metric | Baseline embedded handoff | Cached harness handoff |
 |---|---:|---:|
 | Prompt count | 4 | 4 |
-| Estimated tokens total | 3735 | 2248 |
-| Average tokens per prompt | 933.75 | 562.0 |
-| Cache-adjusted estimated tokens | 3735 | 865 |
-| Stable prefix tokens counted once | n/a | 461 |
-| Dynamic tail tokens total | n/a | 404 |
-| Stable prefix ratio | n/a | 82.04% |
+| Estimated tokens total | 3727 | 2232 |
+| Average tokens per prompt | 931.75 | 558.0 |
+| Cache-adjusted estimated tokens | 3727 | 852 |
+| Stable prefix tokens counted once | n/a | 460 |
+| Dynamic tail tokens total | n/a | 392 |
+| Stable prefix ratio | n/a | 82.44% |
 
-Raw estimated savings: `39.81%`
+Raw estimated savings: `40.11%`
 
-Cache-adjusted estimated savings: `76.84%`
+Cache-adjusted estimated savings: `77.14%`
 
 Break-even dispatches: `1`
 
@@ -124,8 +124,8 @@ event that actually carries one complete usage observation:
 {"mode":"baseline","worker":"worker-01","event":"spawned","elapsed_ms":0}
 {"mode":"baseline","worker":"worker-01","event":"running","elapsed_ms":30000}
 {"mode":"baseline","worker":"worker-01","event":"reported","elapsed_ms":180000}
-{"mode":"baseline","worker":"worker-01","event":"closed","usage_observed":true,"input_tokens":200,"cache_read_tokens":800,"output_tokens":100,"reasoning_tokens":20,"cache_write_tokens":0,"provider_input_tokens":1000,"provider_output_tokens":120,"elapsed_ms":181000}
-{"mode":"baseline","worker":"worker-04","event":"quality_passed","note":"all equal-quality gates passed"}
+{"mode":"baseline","worker":"worker-01","event":"closed","usage_observed":true,"telemetry_quality":"exact","input_tokens":200,"cache_read_tokens":800,"output_tokens":100,"reasoning_tokens":20,"cache_write_tokens":0,"provider_input_tokens":1000,"provider_output_tokens":120,"elapsed_ms":181000}
+{"mode":"baseline","worker":"worker-04","event":"quality_passed","quality_gate":"engine-tests"}
 ```
 
 Supported `mode` values are `baseline` and `cached_harness`.
@@ -149,7 +149,10 @@ The report aggregates final status, event counts, workers seen, workers closed,
 noncached input, cached input, visible output, reasoning, provider totals,
 retries, and total effective Tokens. A missing category or worker observation
 remains unknown. Runtime savings are calculated only when both arms are closed,
-have exact telemetry, and explicitly emit `quality_passed`.
+every expected worker has emitted each required lifecycle event, all normalized
+rows are exact and arithmetically match provider totals, and each named quality
+gate explicitly emits one `quality_passed` event. Unknown workers, duplicate
+lifecycle/gate events, and inconsistent provider splits are rejected.
 
 For Codex `turn.completed.usage`, normalize without overlap:
 

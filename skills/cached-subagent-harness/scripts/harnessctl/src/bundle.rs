@@ -3,6 +3,8 @@ use crate::domain::{TaskBundle, TaskRecord, TaskStatus};
 pub(crate) fn compatible_for_batch(left: &TaskRecord, right: &TaskRecord) -> bool {
     left.status == TaskStatus::Queued
         && right.status == TaskStatus::Queued
+        && left.session_id.is_none()
+        && right.session_id.is_none()
         && left.run_id == right.run_id
         && left.package_key == right.package_key
         && left.role == right.role
@@ -19,7 +21,7 @@ pub(crate) fn compatible_for_batch(left: &TaskRecord, right: &TaskRecord) -> boo
 pub(crate) fn bundle_ready(tasks: &[TaskRecord]) -> Vec<TaskBundle> {
     let mut ready = tasks
         .iter()
-        .filter(|task| task.status == TaskStatus::Queued)
+        .filter(|task| task.status == TaskStatus::Queued && task.session_id.is_none())
         .cloned()
         .collect::<Vec<_>>();
     ready.sort_by(|left, right| {
@@ -128,6 +130,9 @@ mod tests {
         variants.push(changed);
         let mut changed = task("task-blocked", 9);
         changed.status = TaskStatus::Blocked;
+        variants.push(changed);
+        let mut changed = task("task-assigned", 10);
+        changed.session_id = Some("session-1".into());
         variants.push(changed);
 
         for variant in variants {

@@ -474,6 +474,11 @@ git commit -m "feat: make the Signal Sweep benchmark runnable"
 
 ## Task 4: Complete Real Signal Sweep A/B and Dashboard Preview
 
+> Historical RED execution record: Steps 2–5 below describe the rejected
+> one-Session/three-follow-up experiment, not the current runtime policy. Do
+> not repeat this topology for normal routing; derive and batch durable queued
+> work first, then allow only exact-usage, bounded later follow-ups.
+
 **Generated working directory:** `/tmp/signal-sweep-ab-20260715`
 
 **Durable output:**

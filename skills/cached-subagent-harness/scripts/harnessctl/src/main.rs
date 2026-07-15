@@ -452,6 +452,30 @@ fn parse_u64_value_or(parsed: &ParsedArgs, name: &str, default: u64) -> Result<u
     }
 }
 
+fn parse_reuse_budget(parsed: &ParsedArgs) -> Result<domain::ReuseBudget, String> {
+    let budget = domain::ReuseBudget {
+        max_accepted_followups: parse_u64_value_or(
+            parsed,
+            "max-session-reuses",
+            sessions::DEFAULT_MAX_SESSION_REUSES,
+        )?,
+        max_effective_tokens: parse_u64_value_or(
+            parsed,
+            "max-session-effective-tokens",
+            sessions::DEFAULT_MAX_SESSION_EFFECTIVE_TOKENS,
+        )?,
+    };
+    if budget.max_accepted_followups > sessions::DEFAULT_MAX_SESSION_REUSES
+        || budget.max_effective_tokens > sessions::DEFAULT_MAX_SESSION_EFFECTIVE_TOKENS
+    {
+        return Err(
+            "raising a session reuse budget requires durable evidence; this CLI only permits lowering release defaults"
+                .into(),
+        );
+    }
+    Ok(budget)
+}
+
 fn open_store(parsed: &ParsedArgs) -> Result<Store, String> {
     Store::open(Path::new(&required_flag(parsed, "db")?))
 }
@@ -605,26 +629,13 @@ fn cmd_decide(args: &[String]) -> Result<(), String> {
         },
         trivial: parse_bool_value(&parsed, "trivial", false)?,
         isolation_required: parse_bool_value(&parsed, "isolation-required", false)?,
-        related_ready_count: usize::try_from(parse_u64_value(&parsed, "related-ready")?)
-            .map_err(|_| "--related-ready is too large".to_string())?,
         delegation_value_exceeds_cost: parse_bool_value(
             &parsed,
             "delegation-value-exceeds-cost",
             true,
         )?,
         host_supports_followup: parse_bool_value(&parsed, "host-supports-followup", true)?,
-        reuse_budget: domain::ReuseBudget {
-            max_accepted_followups: parse_u64_value_or(
-                &parsed,
-                "max-session-reuses",
-                sessions::DEFAULT_MAX_SESSION_REUSES,
-            )?,
-            max_effective_tokens: parse_u64_value_or(
-                &parsed,
-                "max-session-effective-tokens",
-                sessions::DEFAULT_MAX_SESSION_EFFECTIVE_TOKENS,
-            )?,
-        },
+        reuse_budget: parse_reuse_budget(&parsed)?,
     };
     let dispatch = decide(&mut store, &request)?;
     store.append_activity(&ActivityInput {
@@ -875,6 +886,44 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reuse_budget_flags_can_only_lower_release_defaults() {
+        let raised = parse_args(
+            &[
+                "--max-session-reuses",
+                "2",
+                "--max-session-effective-tokens",
+                "200001",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>(),
+        )
+        .unwrap();
+        let error = parse_reuse_budget(&raised).unwrap_err();
+        assert!(error.contains("durable evidence"), "{error}");
+
+        let lowered = parse_args(
+            &[
+                "--max-session-reuses",
+                "0",
+                "--max-session-effective-tokens",
+                "100000",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>(),
+        )
+        .unwrap();
+        assert_eq!(
+            parse_reuse_budget(&lowered).unwrap(),
+            domain::ReuseBudget {
+                max_accepted_followups: 0,
+                max_effective_tokens: 100_000,
+            }
+        );
+    }
 
     #[test]
     fn run_update_command_marks_an_audited_run_complete() {
