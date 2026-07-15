@@ -75,6 +75,18 @@ class GameDevAbBenchmarkTests(unittest.TestCase):
 
             self.assertEqual(main.read_text(encoding="utf-8"), "// developed\n")
 
+    def test_cached_assignment_brief_names_the_exact_worker_slice(self) -> None:
+        work_dir = Path("/tmp/signal-sweep-test")
+        assignment = bench.build_cached_assignment_brief(work_dir, 1)
+        expected = bench.worker_slice(1)
+
+        self.assertIn(f"WORKER={expected['id']}", assignment)
+        self.assertIn(f"SLICE={expected['title']}", assignment)
+        self.assertIn(expected["task"], assignment)
+        self.assertIn(f"QUALITY_GATE={expected['quality_gate']}", assignment)
+        self.assertIn(str(work_dir / "signal-sweep-game-brief.md"), assignment)
+        self.assertIn("Do not spawn or delegate nested agents", assignment)
+
     def test_break_even_prefers_cached_after_prefix_is_amortized(self) -> None:
         self.assertEqual(
             bench.break_even_dispatches(

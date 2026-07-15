@@ -56,16 +56,16 @@ Latest local estimate:
 | Metric | Baseline embedded handoff | Cached harness handoff |
 |---|---:|---:|
 | Prompt count | 4 | 4 |
-| Estimated tokens total | 3727 | 2144 |
-| Average tokens per prompt | 931.75 | 536.0 |
-| Cache-adjusted estimated tokens | 3727 | 836 |
-| Stable prefix tokens counted once | n/a | 436 |
-| Dynamic tail tokens total | n/a | 400 |
-| Stable prefix ratio | n/a | 81.35% |
+| Estimated tokens total | 3727 | 2232 |
+| Average tokens per prompt | 931.75 | 558.0 |
+| Cache-adjusted estimated tokens | 3727 | 852 |
+| Stable prefix tokens counted once | n/a | 460 |
+| Dynamic tail tokens total | n/a | 392 |
+| Stable prefix ratio | n/a | 82.44% |
 
-Raw estimated savings: `42.47%`
+Raw estimated savings: `40.11%`
 
-Cache-adjusted estimated savings: `77.57%`
+Cache-adjusted estimated savings: `77.14%`
 
 Break-even dispatches: `1`
 

@@ -271,26 +271,49 @@ def build_baseline_prompts(work_dir: Path, workers: int) -> list[str]:
     return [build_baseline_prompt(work_dir, index) for index in range(workers)]
 
 
+def build_cached_assignment_brief(work_dir: Path, index: int) -> str:
+    slice_info = worker_slice(index)
+    return f"""Worker assignment for the approved Signal Sweep design.
+WORKER={slice_info['id']}
+SLICE={slice_info['title']}
+SHARED_BRIEF_PATH={work_dir / "signal-sweep-game-brief.md"}
+ALLOWED_WRITE_PATHS={",".join(slice_info['allowed_write_paths'])}
+QUALITY_GATE={slice_info['quality_gate']}
+
+Read SHARED_BRIEF_PATH before editing, then complete exactly this slice:
+{slice_info['task']}
+
+Follow the shared interface contract. Do not spawn or delegate nested agents.
+Write the required report and stay inside ALLOWED_WRITE_PATHS.
+"""
+
+
 def render_cached_prompts(harnessctl: Path, work_dir: Path, workers: int) -> list[str]:
-    brief = work_dir / "signal-sweep-game-brief.md"
+    shared_brief = work_dir / "signal-sweep-game-brief.md"
     ledger = work_dir / "cached-harness-agent-ledger.db"
-    brief.write_text(GAME_DEV_BRIEF, encoding="utf-8")
+    shared_brief.write_text(GAME_DEV_BRIEF, encoding="utf-8")
 
     prompts: list[str] = []
     for index in range(workers):
         slice_info = worker_slice(index)
+        assignment_brief = work_dir / f"cached-{slice_info['id']}-brief.md"
+        assignment_brief.write_text(
+            build_cached_assignment_brief(work_dir, index), encoding="utf-8"
+        )
         args = [
             "render-prompt",
             "--role",
             "worker",
             "--brief",
-            str(brief),
+            str(assignment_brief),
             "--report",
             str(work_dir / f"cached-{slice_info['id']}-report.md"),
             "--ledger",
             str(ledger),
             "--base-commit",
-            f"gamebench{index:02d}",
+            "HEAD",
+            "--context",
+            str(shared_brief),
         ]
         for allowed_path in slice_info["allowed_write_paths"]:
             args.extend(["--allowed-write-paths", allowed_path])
