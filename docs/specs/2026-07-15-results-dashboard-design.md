@@ -2,8 +2,8 @@
 
 ## Status
 
-Approved in conversation on 2026-07-15. Written-spec review pending before
-implementation planning.
+Approved in conversation and confirmed from the written specification on
+2026-07-15.
 
 ## Problem
 
