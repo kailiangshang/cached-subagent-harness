@@ -69,15 +69,17 @@ invariant wins.
 10. **Close deliberately.** Close expired, failed, abandoned, cancelled, and
     superseded sessions promptly. Every temporary or replacement session has an
     explicit expiry predicate before spawn; when it fires, close that session
-   before further dispatch. Keep a session open only while its compatibility
-   signature and known near-term work make reuse more valuable than closure. Final audit closes or
-    explicitly finalizes every session.
+    before further dispatch. Terminal sessions never retain a current
+    assignment. Keep a session open only while its compatibility signature,
+    known near-term work, and remaining reuse budget make reuse more valuable
+    than closure. Final audit closes or explicitly finalizes every session.
 11. **No uncontrolled fan-out.** Nested delegation remains disabled unless the
     user explicitly authorizes it and the budget records the reason.
-12. **Budget every session.** Initial per-run defaults remain at most two open
-    delegated sessions and four total spawned sessions. Idle reusable sessions
-    count against the open limit. Raising either limit requires an
-    evidence-backed budget.
+12. **Budget every session.** Every reusable session has both an
+    accepted-follow-up cap and a total effective token budget. Initial per-run
+    defaults remain at most two open delegated sessions and four total spawned
+    sessions. Idle reusable sessions count against the open limit. Raising any
+    limit requires an evidence-backed budget.
 
 ### P2: Context and token discipline
 
@@ -91,8 +93,10 @@ invariant wins.
     rediscover context already present there. Agents write full file reports and
     return only compact status and report location to the controller.
 15. **Subagents are investments.** Spawn only for real parallelism, context
-    isolation, capability separation, or independent judgment. Batch or reuse
-    related small assignments when that lowers complete-development cost.
+    isolation, capability separation, or independent judgment. Known
+    compatible ready work is batched before follow-up reuse. Reuse only while
+    observed total usage and the accepted-follow-up count remain inside their
+    budgets.
 16. **Quality-constrained optimization.** Select the lowest model and reasoning
     profile that satisfies role, risk, uncertainty, and quality floors. Count
     retries, escalation, review, and fixer work in total token use.
@@ -102,7 +106,9 @@ invariant wins.
 17. **Requested is not actual.** Record requested and observed host, model,
     reasoning, budget, status, and usage separately.
 18. **Unknown is honest.** Unsupported or unavailable telemetry remains
-    `unknown`; never convert it to zero, success, or an inferred fact.
+    `unknown`; never convert it to zero, success, or an inferred fact. Unknown
+    session usage closes the follow-up reuse path because remaining budget
+    cannot be proven.
 19. **Facts do not depend on an LLM.** Validated host results, lifecycle
     operations, and compact current state produce dashboard facts. The display
     never guesses missing state.
@@ -133,7 +139,8 @@ decision.
 After PSOC:
 
 - choose bounded work packages and decide whether compatible assignments can
-  share one worker batch;
+  share one worker batch; batch known compatible ready assignments before
+  considering follow-up reuse;
 - require test-first implementation for behavior changes;
 - wait for and consume every writer or fixer report, then run focused tests and
   the project harness and record the report and commit checkpoint;
@@ -185,7 +192,12 @@ Give every temporary or replacement session an expiry predicate before spawn,
 such as `superseded_by:<agent_id>` or `expires_when:original_resumed`. Close it
 before further dispatch when that predicate fires. Keep a session open only
 while its exact compatibility signature and known near-term work make reuse
-more valuable than closure.
+more valuable than closure. Give every reusable session an accepted-follow-up
+cap and total effective token budget. `harnessctl decide` defaults to one
+accepted follow-up and 200,000 effective tokens; lower either value freely and
+raise it only with recorded evidence. Record normalized non-overlapping usage
+before release. Unknown usage, either exhausted budget, or a changed signature
+ends reuse. A terminal session always has `current_task_id=null`.
 
 Determine role, risk, uncertainty, and quality floors before optimizing token
 cost. Security-sensitive, destructive, and control-plane changes have a deep
@@ -242,11 +254,16 @@ risks, and report location.
 
 Batch compatible assignments when role, required profile, risk, write scope,
 base revision, dependency order, and review boundary align. Reuse is supported
-only when an exact session signature matches and the runtime atomically claims
-an `idle` session as `busy`. Record `reuse_count` only after the host accepts the
-follow-up. If a host lacks follow-up support, report reuse as unsupported and
-use a bounded batch or a new session. Never keep an unrestricted permanent role
-pool; write-heavy execution remains serial.
+only after all known compatible ready work has first been considered for one
+bounded batch. A follow-up requires an exact session signature, an atomic
+`idle` to `busy` claim, known normalized usage, remaining accepted-follow-up
+capacity, and remaining effective-token budget. Record `reuse_count` only after
+the host accepts the follow-up. Refresh a still-unassigned queued task's base
+revision with the compare-and-swap `task refresh-revision` command; if its
+intent, scope, or compatibility changed, replan or register it only when ready.
+If a host lacks follow-up support or a budget cannot be proven, use a bounded
+batch, a new session, or main execution. Never keep an unrestricted permanent
+role pool; write-heavy execution remains serial.
 
 ## Completion Gate
 
@@ -261,7 +278,8 @@ A task is not complete until:
 - every configured independent review or quality gate passes, and all Critical
   and Important findings are fixed or explicitly escalated;
 - every harness-created session is `closed`, or is `failed`/`unknown` with
-  `final_reason` and next action;
+  `final_reason` and next action; every terminal session has no current
+  assignment;
 - every temporary or replacement session is validly busy/idle for known
   compatible work or closed when its expiry predicate fires;
 - the controller runs the final lifecycle audit and records progress in durable

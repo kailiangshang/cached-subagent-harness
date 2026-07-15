@@ -34,7 +34,8 @@ baseline they did not run.
    lifecycle evidence.
 5. Separately, equivalent baseline and Harness implementations of `Signal
    Sweep` run under the same model and quality gates. Their compact A/B report
-   demonstrates effectiveness without appearing in the Dashboard.
+   measures effectiveness without appearing in the Dashboard. A negative
+   result is retained and drives policy correction rather than being hidden.
 
 ## Options
 
@@ -64,7 +65,7 @@ This preserves the priority order:
 
 1. reduce complete-development token consumption;
 2. make the result and current work legible;
-3. prove effectiveness outside the product UI.
+3. measure effectiveness outside the product UI without assuming the result.
 
 ## Product Boundary
 

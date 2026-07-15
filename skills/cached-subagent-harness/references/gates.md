@@ -53,6 +53,10 @@ Ledger constraints:
 
 Use `harnessctl task add` before dispatch, `session record` after spawn,
 task/session updates after report, and `session close` at lifecycle completion.
+After a verified commit, refresh a still-valid unassigned queued task through
+`task refresh-revision --from-revision OLD --revision NEW`. If intent, scope,
+profile, or review boundary changed, revise PSOC and register the task when it
+is ready instead of mutating it into compatibility.
 
 Discussion agents are read-only. Use them for product, architecture, or skill discussion only. If they identify a needed edit, they must return a proposed change or brief; the controller decides whether to create a separate worker task.
 
@@ -61,6 +65,10 @@ Discussion agents are read-only. Use them for product, architecture, or skill di
 Use exactly one write-active `worker` at a time. One worker may execute one
 bounded batch of compatible assignments when role, required capability, risk,
 write scope, base revision, dependency order, and review boundary align.
+Batch all known compatible ready assignments before attempting a follow-up.
+Every reusable session has an accepted-follow-up cap and total effective token
+budget. Record normalized usage before release; unknown usage, either exhausted
+budget, or a changed signature makes the session ineligible for reuse.
 
 Worker constraints:
 
@@ -126,6 +134,7 @@ Before final response, audit the report ledger:
 - every harness-created agent is `closed`; or
 - the row is `failed`, `abandoned`, or `externally-unknown` with `final_reason` and next action.
 - every temporary replacement agent spawned in the current turn is either the active chosen agent or is closed as superseded.
+- every terminal session has no current assignment.
 
 Completed or closed agents may remain visible in UI. If the platform lacks agent listing, audit the handles recorded by this harness. If the user or UI reports additional unknown agents that affect budget or cleanup, request one `/agent` reconciliation and record unknown handles as `externally-unknown`.
 

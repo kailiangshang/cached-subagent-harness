@@ -56,16 +56,16 @@ Latest local estimate:
 | Metric | Baseline embedded handoff | Cached harness handoff |
 |---|---:|---:|
 | Prompt count | 4 | 4 |
-| Estimated tokens total | 3727 | 2232 |
-| Average tokens per prompt | 931.75 | 558.0 |
-| Cache-adjusted estimated tokens | 3727 | 852 |
-| Stable prefix tokens counted once | n/a | 460 |
-| Dynamic tail tokens total | n/a | 392 |
-| Stable prefix ratio | n/a | 82.44% |
+| Estimated tokens total | 3735 | 2248 |
+| Average tokens per prompt | 933.75 | 562.0 |
+| Cache-adjusted estimated tokens | 3735 | 865 |
+| Stable prefix tokens counted once | n/a | 461 |
+| Dynamic tail tokens total | n/a | 404 |
+| Stable prefix ratio | n/a | 82.04% |
 
-Raw estimated savings: `40.11%`
+Raw estimated savings: `39.81%`
 
-Cache-adjusted estimated savings: `77.14%`
+Cache-adjusted estimated savings: `76.84%`
 
 Break-even dispatches: `1`
 
@@ -103,7 +103,11 @@ commit with the same author metadata, and require equal starter tree hashes.
 - Run writes serially in both arms; never overlap workers that can touch the
   same project.
 - Baseline uses four fresh sessions, one per worker prompt.
-- Harness uses one session plus three accepted follow-ups in worker order.
+- Harness follows the current routing decision. Four known compatible ready
+  slices must produce one bounded batch before any follow-up is considered.
+- Use a follow-up only for later compatible work, after normalized usage is
+  recorded, and only while both the accepted-follow-up cap and total-effective
+  Token cap remain.
 - Nested delegation is forbidden in both arms.
 - Capture provider telemetry exactly as exposed; absent fields remain unknown.
 
@@ -113,13 +117,15 @@ in a separate sanitized benchmark report.
 
 ## Runtime Status Observations
 
-During a real run, append JSONL events with this shape:
+During a real run, append lifecycle events and attach Token fields only to an
+event that actually carries one complete usage observation:
 
 ```json
-{"mode":"baseline","worker":"worker-01","event":"spawned","input_tokens":1200,"output_tokens":0,"elapsed_ms":0}
+{"mode":"baseline","worker":"worker-01","event":"spawned","elapsed_ms":0}
 {"mode":"baseline","worker":"worker-01","event":"running","elapsed_ms":30000}
-{"mode":"baseline","worker":"worker-01","event":"reported","input_tokens":100,"output_tokens":1600,"elapsed_ms":180000}
-{"mode":"baseline","worker":"worker-01","event":"closed","elapsed_ms":181000}
+{"mode":"baseline","worker":"worker-01","event":"reported","elapsed_ms":180000}
+{"mode":"baseline","worker":"worker-01","event":"closed","usage_observed":true,"input_tokens":200,"cache_read_tokens":800,"output_tokens":100,"reasoning_tokens":20,"cache_write_tokens":0,"provider_input_tokens":1000,"provider_output_tokens":120,"elapsed_ms":181000}
+{"mode":"baseline","worker":"worker-04","event":"quality_passed","note":"all equal-quality gates passed"}
 ```
 
 Supported `mode` values are `baseline` and `cached_harness`.
@@ -140,9 +146,24 @@ python3 scripts/game_dev_ab_benchmark.py \
 ```
 
 The report aggregates final status, event counts, workers seen, workers closed,
-input tokens, output tokens, and observed runtime savings. If observations are
-missing, the report says `not-observed` instead of pretending a real run
-happened.
+noncached input, cached input, visible output, reasoning, provider totals,
+retries, and total effective Tokens. A missing category or worker observation
+remains unknown. Runtime savings are calculated only when both arms are closed,
+have exact telemetry, and explicitly emit `quality_passed`.
+
+For Codex `turn.completed.usage`, normalize without overlap:
+
+```text
+input       = input_tokens - cached_input_tokens
+cache_read  = cached_input_tokens
+output      = output_tokens - reasoning_output_tokens
+reasoning   = reasoning_output_tokens
+cache_write = 0
+```
+
+`cache_write=0` means this Codex stream exposes no additional category; it does
+not infer provider-internal cache behavior. A rejected attempt is emitted as a
+`retry` event with its usage and remains in total cost.
 
 ## Quality Gates
 
@@ -165,3 +186,8 @@ Use three separate claims:
 Only the third claim can prove real end-to-end savings for a specific CLI,
 model, cache policy, and task. The offline estimates are regression tests and
 planning signals, not billing guarantees.
+
+The 2026-07-15 real run is recorded in
+`docs/benchmarks/2026-07-15-signal-sweep-real-ab.md`. It rejected the former
+one-Session/three-follow-up strategy at 5.90× Baseline total effective Tokens
+and drove the current batch-first, budget-bounded policy.

@@ -12,6 +12,12 @@ This design supersedes the implementation scope and delivery boundaries in
 not an implementation requirement. The standalone principles completed in
 increment 1 remain binding.
 
+Live evidence correction (2026-07-15): the original example of one Session
+plus five sequential follow-ups is invalid. A real four-assignment Signal Sweep
+run consumed 5.90× the equal-quality Baseline because resumed context grew on
+every turn. The corrected contract below is batch-first and budget-bounded; the
+negative run remains the RED evidence.
+
 ## Problem
 
 Agentic development wastes tokens when controllers repeatedly create short-lived
@@ -36,7 +42,8 @@ The product optimizes one objective:
 The following mechanisms are core and unchanged:
 
 1. Combine compatible related tasks into one bounded work package.
-2. Reuse a compatible agent session instead of spawning another short session.
+2. Reuse a compatible agent session only for later work that was not available
+   to the original batch and remains inside explicit follow-up and Token caps.
 3. Route `light`, `standard`, and `deep` work to the lowest safe profile.
 4. Count bootstrap, context reload, useful work, retry, escalation, review, and
    fixer tokens together.
@@ -218,8 +225,8 @@ For each ready task, the controller chooses:
 
 ```text
 trivial and no isolation needed -> execute_on_main
-compatible idle session exists  -> reuse_session
 compatible related tasks exist  -> batch_then_spawn
+compatible idle session within both budgets -> reuse_session
 delegation benefit exceeds cost -> spawn_session
 otherwise                        -> execute_on_main
 ```
@@ -227,7 +234,14 @@ otherwise                        -> execute_on_main
 The harness returns the decision and the exact reasons. It never calls a host by
 itself without an explicit controller command. After a host accepts a follow-up,
 the controller records the reuse; rejected follow-up does not increment
-`reuse_count`.
+`reuse_count` but its consumed Tokens remain retry cost.
+
+Known compatible ready work is always batched before follow-up reuse. Each
+reusable Session has an accepted-follow-up cap and an observed total-effective
+Token cap. Runtime defaults are one follow-up and 200,000 Tokens. Missing or
+non-normalizable usage, either exhausted cap, or a changed signature makes the
+Session ineligible. A queued task may refresh a still-valid base revision only
+through a compare-and-swap update while unassigned.
 
 ## Model Routing
 
@@ -277,6 +291,13 @@ unknown profiles fail clearly.
 coerces null to zero. A run is marked `partial` when any required observation is
 missing.
 
+Provider totals are normalized into non-overlapping categories before storage.
+For Codex CLI JSONL, cached input is removed from `input_tokens` and stored as
+`cache_read_tokens`; reasoning output is removed from `output_tokens` and stored
+as `reasoning_tokens`. The CLI exposes no additional cache-write counter, so
+that source contributes zero to the separate category rather than duplicating
+input. Missing split fields remain unknown.
+
 Primary efficiency metrics:
 
 ```text
@@ -306,13 +327,16 @@ as the cheaper successful result.
 
 1. `init` creates a run database.
 2. `task add` records ready work and its floors.
-3. `decide` returns main, batch, reuse, or spawn with reasons.
-4. `session record` stores the actual host handle and requested/actual model.
-5. `task update` records progress, report, acceptance, or failure.
-6. `usage add` records observed phase usage.
-7. `status`, `watch`, and `dashboard` read the same current-state queries.
-8. `audit` rejects unfinished tasks or sessions without a truthful terminal
-   state.
+3. `task refresh-revision` compare-and-swaps a still-valid queued task after a
+   verified checkpoint when needed.
+4. `decide` returns main, batch, reuse, or spawn with reasons and explicit
+   Session budgets.
+5. `session record` stores the actual host handle and requested/actual model.
+6. `task update` records progress, report, acceptance, or failure.
+7. `usage add` records normalized observed phase usage before release/reuse.
+8. `status`, `watch`, and `dashboard` read the same current-state queries.
+9. `audit` rejects unfinished tasks, nonterminal Sessions, or terminal Sessions
+   that retain a current assignment.
 
 Existing prompt rendering and cache checks remain available.
 
@@ -343,6 +367,8 @@ to the page. No prompt, source content, secret, or long log reaches the browser.
 
 - Invalid state transitions fail without partial writes.
 - A busy or incompatible session cannot be reused.
+- Known compatible ready work batches before an idle Session is considered.
+- Unknown usage or an exhausted Session budget makes reuse ineligible.
 - Missing host template fields produce a configuration error before command
   rendering.
 - Unsupported follow-up selects batch or spawn; it is not emulated by a
@@ -358,6 +384,8 @@ to the page. No prompt, source content, secret, or long log reaches the browser.
 
 - exact task-bundling compatibility dimensions;
 - atomic session claim and concurrent double-claim rejection;
+- batch-first ordering and accepted-follow-up/Token budget exhaustion;
+- compare-and-swap queued revision refresh and terminal task-link cleanup;
 - session reuse invalidation by every signature field;
 - profile floors and manual elevation;
 - token totals with null, partial, retry, review, and fixer phases;
@@ -368,7 +396,8 @@ to the page. No prompt, source content, secret, or long log reaches the browser.
 
 ### Integration tests
 
-- six compatible tasks use one spawned writer session and five follow-ups;
+- six compatible ready tasks use one bounded batch rather than five follow-ups;
+- later compatible work can use only the configured budgeted follow-ups;
 - one incompatible dimension forces a new execution path;
 - a host without follow-up batches compatible work before one spawn;
 - light/standard/deep routes select the configured template arguments;
@@ -406,7 +435,10 @@ Implementation will:
 
 ## Acceptance Criteria
 
-- Six compatible tasks require one spawn and five accepted session reuses.
+- Six compatible ready tasks require one bounded batch and no preplanned
+  follow-up chain.
+- Later reuse stops on unknown usage, either exhausted budget, or a changed
+  signature; terminal Sessions have no current assignment.
 - Changing any reuse-signature field prevents reuse.
 - Light, standard, and deep routing is deterministic and provider-neutral.
 - Requested and actual model data remain separate.

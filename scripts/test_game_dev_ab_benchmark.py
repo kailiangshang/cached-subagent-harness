@@ -129,6 +129,7 @@ class GameDevAbBenchmarkTests(unittest.TestCase):
         self.assertGreaterEqual(len(report["quality_gates"]), 3)
         self.assertIn("spawned", report["status_protocol"]["required_runtime_events"])
         self.assertIn("closed", report["status_protocol"]["required_runtime_events"])
+        self.assertEqual(report["status_protocol"]["quality_gate_event"], "quality_passed")
         self.assertEqual(report["runs"]["baseline"]["prompt_count"], 4)
         self.assertEqual(report["runs"]["cached_harness"]["prompt_count"], 4)
         self.assertGreater(
@@ -146,10 +147,11 @@ class GameDevAbBenchmarkTests(unittest.TestCase):
             path.write_text(
                 "\n".join(
                     [
-                        '{"mode":"baseline","worker":"worker-01","event":"spawned","input_tokens":100}',
-                        '{"mode":"baseline","worker":"worker-01","event":"closed","input_tokens":20,"output_tokens":30}',
-                        '{"mode":"cached_harness","worker":"worker-01","event":"spawned","input_tokens":60}',
-                        '{"mode":"cached_harness","worker":"worker-01","event":"closed","input_tokens":10,"output_tokens":25}',
+                        '{"mode":"baseline","worker":"worker-01","event":"spawned"}',
+                        '{"mode":"baseline","worker":"worker-01","event":"closed","usage_observed":true,"input_tokens":20,"cache_read_tokens":100,"output_tokens":25,"reasoning_tokens":5,"cache_write_tokens":0,"provider_input_tokens":120,"provider_output_tokens":30}',
+                        '{"mode":"cached_harness","worker":"worker-01","event":"spawned"}',
+                        '{"mode":"cached_harness","worker":"worker-01","event":"retry","usage_observed":true,"input_tokens":7,"cache_read_tokens":3,"output_tokens":4,"reasoning_tokens":1,"cache_write_tokens":0,"provider_input_tokens":10,"provider_output_tokens":5}',
+                        '{"mode":"cached_harness","worker":"worker-01","event":"closed","usage_observed":true,"input_tokens":10,"cache_read_tokens":60,"output_tokens":20,"reasoning_tokens":5,"cache_write_tokens":0,"provider_input_tokens":70,"provider_output_tokens":25}',
                     ]
                 )
                 + "\n",
@@ -160,11 +162,160 @@ class GameDevAbBenchmarkTests(unittest.TestCase):
 
         summary = bench.summarize_observations(observations, workers=1)
         self.assertEqual(summary["baseline"]["final_status"], "closed")
-        self.assertEqual(summary["baseline"]["actual_input_tokens_total"], 120)
-        self.assertEqual(summary["baseline"]["actual_output_tokens_total"], 30)
+        self.assertEqual(summary["baseline"]["input_tokens_total"], 20)
+        self.assertEqual(summary["baseline"]["cache_read_tokens_total"], 100)
+        self.assertEqual(summary["baseline"]["provider_input_tokens_total"], 120)
+        self.assertEqual(summary["baseline"]["total_effective_tokens"], 150)
         self.assertEqual(summary["cached_harness"]["final_status"], "closed")
-        self.assertEqual(summary["cached_harness"]["actual_input_tokens_total"], 70)
-        self.assertEqual(summary["cached_harness"]["actual_output_tokens_total"], 25)
+        self.assertEqual(summary["cached_harness"]["input_tokens_total"], 17)
+        self.assertEqual(summary["cached_harness"]["cache_read_tokens_total"], 63)
+        self.assertEqual(summary["cached_harness"]["provider_input_tokens_total"], 80)
+        self.assertEqual(summary["cached_harness"]["total_effective_tokens"], 110)
+        self.assertEqual(summary["cached_harness"]["events_by_type"]["retry"], 1)
+
+    def test_missing_usage_remains_unknown_instead_of_zero(self) -> None:
+        summary = bench.summarize_observations(
+            [
+                {"mode": "baseline", "worker": "worker-01", "event": "closed"},
+                {
+                    "mode": "cached_harness",
+                    "worker": "worker-01",
+                    "event": "closed",
+                    "usage_observed": True,
+                    "input_tokens": 3,
+                    "cache_read_tokens": 7,
+                    "output_tokens": 2,
+                    "reasoning_tokens": 1,
+                    "cache_write_tokens": 0,
+                    "provider_input_tokens": 10,
+                    "provider_output_tokens": 3,
+                },
+            ],
+            workers=1,
+        )
+
+        self.assertIsNone(summary["baseline"]["input_tokens_total"])
+        self.assertIsNone(summary["baseline"]["total_effective_tokens"])
+        self.assertEqual(summary["baseline"]["telemetry_quality"], "unknown")
+        self.assertEqual(summary["cached_harness"]["telemetry_quality"], "exact")
+
+    def test_codex_usage_is_split_into_non_overlapping_categories(self) -> None:
+        normalized = bench.normalize_codex_usage(
+            {
+                "input_tokens": 1_000,
+                "cached_input_tokens": 800,
+                "output_tokens": 120,
+                "reasoning_output_tokens": 20,
+            }
+        )
+
+        self.assertEqual(
+            normalized,
+            {
+                "usage_observed": True,
+                "input_tokens": 200,
+                "cache_read_tokens": 800,
+                "output_tokens": 100,
+                "reasoning_tokens": 20,
+                "cache_write_tokens": 0,
+                "provider_input_tokens": 1_000,
+                "provider_output_tokens": 120,
+                "telemetry_quality": "exact",
+            },
+        )
+
+        partial = bench.normalize_codex_usage({"input_tokens": 100})
+        self.assertIsNone(partial["input_tokens"])
+        self.assertIsNone(partial["cache_read_tokens"])
+        self.assertEqual(partial["provider_input_tokens"], 100)
+        self.assertEqual(partial["telemetry_quality"], "partial")
+
+    def test_observed_savings_stay_unknown_when_one_mode_lacks_usage(self) -> None:
+        stable = "Stable harness contract.\n"
+        harness_prompts = [
+            f"{stable}\n{bench.DYNAMIC_MARKER}\nROLE=worker\nREPORT_PATH=/tmp/h-{index}.md\n"
+            for index in range(2)
+        ]
+        baseline_prompts = ["Full baseline brief. " * 100 for _ in range(2)]
+        usage = {
+            "usage_observed": True,
+            "input_tokens": 3,
+            "cache_read_tokens": 7,
+            "output_tokens": 2,
+            "reasoning_tokens": 1,
+            "cache_write_tokens": 0,
+            "provider_input_tokens": 10,
+            "provider_output_tokens": 3,
+        }
+        observations = [
+            {
+                "mode": "baseline",
+                "worker": f"worker-{index:02d}",
+                "event": "closed",
+                **usage,
+            }
+            for index in (1, 2)
+        ] + [
+            {
+                "mode": "cached_harness",
+                "worker": f"worker-{index:02d}",
+                "event": "closed",
+            }
+            for index in (1, 2)
+        ]
+
+        report = bench.build_game_dev_report(
+            harness_prompts=harness_prompts,
+            baseline_prompts=baseline_prompts,
+            workers=2,
+            observations=observations,
+        )
+
+        self.assertIsNone(
+            report["savings"]["observed_runtime"]["provider_input_tokens_pct"]
+        )
+        self.assertIsNone(
+            report["savings"]["observed_runtime"]["total_effective_tokens_pct"]
+        )
+
+    def test_observed_savings_require_equal_quality_gate_success(self) -> None:
+        stable = "Stable harness contract.\n"
+        prompts = [
+            f"{stable}\n{bench.DYNAMIC_MARKER}\nROLE=worker\nREPORT_PATH=/tmp/{index}.md\n"
+            for index in range(2)
+        ]
+        usage = {
+            "usage_observed": True,
+            "input_tokens": 3,
+            "cache_read_tokens": 7,
+            "output_tokens": 2,
+            "reasoning_tokens": 1,
+            "cache_write_tokens": 0,
+            "provider_input_tokens": 10,
+            "provider_output_tokens": 3,
+        }
+        observations = [
+            {
+                "mode": mode,
+                "worker": f"worker-{index:02d}",
+                "event": "closed",
+                **usage,
+            }
+            for mode in bench.MODES
+            for index in (1, 2)
+        ]
+
+        report = bench.build_game_dev_report(
+            harness_prompts=prompts,
+            baseline_prompts=["Full baseline brief. " * 100 for _ in range(2)],
+            workers=2,
+            observations=observations,
+        )
+
+        self.assertIsNone(
+            report["savings"]["observed_runtime"]["provider_input_tokens_pct"]
+        )
+        self.assertFalse(report["savings"]["observed_runtime_comparable"])
 
 
 if __name__ == "__main__":

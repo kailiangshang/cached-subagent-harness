@@ -9,7 +9,10 @@ Status: IN_PROGRESS
 The embedded Dashboard is functionally correct but visually generic, uses a
 weak information hierarchy, cannot show a truthful terminal run state or
 persisted freshness, and lacks phase-level token evidence. Its demo data is not
-connected to the repository's realistic Signal Sweep workload.
+connected to the repository's realistic Signal Sweep workload. The completed
+live run then exposed a more important core defect: repeated compatible
+follow-ups grew cumulative model context until the Harness arm cost 5.90× the
+equal-quality Baseline despite a high cache-hit rate.
 
 ### Scenarios
 
@@ -19,8 +22,11 @@ connected to the repository's realistic Signal Sweep workload.
 3. Exact, partial, estimated, unsupported, and unknown token facts remain
    distinguishable through the public DTO and both locales.
 4. A completed run becomes durably `complete` only after lifecycle audit.
-5. A separate full Signal Sweep A/B run proves effectiveness without exposing
-   baseline data in the product Dashboard.
+5. A separate full Signal Sweep A/B run measures effectiveness without exposing
+   baseline data in the product Dashboard; a negative result remains evidence
+   and loops back into routing policy.
+6. Known compatible ready work batches before reuse. Later reuse stops when its
+   accepted-follow-up or effective-Token budget is exhausted or unknown.
 
 ### Options
 
@@ -28,14 +34,19 @@ connected to the repository's realistic Signal Sweep workload.
 2. Build generic multi-run comparison: flexible, but over-designed for the
    token-efficiency goal.
 3. Build a results-first single-run Dashboard and keep A/B evidence external.
+4. Keep unlimited follow-up reuse because cached-input percentage is high.
 
 ### Chosen Plan
 
-Use option 3. Preserve the five-table store and shared `StatusView`; add only
-typed run terminal state, truthful persisted freshness, and per-phase token
+Use option 3 for presentation. Preserve the five-table store and shared
+`StatusView`; add only typed run terminal state, truthful persisted freshness,
+and per-phase token
 totals. Redesign embedded assets without a frontend framework. Make the
 existing Signal Sweep benchmark runnable, then execute equal-quality isolated
-baseline and Harness paths and retain only sanitized aggregate evidence.
+baseline and Harness paths and retain only sanitized aggregate evidence. The
+live evidence rejects option 4: route known compatible ready work to one bounded
+batch first, and permit a later follow-up only within explicit count and Token
+budgets.
 
 ## Agent Budget
 
@@ -45,20 +56,23 @@ baseline and Harness paths and retain only sanitized aggregate evidence.
 - Signal Sweep baseline run: maximum open sessions `1`, maximum total sessions
   `4`, all serial and fresh by benchmark definition.
 - Signal Sweep Harness run: maximum open sessions `1`, maximum total sessions
-  `1`, with three accepted follow-up assignments.
+  `1`, with three accepted follow-up assignments in the historical RED arm.
+- Corrected runtime default: batch known compatible ready work first; a later
+  reusable Session allows one accepted follow-up and 200,000 effective Tokens
+  unless an evidence-backed decision changes either limit.
 - Nested delegation: disabled.
 - Rationale: the A/B session topology is the feature under measurement; all
   production writes otherwise remain on the controller to avoid churn.
 
 ## Agent Ledger
 
-| handle | role | task | status | report_path | spawned_at | waited | closed | write_scope | token_risk | final_reason | next_action |
-|---|---|---|---|---|---|---|---|---|---|---|---|
-| baseline-worker-01 | worker | Signal Sweep engine baseline | planned | `/tmp/signal-sweep-ab-20260715/baseline-worker-01-report.md` | — | no | no | `src/game,tests/game` | high: fresh bootstrap | — | spawn only in A/B gate |
-| baseline-worker-02 | worker | Signal Sweep UI baseline | planned | `/tmp/signal-sweep-ab-20260715/baseline-worker-02-report.md` | — | no | no | `src/ui,src/styles,tests/ui` | high: fresh bootstrap | — | spawn after worker 01 closes |
-| baseline-worker-03 | worker | Signal Sweep records baseline | planned | `/tmp/signal-sweep-ab-20260715/baseline-worker-03-report.md` | — | no | no | `src/session,tests/session` | high: fresh bootstrap | — | spawn after worker 02 closes |
-| baseline-worker-04 | worker | Signal Sweep integration baseline | planned | `/tmp/signal-sweep-ab-20260715/baseline-worker-04-report.md` | — | no | no | `tests,docs/benchmarks,src/main.js,index.html,package.json` | high: fresh bootstrap | — | spawn after worker 03 closes |
-| harness-worker | worker | Signal Sweep four-slice Harness run | planned | `/tmp/signal-sweep-ab-20260715/cached-worker-reports.md` | — | no | no | bounded union of four ordered slices | medium: one bootstrap plus three follow-ups | — | spawn only in A/B gate |
+| handle | role | task | status | report_path | spawned_at | waited | closed | write_scope | token_risk | session_budget | final_reason | next_action |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `019f64b7-28d6-7cc0-a648-a4f1099a9bcd` | worker | Signal Sweep engine baseline | closed | `/tmp/signal-sweep-ab-20260715/baseline-worker-01-report.md` | recorded | yes | yes | `src/game,tests/game` | realized bootstrap | fresh only | turn complete | none |
+| `019f64bc-97d4-7190-8f9d-58b2e2bb8f80` | worker | Signal Sweep UI baseline | closed | `/tmp/signal-sweep-ab-20260715/baseline-worker-02-report.md` | recorded | yes | yes | `src/ui,src/styles,tests/ui` | realized bootstrap | fresh only | turn complete | none |
+| `019f64c3-2fcf-7721-9da6-c8791eb75646` | worker | Signal Sweep records baseline | closed | `/tmp/signal-sweep-ab-20260715/baseline-worker-03-report.md` | recorded | yes | yes | `src/session,tests/session` | realized bootstrap | fresh only | turn complete | none |
+| `019f64c6-8cfb-7112-825b-0f6ccf13da8a` | worker | Signal Sweep integration baseline | closed | `/tmp/signal-sweep-ab-20260715/baseline-worker-04-report.md` | recorded | yes | yes | `tests,docs/benchmarks,src/main.js,index.html,package.json` | realized bootstrap | fresh only | turn complete | none |
+| `019f64cd-55ab-76a3-b80a-aa6027551a15` | worker | Signal Sweep four-slice Harness run | closed | `/tmp/signal-sweep-ab-20260715/cached-harness-run-report.md` | recorded | yes | yes | bounded union of four ordered slices | realized high context growth | historical 3 follow-ups; now ineligible | package complete | retained as RED evidence |
 
 ## Write Scope
 
@@ -78,6 +92,12 @@ baseline and Harness paths and retain only sanitized aggregate evidence.
   authorization, matching all prior delivery commits.
 - 2026-07-15: Stop the old preview while replacing the embedded binary; restore
   a preview after final verification.
+- 2026-07-15: Retain the negative live result. Offline prompt estimates do not
+  substitute for complete Codex turn telemetry.
+- 2026-07-15: Replace unlimited compatible continuation with batch-first
+  routing plus accepted-follow-up and effective-Token budgets.
+- 2026-07-15: Normalize Codex provider totals into non-overlapping
+  input/cache/output/reasoning categories and retain the read-only retry.
 
 ## Evidence
 
@@ -105,22 +125,45 @@ baseline and Harness paths and retain only sanitized aggregate evidence.
   remains browser-independent.
 - Task 3 generated byte-identical `baseline-project` and
   `cached-harness-project` starter trees with fixed cross-module interfaces.
-  Offline prompt economics after the stronger brief: raw estimated savings
-  `40.11%`, cache-adjusted estimated savings `77.14%`, and stable-prefix ratio
-  `82.44%`. These remain estimates, not provider telemetry.
+  Offline prompt economics after the final brief: raw estimated savings
+  `39.81%`, cache-adjusted estimated savings `76.84%`, and stable-prefix ratio
+  `82.04%`. These remain estimates, not provider telemetry.
 - The preflight fairness audit found that the initial cached prompt pointed
   only to the shared design and did not name its exact worker slice. Before any
   live model call, a regression test drove the split into one stable shared
   brief plus four small dynamic assignment briefs; every cached prompt now
   names its worker, task, scope, gate, and valid `BASE_COMMIT=HEAD`.
+- Both generated implementations completed from the same starter tree hash
+  `2c8858f5c867bf856dc33dd5bfdf9cb1cdaad31f` with requested/actual model
+  `gpt-5.6-sol` and medium reasoning. Baseline used four fresh serial Sessions;
+  Harness used one Session with three accepted follow-ups and one rejected
+  read-only retry.
+- Equal quality gates passed: Baseline 21 tests, Harness 30 tests, both syntax
+  checks, six required HTTP assets per arm, desktop 1280×800 and compact
+  390×844 screenshots, and scripted interaction coverage.
+- Exact normalized totals: Baseline `2,974,064`; Harness `17,551,878`, including
+  `999,618` retry Tokens. Observed effective saving is `-490.16%`, so the old
+  continuation policy is rejected rather than presented as a saving.
+- The final Harness ledger contains four accepted tasks, one closed Session
+  with `current_task_id=null`, three historical accepted reuses, five exact
+  usage rows, and a durably complete run after audit.
+- Sanitized evidence:
+  `docs/benchmarks/2026-07-15-signal-sweep-real-ab.md`.
 
 ## Changed Files
 
 - `docs/specs/2026-07-15-results-dashboard-design.md`
+- `docs/specs/2026-07-14-lightweight-token-harness-design.md`
 - `docs/plans/2026-07-15-results-dashboard-and-signal-sweep-plan.md`
+- `docs/benchmarks/2026-07-15-signal-sweep-real-ab.md`
 - `results-dashboard-implementation.md`
+- `skills/cached-subagent-harness/SKILL.md`
+- `skills/cached-subagent-harness/references/standalone-methodology.md`
+- `skills/cached-subagent-harness/references/gates.md`
+- `skills/cached-subagent-harness/references/report-contracts.md`
 - `skills/cached-subagent-harness/scripts/harnessctl/src/domain.rs`
 - `skills/cached-subagent-harness/scripts/harnessctl/src/store.rs`
+- `skills/cached-subagent-harness/scripts/harnessctl/src/sessions.rs`
 - `skills/cached-subagent-harness/scripts/harnessctl/src/accounting.rs`
 - `skills/cached-subagent-harness/scripts/harnessctl/src/status.rs`
 - `skills/cached-subagent-harness/scripts/harnessctl/src/main.rs`
@@ -130,6 +173,8 @@ baseline and Harness paths and retain only sanitized aggregate evidence.
 - `skills/cached-subagent-harness/scripts/harnessctl/assets/app.js`
 - `scripts/game_dev_ab_benchmark.py`
 - `scripts/test_game_dev_ab_benchmark.py`
+- `scripts/test_standalone_contract.py`
+- `scripts/validate-release.py`
 - `docs/game-dev-ab-benchmark.md`
 
 ## Tests
@@ -172,26 +217,79 @@ baseline and Harness paths and retain only sanitized aggregate evidence.
 - Generated-project smoke: `diff -qr` found no starter differences; `npm test`
   passed in both dependency-free starters and `node --check src/main.js`
   passed.
+- Live A/B quality gates: Baseline `npm test` PASS with 21 tests; Harness
+  `npm test` PASS with 30 tests. Both arms passed syntax checks, all six
+  required HTTP resources, desktop and compact visual inspection, and the
+  required start/move/pause/game-over/restart-or-export interaction path.
+- Policy-correction RED: the former six-task continuation test encoded the
+  rejected unlimited-reuse behavior. Batch-first and dual-budget tests failed
+  before `ReuseBudget`, usage-aware claiming, and the new decision order were
+  implemented; a focused boundary RED then proved that usage exactly equal to
+  the Token cap was still accepted, and the comparison was corrected from
+  `>` to `>=`. The obsolete five-follow-up test was removed only after the new
+  behavior passed.
+- Revision-safety RED: queued base revisions had no state-limited
+  compare-and-swap command. The focused store test now proves successful
+  refresh, stale expected-revision rejection without mutation, and running-task
+  rejection.
+- Terminal-session RED: a closed Session could retain `current_task_id`, and a
+  deliberately injected legacy terminal row was not rejected by final audit.
+  Store update and audit tests now cover both paths.
+- Telemetry RED: missing observations collapsed to zero, Codex provider totals
+  overlapped cache/reasoning categories, retry rows were not part of total
+  cost, and observed savings did not require equal-quality success. Twelve
+  Benchmark tests now cover unknown preservation, non-overlapping
+  normalization, retry inclusion, worker coverage, and the explicit
+  `quality_passed` contract.
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest
+  scripts/test_game_dev_ab_benchmark.py` — PASS, 12 tests.
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest
+  scripts/test_standalone_contract.py` — PASS, 9 tests.
+- `python3 scripts/validate-release.py .` — PASS.
+- `python3 .../skill-creator/scripts/quick_validate.py
+  skills/cached-subagent-harness` — PASS.
+- `cargo fmt --check --manifest-path .../Cargo.toml` — initial formatting-only
+  RED on four changed regions; `cargo fmt` applied the mechanical correction.
+- `cargo test --manifest-path .../Cargo.toml` — PASS, 44 tests.
+- `cargo clippy --manifest-path .../Cargo.toml --all-targets -- -D warnings` —
+  PASS.
+- `node --check skills/cached-subagent-harness/scripts/harnessctl/assets/app.js`
+  — PASS.
+- `git diff --check` — PASS.
+- `scripts/verify.sh` — PASS on 2026-07-15 after the final policy and telemetry
+  changes; rebuilt the release binary and passed release metadata, Rust 44/44,
+  Python 6/6 + 9/9 + 3/3 + 12/12, Clippy, Standalone install, prompt-cache,
+  token-effectiveness, game A/B, and final lifecycle audit gates.
 
 ## Review Findings
 
-Pending implementation and independent review.
+Implementation self-check found no open correctness issue. Independent
+spec/compliance and code/security reviews remain the next gate; all Critical
+and Important findings must be closed before final status.
 
 ## Risks
 
-- Live Codex A/B turns consume real tokens; keep both paths serial, identical,
-  and bounded.
-- Provider telemetry may omit fields; missing values will remain unknown.
-- Firefox screenshots can prove layout but not replace scripted interaction
-  tests.
+- The completed live run disproves the old continuation policy but does not yet
+  prove positive savings for the corrected single-batch policy. Release claims
+  are deliberately limited to preventing the observed unbounded reuse path.
+- Provider telemetry can omit fields; missing values remain unknown and block
+  both observed savings claims and Session reuse.
+- The visual checkpoint used Playwright Chromium after Firefox software
+  framebuffer startup failed in this environment. Scripted interaction and
+  HTTP/DOM checks remain browser-independent, but future host/browser variants
+  still need their own compatibility evidence.
+- The default one-follow-up/200,000-Token limits are conservative safety
+  defaults. Raising them requires host- and workload-specific evidence.
 
 ## Next Actions
 
-1. Generate and checkpoint the isolated equal-tree Signal Sweep projects.
-2. Execute four serial fresh Baseline sessions.
-3. Execute one Harness session with three accepted follow-ups.
-4. Apply identical automated and browser quality gates.
-5. Populate the final Harness-only preview, then review and audit.
+1. Run independent spec/compliance and code/security reviews using the two
+   existing read-only reviewer handles.
+2. Batch-fix any Critical or Important findings and re-review.
+3. Re-run all release gates, commit the implementation, and complete the final
+   lifecycle audit.
+4. Start the Harness-only Dashboard from the exact completed Signal Sweep
+   ledger and verify `/health` plus `/api/status`.
 
 ## External Agent Reconciliation
 

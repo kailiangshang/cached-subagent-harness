@@ -445,6 +445,13 @@ fn parse_u64_value(parsed: &ParsedArgs, name: &str) -> Result<u64, String> {
     Ok(parsed_value)
 }
 
+fn parse_u64_value_or(parsed: &ParsedArgs, name: &str, default: u64) -> Result<u64, String> {
+    match flag_one(parsed, name) {
+        Some(_) => parse_u64_value(parsed, name),
+        None => Ok(default),
+    }
+}
+
 fn open_store(parsed: &ParsedArgs) -> Result<Store, String> {
     Store::open(Path::new(&required_flag(parsed, "db")?))
 }
@@ -483,7 +490,7 @@ fn cmd_task(args: &[String]) -> Result<(), String> {
     let operation = parsed
         .positionals
         .first()
-        .ok_or_else(|| "task requires add or update".to_string())?;
+        .ok_or_else(|| "task requires add, update, or refresh-revision".to_string())?;
     let mut store = open_store(&parsed)?;
     match operation.as_str() {
         "add" => store.add_task(&TaskInput {
@@ -506,6 +513,11 @@ fn cmd_task(args: &[String]) -> Result<(), String> {
             &required_flag(&parsed, "task")?,
             parse_value(&parsed, "status")?,
             flag_one(&parsed, "next-action").as_deref(),
+        ),
+        "refresh-revision" => store.refresh_queued_task_revision(
+            &required_flag(&parsed, "task")?,
+            &required_flag(&parsed, "from-revision")?,
+            &required_flag(&parsed, "revision")?,
         ),
         _ => Err(format!("unknown task operation: {operation}")),
     }?;
@@ -601,6 +613,18 @@ fn cmd_decide(args: &[String]) -> Result<(), String> {
             true,
         )?,
         host_supports_followup: parse_bool_value(&parsed, "host-supports-followup", true)?,
+        reuse_budget: domain::ReuseBudget {
+            max_accepted_followups: parse_u64_value_or(
+                &parsed,
+                "max-session-reuses",
+                sessions::DEFAULT_MAX_SESSION_REUSES,
+            )?,
+            max_effective_tokens: parse_u64_value_or(
+                &parsed,
+                "max-session-effective-tokens",
+                sessions::DEFAULT_MAX_SESSION_EFFECTIVE_TOKENS,
+            )?,
+        },
     };
     let dispatch = decide(&mut store, &request)?;
     store.append_activity(&ActivityInput {
@@ -797,8 +821,8 @@ fn usage() -> &'static str {
   harnessctl check-prompt --file PATH [--max-lines N]
   harnessctl init --db DB --run ID --goal TEXT --repo-root PATH --report PATH
   harnessctl run update --db DB --run ID --status complete|failed|cancelled
-  harnessctl task add|update --db DB ...
-  harnessctl decide --db DB --run ID --task ID --host HOST ...
+  harnessctl task add|update|refresh-revision --db DB ...
+  harnessctl decide --db DB --run ID --task ID --host HOST [--max-session-reuses N] [--max-session-effective-tokens N] ...
   harnessctl session record|accept-followup|release|close --db DB ...
   harnessctl usage add --db DB --run ID --usage ID --phase PHASE --source SOURCE --quality QUALITY ...
   harnessctl status --db DB --run ID [--json true] [--lang zh-CN|en-US]

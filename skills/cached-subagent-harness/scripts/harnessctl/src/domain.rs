@@ -315,6 +315,19 @@ pub(crate) struct DispatchRequest {
     pub related_ready_count: usize,
     pub delegation_value_exceeds_cost: bool,
     pub host_supports_followup: bool,
+    pub reuse_budget: ReuseBudget,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ReuseBudget {
+    pub max_accepted_followups: u64,
+    pub max_effective_tokens: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SessionClaimResult {
+    pub session_id: Option<String>,
+    pub reason_codes: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -37,6 +37,14 @@ DEFAULT_MIN_CACHE_ADJUSTED_SAVINGS_PCT = 30.0
 DEFAULT_MIN_STABLE_PREFIX_RATIO_PCT = 45.0
 MODES = ("baseline", "cached_harness")
 REQUIRED_RUNTIME_EVENTS = ("spawned", "running", "reported", "closed")
+NORMALIZED_TOKEN_FIELDS = (
+    "input_tokens",
+    "cache_read_tokens",
+    "output_tokens",
+    "reasoning_tokens",
+    "cache_write_tokens",
+)
+PROVIDER_TOKEN_FIELDS = ("provider_input_tokens", "provider_output_tokens")
 
 QUALITY_GATES = [
     {
@@ -342,12 +350,91 @@ def load_observations(path: Path) -> list[dict[str, Any]]:
     return observations
 
 
-def _int_field(value: Any) -> int:
+def _optional_token(value: Any, name: str) -> int | None:
     if value is None:
-        return 0
+        return None
     if isinstance(value, bool):
-        raise ValueError("token fields must be integers")
-    return int(value)
+        raise ValueError(f"{name} must be a nonnegative integer")
+    try:
+        number = int(value)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"{name} must be a nonnegative integer") from error
+    if number < 0 or str(number) != str(value):
+        raise ValueError(f"{name} must be a canonical nonnegative integer")
+    return number
+
+
+def normalize_codex_usage(usage: dict[str, Any]) -> dict[str, Any]:
+    """Split Codex turn totals into non-overlapping harness categories."""
+    provider_input = _optional_token(usage.get("input_tokens"), "input_tokens")
+    cached_input = _optional_token(
+        usage.get("cached_input_tokens"), "cached_input_tokens"
+    )
+    provider_output = _optional_token(usage.get("output_tokens"), "output_tokens")
+    reasoning_output = _optional_token(
+        usage.get("reasoning_output_tokens"), "reasoning_output_tokens"
+    )
+    observed = any(
+        value is not None
+        for value in (
+            provider_input,
+            cached_input,
+            provider_output,
+            reasoning_output,
+        )
+    )
+    if (
+        provider_input is not None
+        and cached_input is not None
+        and cached_input > provider_input
+    ):
+        raise ValueError("cached_input_tokens exceeds input_tokens")
+    if (
+        provider_output is not None
+        and reasoning_output is not None
+        and reasoning_output > provider_output
+    ):
+        raise ValueError("reasoning_output_tokens exceeds output_tokens")
+
+    complete = all(
+        value is not None
+        for value in (
+            provider_input,
+            cached_input,
+            provider_output,
+            reasoning_output,
+        )
+    )
+    return {
+        "usage_observed": observed,
+        "input_tokens": (
+            provider_input - cached_input
+            if provider_input is not None and cached_input is not None
+            else None
+        ),
+        "cache_read_tokens": cached_input,
+        "output_tokens": (
+            provider_output - reasoning_output
+            if provider_output is not None and reasoning_output is not None
+            else None
+        ),
+        "reasoning_tokens": reasoning_output,
+        # Codex exposes cached reads inside provider input, not a separate
+        # cache-write counter. Zero means no additional category is added.
+        "cache_write_tokens": 0 if observed else None,
+        "provider_input_tokens": provider_input,
+        "provider_output_tokens": provider_output,
+        "telemetry_quality": "exact" if complete else ("partial" if observed else "unknown"),
+    }
+
+
+def _complete_sum(rows: list[dict[str, Any]], field: str, coverage: bool) -> int | None:
+    if not rows or not coverage:
+        return None
+    values = [_optional_token(row.get(field), field) for row in rows]
+    if any(value is None for value in values):
+        return None
+    return sum(value for value in values if value is not None)
 
 
 def summarize_observations(
@@ -361,15 +448,28 @@ def summarize_observations(
             "workers_seen": 0,
             "workers_closed": 0,
             "final_status": "not-observed",
-            "actual_input_tokens_total": 0,
-            "actual_output_tokens_total": 0,
-            "actual_total_tokens": 0,
+            "quality_gates_passed": False,
+            "usage_observation_count": 0,
+            "workers_with_usage": 0,
+            "telemetry_quality": "unknown",
+            "input_tokens_total": None,
+            "cache_read_tokens_total": None,
+            "output_tokens_total": None,
+            "reasoning_tokens_total": None,
+            "cache_write_tokens_total": None,
+            "provider_input_tokens_total": None,
+            "provider_output_tokens_total": None,
+            "total_effective_tokens": None,
             "events_by_type": {},
         }
         for mode in MODES
     }
     workers_by_mode: dict[str, set[str]] = {mode: set() for mode in MODES}
     latest_event_by_worker: dict[str, dict[str, str]] = {mode: {} for mode in MODES}
+    usage_rows_by_mode: dict[str, list[dict[str, Any]]] = {
+        mode: [] for mode in MODES
+    }
+    usage_workers_by_mode: dict[str, set[str]] = {mode: set() for mode in MODES}
 
     for observation in observations:
         mode = str(observation["mode"])
@@ -378,16 +478,16 @@ def summarize_observations(
         mode_summary = summary[mode]
 
         mode_summary["event_count"] += 1
-        mode_summary["actual_input_tokens_total"] += _int_field(
-            observation.get("input_tokens")
-        )
-        mode_summary["actual_output_tokens_total"] += _int_field(
-            observation.get("output_tokens")
-        )
         events_by_type = mode_summary["events_by_type"]
         events_by_type[event] = events_by_type.get(event, 0) + 1
+        if event == "quality_passed":
+            mode_summary["quality_gates_passed"] = True
         workers_by_mode[mode].add(worker)
-        latest_event_by_worker[mode][worker] = event
+        if event in REQUIRED_RUNTIME_EVENTS:
+            latest_event_by_worker[mode][worker] = event
+        if observation.get("usage_observed") is True:
+            usage_rows_by_mode[mode].append(observation)
+            usage_workers_by_mode[mode].add(worker)
 
     for mode in MODES:
         mode_summary = summary[mode]
@@ -395,10 +495,21 @@ def summarize_observations(
         mode_summary["workers_closed"] = sum(
             1 for event in latest_event_by_worker[mode].values() if event == "closed"
         )
-        mode_summary["actual_total_tokens"] = (
-            mode_summary["actual_input_tokens_total"]
-            + mode_summary["actual_output_tokens_total"]
-        )
+        usage_rows = usage_rows_by_mode[mode]
+        coverage = len(usage_workers_by_mode[mode]) >= workers
+        mode_summary["usage_observation_count"] = len(usage_rows)
+        mode_summary["workers_with_usage"] = len(usage_workers_by_mode[mode])
+        for field in (*NORMALIZED_TOKEN_FIELDS, *PROVIDER_TOKEN_FIELDS):
+            total_name = f"{field}_total"
+            mode_summary[total_name] = _complete_sum(usage_rows, field, coverage)
+        normalized_totals = [
+            mode_summary[f"{field}_total"] for field in NORMALIZED_TOKEN_FIELDS
+        ]
+        if all(value is not None for value in normalized_totals):
+            mode_summary["total_effective_tokens"] = sum(normalized_totals)
+            mode_summary["telemetry_quality"] = "exact"
+        elif usage_rows:
+            mode_summary["telemetry_quality"] = "partial"
         if mode_summary["event_count"] == 0:
             mode_summary["final_status"] = "not-observed"
         elif mode_summary["workers_closed"] >= workers:
@@ -435,20 +546,34 @@ def build_game_dev_report(
     )
     observation_summary = summarize_observations(observations, workers=workers)
     observed_savings: dict[str, float | None] = {
-        "actual_input_tokens_pct": None,
-        "actual_total_tokens_pct": None,
+        "provider_input_tokens_pct": None,
+        "total_effective_tokens_pct": None,
     }
     baseline_observed = observation_summary["baseline"]
     cached_observed = observation_summary["cached_harness"]
-    if baseline_observed["actual_input_tokens_total"] > 0:
-        observed_savings["actual_input_tokens_pct"] = savings_pct(
-            baseline_observed["actual_input_tokens_total"],
-            cached_observed["actual_input_tokens_total"],
+    observed_runtime_comparable = (
+        baseline_observed["final_status"] == "closed"
+        and cached_observed["final_status"] == "closed"
+        and baseline_observed["quality_gates_passed"]
+        and cached_observed["quality_gates_passed"]
+        and baseline_observed["telemetry_quality"] == "exact"
+        and cached_observed["telemetry_quality"] == "exact"
+    )
+    if observed_runtime_comparable and (
+        baseline_observed["provider_input_tokens_total"]
+        and cached_observed["provider_input_tokens_total"] is not None
+    ):
+        observed_savings["provider_input_tokens_pct"] = savings_pct(
+            baseline_observed["provider_input_tokens_total"],
+            cached_observed["provider_input_tokens_total"],
         )
-    if baseline_observed["actual_total_tokens"] > 0:
-        observed_savings["actual_total_tokens_pct"] = savings_pct(
-            baseline_observed["actual_total_tokens"],
-            cached_observed["actual_total_tokens"],
+    if observed_runtime_comparable and (
+        baseline_observed["total_effective_tokens"]
+        and cached_observed["total_effective_tokens"] is not None
+    ):
+        observed_savings["total_effective_tokens_pct"] = savings_pct(
+            baseline_observed["total_effective_tokens"],
+            cached_observed["total_effective_tokens"],
         )
 
     return {
@@ -462,12 +587,19 @@ def build_game_dev_report(
         "quality_gates": QUALITY_GATES,
         "status_protocol": {
             "required_runtime_events": list(REQUIRED_RUNTIME_EVENTS),
+            "quality_gate_event": "quality_passed",
             "observation_jsonl_fields": [
                 "mode",
                 "worker",
                 "event",
                 "input_tokens",
+                "cache_read_tokens",
                 "output_tokens",
+                "reasoning_tokens",
+                "cache_write_tokens",
+                "provider_input_tokens",
+                "provider_output_tokens",
+                "usage_observed",
                 "elapsed_ms",
                 "note",
             ],
@@ -490,6 +622,7 @@ def build_game_dev_report(
             **effectiveness["savings"],
             "break_even_dispatches": break_even,
             "observed_runtime": observed_savings,
+            "observed_runtime_comparable": observed_runtime_comparable,
         },
         "status_observations": observation_summary,
         "interpretation": {
@@ -585,8 +718,8 @@ def write_artifacts(
     (output_dir / "observations-template.jsonl").write_text(
         "\n".join(
             [
-                '{"mode":"baseline","worker":"worker-01","event":"spawned","input_tokens":0,"output_tokens":0,"elapsed_ms":0,"note":"replace with real telemetry"}',
-                '{"mode":"cached_harness","worker":"worker-01","event":"spawned","input_tokens":0,"output_tokens":0,"elapsed_ms":0,"note":"replace with real telemetry"}',
+                '{"mode":"baseline","worker":"worker-01","event":"spawned","usage_observed":false,"elapsed_ms":0,"note":"attach normalized telemetry only when observed"}',
+                '{"mode":"cached_harness","worker":"worker-01","event":"spawned","usage_observed":false,"elapsed_ms":0,"note":"attach normalized telemetry only when observed"}',
             ]
         )
         + "\n",
@@ -599,6 +732,9 @@ def format_markdown(report: dict[str, Any]) -> str:
     break_even_text = "unreachable" if break_even is None else str(break_even)
     baseline_status = report["status_observations"]["baseline"]
     cached_status = report["status_observations"]["cached_harness"]
+    def shown(value: Any) -> str:
+        return "unknown" if value is None else str(value)
+
     return f"""# Game Dev A/B Benchmark
 
 Workload: `{report['workload']['name']}` with {report['workload']['workers']} workers.
@@ -623,10 +759,10 @@ Break-even dispatches: `{break_even_text}`
 
 ## Runtime Status Observations
 
-| Mode | Final status | Events | Workers seen | Workers closed | Input tokens | Output tokens |
-|---|---:|---:|---:|---:|---:|---:|
-| baseline | {baseline_status['final_status']} | {baseline_status['event_count']} | {baseline_status['workers_seen']} | {baseline_status['workers_closed']} | {baseline_status['actual_input_tokens_total']} | {baseline_status['actual_output_tokens_total']} |
-| cached_harness | {cached_status['final_status']} | {cached_status['event_count']} | {cached_status['workers_seen']} | {cached_status['workers_closed']} | {cached_status['actual_input_tokens_total']} | {cached_status['actual_output_tokens_total']} |
+| Mode | Final status | Events | Workers closed | Provider input | Noncached input | Cached input | Visible output | Reasoning | Effective total |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| baseline | {baseline_status['final_status']} | {baseline_status['event_count']} | {baseline_status['workers_closed']} | {shown(baseline_status['provider_input_tokens_total'])} | {shown(baseline_status['input_tokens_total'])} | {shown(baseline_status['cache_read_tokens_total'])} | {shown(baseline_status['output_tokens_total'])} | {shown(baseline_status['reasoning_tokens_total'])} | {shown(baseline_status['total_effective_tokens'])} |
+| cached_harness | {cached_status['final_status']} | {cached_status['event_count']} | {cached_status['workers_closed']} | {shown(cached_status['provider_input_tokens_total'])} | {shown(cached_status['input_tokens_total'])} | {shown(cached_status['cache_read_tokens_total'])} | {shown(cached_status['output_tokens_total'])} | {shown(cached_status['reasoning_tokens_total'])} | {shown(cached_status['total_effective_tokens'])} |
 
 Required runtime events: `{", ".join(report['status_protocol']['required_runtime_events'])}`.
 

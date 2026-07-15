@@ -11,9 +11,15 @@ approved-plan contradictions the controller cannot resolve.
 
 Group related assignments only when role, required capability, risk, write
 scope, base revision, dependency order, and independence boundary are
-compatible. Execute trivial work on main. Reuse only after an exact signature
-match and an atomic `idle` to `busy` claim; increment reuse only after the host
-accepts the follow-up. When a host cannot follow up, use one bounded worker
+compatible. Execute trivial work on main. Batch known compatible ready
+assignments before attempting follow-up reuse. Reuse only after an exact
+signature match and an atomic `idle` to `busy` claim; increment reuse only after
+the host accepts the follow-up. Every reusable session has an accepted-follow-up
+cap and a total effective token budget; unknown usage, either exhausted budget,
+or a changed compatibility signature closes the reuse path. Refresh a queued
+task's base revision only through a compare-and-swap update while the task is
+unassigned; otherwise replan or register it when ready. A terminal session has
+no current assignment. When a host cannot follow up, use one bounded worker
 brief and report reuse as unsupported. Never emulate reuse with an unrestricted
 permanent role pool.
 
@@ -52,7 +58,10 @@ is visible, but it does not make the standalone core degraded.
 | Decision | Required action |
 |---|---|
 | Trivial, no isolation value | Execute on main and record the assignment. |
-| Compatible micro-work, host cannot follow up | Batch into one bounded worker brief. |
+| Known compatible ready work | Batch into one bounded worker brief before follow-up reuse. |
+| One later compatible task, usage and follow-up budgets remain | Atomically claim the idle session. |
+| Usage unknown or either reuse budget exhausted | Close the reuse path; use main, batch, or spawn. |
+| Queued task still valid after a verified commit | Compare-and-swap its base revision before routing. |
 | Incompatible role, model, risk, scope, base, or review boundary | Use an isolated execution path. |
 | Mandatory review trigger | Create an independent reviewer assignment. |
 | Missing optional methodology | Continue standalone without degraded mode. |
@@ -62,6 +71,7 @@ is visible, but it does not make the standalone core degraded.
 | Rationalization | Contract |
 |---|---|
 | One plan item needs one fresh agent | Assignment boundaries are not session boundaries; batch compatible work. |
+| A cache hit makes unlimited follow-ups cheap | Cached input still grows; both follow-up count and effective tokens are capped. |
 | Superpowers is missing, so quality is degraded | The standalone kernel owns the complete gates. |
 | The cheapest model always saves tokens | Count retries, escalation, review, and fixer work. |
 | Token pressure justifies skipping a gate | Complete development is a quality floor. |
@@ -70,6 +80,9 @@ is visible, but it does not make the standalone core degraded.
 ## Red Flags
 
 - Fresh agents for compatible micro-assignments without a recorded reason.
+- Repeated follow-ups when the work was ready for one batch.
+- Reuse with unknown usage or an exhausted session budget.
+- A terminal session that still names a current task.
 - Calling unrequested optional-method absence degraded.
 - Selecting a route before role/risk/quality floors.
 - Skipping tests, review, documentation, or audit to save tokens.

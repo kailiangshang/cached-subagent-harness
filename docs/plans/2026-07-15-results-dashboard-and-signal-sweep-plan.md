@@ -18,6 +18,25 @@ benchmark runnable, but baseline evidence stays outside the Dashboard.
 `tiny_http`, embedded HTML/CSS/JavaScript, Python `unittest`, Node's built-in
 test runner for the benchmark game, Codex CLI JSONL telemetry, Firefox headless.
 
+## Evidence-Driven Correction
+
+Task 4 executed the planned one-Session/three-follow-up topology and invalidated
+it: the comparable Harness arm consumed 17,551,878 effective Tokens versus
+2,974,064 for Baseline. The plan therefore looped back to the Session strategy
+without changing product scope. Remaining release work uses these corrections:
+
+- known compatible ready assignments return `BatchThenSpawn` before reuse;
+- later reuse defaults to one accepted follow-up and 200,000 effective Tokens;
+- unknown usage or either exhausted budget makes reuse ineligible;
+- queued revision refresh is compare-and-swap and unassigned-only;
+- Codex totals are normalized into non-overlapping input/cache/output/reasoning
+  categories, and retries remain in total cost;
+- terminal Sessions clear their current assignment and audit enforces it.
+
+The original Task 4 topology remains the RED evidence, not a release
+recommendation. No positive live saving claim is permitted for the corrected
+policy until a separate real run measures it.
+
 ## Global Constraints
 
 - Token reduction remains the primary product goal; visualization is a

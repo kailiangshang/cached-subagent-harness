@@ -34,7 +34,7 @@ requested methodology adapter fails.
 Every harness-created agent must have a row:
 
 ```text
-handle | role | task | status | report_path | spawned_at | waited | closed | write_scope | token_risk | final_reason | next_action
+handle | role | task | status | report_path | spawned_at | waited | closed | write_scope | token_risk | session_budget | final_reason | next_action
 ```
 
 Create and update machine rows with `harnessctl task add|update` and
@@ -62,6 +62,8 @@ Lifecycle rules:
 - use `failed`, `abandoned`, or `externally-unknown` only with `final_reason`.
 - set `write_scope=none` for read-only roles; set explicit paths for `worker` and `fixer`.
 - for temporary replacement agents, record the expiry condition in `next_action`, then close the agent when it is superseded.
+- for reusable sessions, record accepted-follow-up and total effective-token
+  limits in `session_budget`; terminal rows have no current assignment.
 
 ## Status Names
 

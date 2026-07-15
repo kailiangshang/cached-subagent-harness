@@ -1,6 +1,9 @@
 use crate::domain::{DispatchAction, DispatchDecision, DispatchRequest};
 use crate::store::Store;
 
+pub(crate) const DEFAULT_MAX_SESSION_REUSES: u64 = 1;
+pub(crate) const DEFAULT_MAX_SESSION_EFFECTIVE_TOKENS: u64 = 200_000;
+
 pub(crate) fn decide(
     store: &mut Store,
     request: &DispatchRequest,
@@ -12,34 +15,46 @@ pub(crate) fn decide(
             reason_codes: vec!["trivial_main_execution".into()],
         });
     }
-    if request.host_supports_followup
-        && let Some(session_id) =
-            store.claim_idle_session(&request.run_id, &request.task_id, &request.signature)?
-    {
-        return Ok(DispatchDecision {
-            action: DispatchAction::ReuseSession,
-            session_id: Some(session_id),
-            reason_codes: vec!["compatible_idle_session".into()],
-        });
-    }
     if request.related_ready_count > 1 {
         return Ok(DispatchDecision {
             action: DispatchAction::BatchThenSpawn,
             session_id: None,
-            reason_codes: vec!["related_ready_tasks".into()],
+            reason_codes: vec!["related_ready_tasks_batch_first".into()],
         });
     }
+    let mut reason_codes = Vec::new();
+    if request.host_supports_followup
+        && let claim = store.claim_idle_session(
+            &request.run_id,
+            &request.task_id,
+            &request.signature,
+            request.reuse_budget,
+        )?
+    {
+        if let Some(session_id) = claim.session_id {
+            return Ok(DispatchDecision {
+                action: DispatchAction::ReuseSession,
+                session_id: Some(session_id),
+                reason_codes: vec!["compatible_idle_session_within_budget".into()],
+            });
+        }
+        reason_codes.extend(claim.reason_codes);
+    } else if !request.host_supports_followup {
+        reason_codes.push("followup_unsupported".into());
+    }
     if request.isolation_required || request.delegation_value_exceeds_cost {
+        reason_codes.push("delegation_value_exceeds_cost".into());
         Ok(DispatchDecision {
             action: DispatchAction::SpawnSession,
             session_id: None,
-            reason_codes: vec!["delegation_value_exceeds_cost".into()],
+            reason_codes,
         })
     } else {
+        reason_codes.push("spawn_cost_exceeds_value".into());
         Ok(DispatchDecision {
             action: DispatchAction::ExecuteOnMain,
             session_id: None,
-            reason_codes: vec!["spawn_cost_exceeds_value".into()],
+            reason_codes,
         })
     }
 }
@@ -65,8 +80,9 @@ pub(crate) fn release_verified(
 mod tests {
     use super::{accept_followup, decide, release_verified};
     use crate::domain::{
-        DispatchAction, DispatchRequest, Profile, Risk, Role, RoutingStatus, SessionInput,
-        SessionSignature, SessionStatus, TaskInput,
+        DispatchAction, DispatchRequest, Profile, ReuseBudget, Risk, Role, RoutingStatus,
+        SessionInput, SessionSignature, SessionStatus, TaskInput, UsageInput, UsagePhase,
+        UsageQuality,
     };
     use crate::store::Store;
     use std::fs;
@@ -125,6 +141,171 @@ mod tests {
         }
     }
 
+    fn budget(max_accepted_followups: u64, max_effective_tokens: u64) -> ReuseBudget {
+        ReuseBudget {
+            max_accepted_followups,
+            max_effective_tokens,
+        }
+    }
+
+    fn record_exact_usage(store: &mut Store, session_id: &str, tokens: u64) {
+        store
+            .record_usage(&UsageInput {
+                usage_id: format!("usage-{session_id}"),
+                run_id: "run-1".into(),
+                task_id: None,
+                session_id: Some(session_id.into()),
+                phase: UsagePhase::Work,
+                input_tokens: Some(tokens),
+                output_tokens: Some(0),
+                reasoning_tokens: Some(0),
+                cache_read_tokens: Some(0),
+                cache_write_tokens: Some(0),
+                source: "host".into(),
+                quality: UsageQuality::Exact,
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn related_ready_work_batches_before_claiming_an_idle_session() {
+        let db = TestDb::new();
+        let mut store = Store::open(&db.0).unwrap();
+        store
+            .create_run("run-1", "batch first", "/repo", "/report")
+            .unwrap();
+        store.add_task(&task("task-1", 1)).unwrap();
+        store
+            .add_session(&SessionInput {
+                session_id: "session-1".into(),
+                run_id: "run-1".into(),
+                host: "codex".into(),
+                handle: None,
+                role: Role::Worker,
+                profile: Profile::Standard,
+                requested_model: None,
+                actual_model: None,
+                routing_status: RoutingStatus::Unknown,
+                package_key: "package-a".into(),
+                scope_hash: "scope-a".into(),
+                repo_revision: "abc123".into(),
+                review_boundary: Some("review-a".into()),
+                status: SessionStatus::Idle,
+                current_task_id: None,
+            })
+            .unwrap();
+        record_exact_usage(&mut store, "session-1", 50);
+
+        let decision = decide(
+            &mut store,
+            &DispatchRequest {
+                run_id: "run-1".into(),
+                task_id: "task-1".into(),
+                signature: signature(),
+                trivial: false,
+                isolation_required: false,
+                related_ready_count: 3,
+                delegation_value_exceeds_cost: true,
+                host_supports_followup: true,
+                reuse_budget: budget(1, 200),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(decision.action, DispatchAction::BatchThenSpawn);
+        assert!(
+            decision
+                .reason_codes
+                .contains(&"related_ready_tasks_batch_first".into())
+        );
+        assert_eq!(
+            store.snapshot("run-1").unwrap().sessions[0].status,
+            SessionStatus::Idle
+        );
+    }
+
+    #[test]
+    fn reuse_requires_known_usage_and_respects_both_budgets() {
+        let db = TestDb::new();
+        let mut store = Store::open(&db.0).unwrap();
+        store
+            .create_run("run-1", "bounded reuse", "/repo", "/report")
+            .unwrap();
+        store.add_task(&task("task-1", 1)).unwrap();
+        store.add_task(&task("task-2", 2)).unwrap();
+        store
+            .add_session(&SessionInput {
+                session_id: "session-1".into(),
+                run_id: "run-1".into(),
+                host: "codex".into(),
+                handle: None,
+                role: Role::Worker,
+                profile: Profile::Standard,
+                requested_model: None,
+                actual_model: None,
+                routing_status: RoutingStatus::Unknown,
+                package_key: "package-a".into(),
+                scope_hash: "scope-a".into(),
+                repo_revision: "abc123".into(),
+                review_boundary: Some("review-a".into()),
+                status: SessionStatus::Idle,
+                current_task_id: None,
+            })
+            .unwrap();
+
+        let mut request = DispatchRequest {
+            run_id: "run-1".into(),
+            task_id: "task-1".into(),
+            signature: signature(),
+            trivial: false,
+            isolation_required: false,
+            related_ready_count: 1,
+            delegation_value_exceeds_cost: true,
+            host_supports_followup: true,
+            reuse_budget: budget(1, 200),
+        };
+        let unknown = decide(&mut store, &request).unwrap();
+        assert_eq!(unknown.action, DispatchAction::SpawnSession);
+        assert!(
+            unknown
+                .reason_codes
+                .contains(&"session_usage_unknown".into())
+        );
+
+        record_exact_usage(&mut store, "session-1", 50);
+        let first = decide(&mut store, &request).unwrap();
+        assert_eq!(first.action, DispatchAction::ReuseSession);
+        accept_followup(&mut store, "session-1", "task-1").unwrap();
+        release_verified(&mut store, "session-1", "task-1", "abc123").unwrap();
+
+        request.task_id = "task-2".into();
+        let exhausted = decide(&mut store, &request).unwrap();
+        assert_eq!(exhausted.action, DispatchAction::SpawnSession);
+        assert!(
+            exhausted
+                .reason_codes
+                .contains(&"reuse_limit_reached".into())
+        );
+
+        request.reuse_budget = budget(2, 40);
+        let over_tokens = decide(&mut store, &request).unwrap();
+        assert_eq!(over_tokens.action, DispatchAction::SpawnSession);
+        assert!(
+            over_tokens
+                .reason_codes
+                .contains(&"session_token_budget_exhausted".into())
+        );
+
+        request.reuse_budget = budget(2, 50);
+        let exactly_exhausted = decide(&mut store, &request).unwrap();
+        assert_eq!(exactly_exhausted.action, DispatchAction::SpawnSession);
+        assert!(
+            exactly_exhausted
+                .reason_codes
+                .contains(&"session_token_budget_exhausted".into())
+        );
+    }
+
     #[test]
     fn compatible_idle_session_is_claimed_once_and_counted_after_acceptance() {
         let db = TestDb::new();
@@ -153,6 +334,7 @@ mod tests {
                 current_task_id: None,
             })
             .unwrap();
+        record_exact_usage(&mut first, "session-1", 50);
         let request = DispatchRequest {
             run_id: "run-1".into(),
             task_id: "task-1".into(),
@@ -162,6 +344,7 @@ mod tests {
             related_ready_count: 1,
             delegation_value_exceeds_cost: true,
             host_supports_followup: true,
+            reuse_budget: budget(1, 200),
         };
         let decision = decide(&mut first, &request).unwrap();
         assert_eq!(decision.action, DispatchAction::ReuseSession);
@@ -201,6 +384,7 @@ mod tests {
             related_ready_count: 1,
             delegation_value_exceeds_cost: false,
             host_supports_followup: true,
+            reuse_budget: budget(1, 200),
         };
         assert_eq!(
             decide(&mut store, &request).unwrap().action,
@@ -255,6 +439,7 @@ mod tests {
             related_ready_count: 1,
             delegation_value_exceeds_cost: true,
             host_supports_followup: true,
+            reuse_budget: budget(1, 200),
         };
         let error = decide(&mut store, &request).unwrap_err();
         assert!(error.contains("authoritative task"), "{error}");
@@ -287,6 +472,7 @@ mod tests {
                 current_task_id: None,
             })
             .unwrap();
+        record_exact_usage(&mut store, "session-1", 50);
         let request = DispatchRequest {
             run_id: "run-1".into(),
             task_id: "task-1".into(),
@@ -296,67 +482,12 @@ mod tests {
             related_ready_count: 1,
             delegation_value_exceeds_cost: true,
             host_supports_followup: true,
+            reuse_budget: budget(1, 200),
         };
         decide(&mut store, &request).unwrap();
         accept_followup(&mut store, "session-1", "task-1").unwrap();
         store.clear_activity_for_test().unwrap();
         accept_followup(&mut store, "session-1", "task-1").unwrap();
         assert_eq!(store.snapshot("run-1").unwrap().sessions[0].reuse_count, 1);
-    }
-
-    #[test]
-    fn six_tasks_use_one_spawn_and_five_followups() {
-        let db = TestDb::new();
-        let mut store = Store::open(&db.0).unwrap();
-        store
-            .create_run("run-1", "six", "/repo", "/report")
-            .unwrap();
-        for sequence in 1..=6 {
-            store
-                .add_task(&task(&format!("task-{sequence}"), sequence))
-                .unwrap();
-        }
-        store
-            .add_session(&SessionInput {
-                session_id: "session-1".into(),
-                run_id: "run-1".into(),
-                host: "codex".into(),
-                handle: Some("spawn-1".into()),
-                role: Role::Worker,
-                profile: Profile::Standard,
-                requested_model: None,
-                actual_model: None,
-                routing_status: RoutingStatus::Unknown,
-                package_key: "package-a".into(),
-                scope_hash: "scope-a".into(),
-                repo_revision: "abc123".into(),
-                review_boundary: Some("review-a".into()),
-                status: SessionStatus::Busy,
-                current_task_id: Some("task-1".into()),
-            })
-            .unwrap();
-        release_verified(&mut store, "session-1", "task-1", "abc123").unwrap();
-        for sequence in 2..=6 {
-            let task_id = format!("task-{sequence}");
-            let request = DispatchRequest {
-                run_id: "run-1".into(),
-                task_id: task_id.clone(),
-                signature: signature(),
-                trivial: false,
-                isolation_required: false,
-                related_ready_count: 1,
-                delegation_value_exceeds_cost: true,
-                host_supports_followup: true,
-            };
-            assert_eq!(
-                decide(&mut store, &request).unwrap().action,
-                DispatchAction::ReuseSession
-            );
-            accept_followup(&mut store, "session-1", &task_id).unwrap();
-            release_verified(&mut store, "session-1", &task_id, "abc123").unwrap();
-        }
-        let snapshot = store.snapshot("run-1").unwrap();
-        assert_eq!(snapshot.sessions.len(), 1);
-        assert_eq!(snapshot.sessions[0].reuse_count, 5);
     }
 }

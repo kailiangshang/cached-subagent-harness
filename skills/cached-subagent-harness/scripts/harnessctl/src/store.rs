@@ -1,7 +1,7 @@
 use crate::domain::{
-    ActivityInput, ActivityRecord, Profile, Role, RouteDemand, RunRecord, RunStatus, SessionInput,
-    SessionRecord, SessionSignature, SessionStatus, StoreSnapshot, TaskInput, TaskRecord,
-    TaskStatus, UsageInput, UsageRecord,
+    ActivityInput, ActivityRecord, Profile, ReuseBudget, Role, RouteDemand, RunRecord, RunStatus,
+    SessionClaimResult, SessionInput, SessionRecord, SessionSignature, SessionStatus,
+    StoreSnapshot, TaskInput, TaskRecord, TaskStatus, UsageInput, UsageRecord,
 };
 use crate::routing::required_profile;
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
@@ -363,6 +363,48 @@ impl Store {
         transaction.commit().map_err(|error| error.to_string())
     }
 
+    pub(crate) fn refresh_queued_task_revision(
+        &mut self,
+        task_id: &str,
+        expected_revision: &str,
+        new_revision: &str,
+    ) -> Result<(), String> {
+        require_nonempty("task_id", task_id)?;
+        require_nonempty("expected_revision", expected_revision)?;
+        require_nonempty("new_revision", new_revision)?;
+        let transaction = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| error.to_string())?;
+        let timestamp = now(&transaction)?;
+        let run_id = transaction
+            .query_row(
+                r#"UPDATE tasks SET repo_revision=?3,updated_at=?4
+                    WHERE task_id=?1 AND repo_revision=?2 AND status='queued' AND session_id IS NULL
+                    RETURNING run_id"#,
+                params![task_id, expected_revision, new_revision, timestamp],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| {
+                format!(
+                    "queued task revision refresh rejected for {task_id}: state or expected revision changed"
+                )
+            })?;
+        append_activity_tx(
+            &transaction,
+            &ActivityInput {
+                run_id,
+                task_id: Some(task_id.into()),
+                session_id: None,
+                kind: "plan".into(),
+                summary: "queued task revision refreshed".into(),
+            },
+        )?;
+        transaction.commit().map_err(|error| error.to_string())
+    }
+
     pub(crate) fn add_session(&mut self, input: &SessionInput) -> Result<(), String> {
         validate_session_input(input)?;
         let transaction = self
@@ -432,11 +474,11 @@ impl Store {
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|error| error.to_string())?;
-        let (run_id, current): (String, String) = transaction
+        let (run_id, current, stored_current_task): (String, String, Option<String>) = transaction
             .query_row(
-                "SELECT run_id,status FROM sessions WHERE session_id=?1",
+                "SELECT run_id,status,current_task_id FROM sessions WHERE session_id=?1",
                 [session_id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .map_err(|error| error.to_string())?;
         let current = current.parse::<SessionStatus>()?;
@@ -451,22 +493,24 @@ impl Store {
             return Err(format!("{target} session requires final_reason"));
         }
         let timestamp = now(&transaction)?;
-        let ended_at = matches!(
+        let terminal = matches!(
             target,
             SessionStatus::Closed | SessionStatus::Failed | SessionStatus::Unknown
-        )
-        .then_some(timestamp.as_str());
+        );
+        let ended_at = terminal.then_some(timestamp.as_str());
+        let persisted_current_task = if terminal { None } else { current_task_id };
+        let activity_task_id = stored_current_task.or_else(|| current_task_id.map(str::to_string));
         transaction
             .execute(
                 "UPDATE sessions SET status=?2,current_task_id=?3,last_used_at=?4,ended_at=?5,final_reason=?6 WHERE session_id=?1",
-                params![session_id, target.as_str(), current_task_id, timestamp, ended_at, final_reason],
+                params![session_id, target.as_str(), persisted_current_task, timestamp, ended_at, final_reason],
             )
             .map_err(|error| error.to_string())?;
         append_activity_tx(
             &transaction,
             &ActivityInput {
                 run_id,
-                task_id: current_task_id.map(str::to_string),
+                task_id: activity_task_id,
                 session_id: Some(session_id.into()),
                 kind: if target == SessionStatus::Failed {
                     "fail".into()
@@ -518,7 +562,8 @@ impl Store {
         run_id: &str,
         task_id: &str,
         signature: &SessionSignature,
-    ) -> Result<Option<String>, String> {
+        budget: ReuseBudget,
+    ) -> Result<SessionClaimResult, String> {
         require_nonempty("run_id", run_id)?;
         require_nonempty("task_id", task_id)?;
         let transaction = self
@@ -558,30 +603,89 @@ impl Store {
         if !compatible {
             return Err("dispatch signature disagrees with authoritative task".into());
         }
-        let session_id = transaction
-            .query_row(
-                r#"SELECT session_id FROM sessions
+        let candidates = {
+            let mut statement = transaction
+                .prepare(
+                    r#"SELECT session_id FROM sessions
                     WHERE run_id=?1 AND host=?2 AND role=?3 AND profile=?4 AND package_key=?5
                       AND scope_hash=?6 AND repo_revision=?7 AND review_boundary IS ?8
                       AND status='idle'
-                    ORDER BY last_used_at,session_id LIMIT 1"#,
-                params![
-                    run_id,
-                    signature.host,
-                    signature.role.as_str(),
-                    signature.profile.as_str(),
-                    signature.package_key,
-                    signature.scope_hash,
-                    signature.repo_revision,
-                    signature.review_boundary,
-                ],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()
-            .map_err(|error| error.to_string())?;
-        let Some(session_id) = session_id else {
+                    ORDER BY last_used_at,session_id"#,
+                )
+                .map_err(|error| error.to_string())?;
+            statement
+                .query_map(
+                    params![
+                        run_id,
+                        signature.host,
+                        signature.role.as_str(),
+                        signature.profile.as_str(),
+                        signature.package_key,
+                        signature.scope_hash,
+                        signature.repo_revision,
+                        signature.review_boundary,
+                    ],
+                    |row| row.get::<_, String>(0),
+                )
+                .map_err(|error| error.to_string())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| error.to_string())?
+        };
+        if candidates.is_empty() {
             transaction.commit().map_err(|error| error.to_string())?;
-            return Ok(None);
+            return Ok(SessionClaimResult {
+                session_id: None,
+                reason_codes: vec!["no_compatible_idle_session".into()],
+            });
+        }
+        let mut reason_codes = BTreeSet::new();
+        let mut eligible = None;
+        for session_id in candidates {
+            let reuse_count: u64 = transaction
+                .query_row(
+                    "SELECT reuse_count FROM sessions WHERE session_id=?1",
+                    [&session_id],
+                    |row| from_i64(row.get(0)?, 0),
+                )
+                .map_err(|error| error.to_string())?;
+            if reuse_count >= budget.max_accepted_followups {
+                reason_codes.insert("reuse_limit_reached".to_string());
+                continue;
+            }
+            let (row_count, incomplete_rows, total): (i64, i64, Option<i64>) = transaction
+                .query_row(
+                    r#"SELECT COUNT(*),
+                              COALESCE(SUM(CASE WHEN input_tokens IS NULL
+                                                  OR output_tokens IS NULL
+                                                  OR reasoning_tokens IS NULL
+                                                  OR cache_read_tokens IS NULL
+                                                  OR cache_write_tokens IS NULL
+                                               THEN 1 ELSE 0 END),0),
+                              SUM(input_tokens + output_tokens + reasoning_tokens
+                                  + cache_read_tokens + cache_write_tokens)
+                         FROM usage WHERE session_id=?1"#,
+                    [&session_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .map_err(|error| error.to_string())?;
+            let total = optional_u64(total, 2).map_err(|error| error.to_string())?;
+            if row_count == 0 || incomplete_rows > 0 || total.is_none() {
+                reason_codes.insert("session_usage_unknown".to_string());
+                continue;
+            }
+            if total.is_some_and(|value| value >= budget.max_effective_tokens) {
+                reason_codes.insert("session_token_budget_exhausted".to_string());
+                continue;
+            }
+            eligible = Some(session_id);
+            break;
+        }
+        let Some(session_id) = eligible else {
+            transaction.commit().map_err(|error| error.to_string())?;
+            return Ok(SessionClaimResult {
+                session_id: None,
+                reason_codes: reason_codes.into_iter().collect(),
+            });
         };
         let timestamp = now(&transaction)?;
         let changed = transaction
@@ -604,7 +708,10 @@ impl Store {
         }
         touch_run_tx(&transaction, run_id, &timestamp)?;
         transaction.commit().map_err(|error| error.to_string())?;
-        Ok(Some(session_id))
+        Ok(SessionClaimResult {
+            session_id: Some(session_id),
+            reason_codes: Vec::new(),
+        })
     }
 
     pub(crate) fn accept_followup(
@@ -891,13 +998,20 @@ impl Store {
             }
         }
         for session in snapshot.sessions {
-            if !matches!(
+            let terminal = matches!(
                 session.status,
                 SessionStatus::Closed | SessionStatus::Failed | SessionStatus::Unknown
-            ) {
+            );
+            if !terminal {
                 errors.push(format!(
                     "session {} is not terminal: {}",
                     session.session_id, session.status
+                ));
+            }
+            if terminal && session.current_task_id.is_some() {
+                errors.push(format!(
+                    "session {} retains a terminal current assignment",
+                    session.session_id
                 ));
             }
             if matches!(
@@ -1480,5 +1594,116 @@ mod tests {
             })
             .unwrap_err();
         assert!(error.contains("safety floor"), "{error}");
+    }
+
+    #[test]
+    fn queued_task_revision_refresh_is_compare_and_swap_and_state_limited() {
+        let (_db, mut store) = seeded_store("queued-revision-refresh");
+        store
+            .refresh_queued_task_revision("task-1", "abc123", "def456")
+            .unwrap();
+        assert_eq!(
+            store.task("run-1", "task-1").unwrap().repo_revision,
+            "def456"
+        );
+
+        let before = store.snapshot("run-1").unwrap();
+        let mismatch = store
+            .refresh_queued_task_revision("task-1", "abc123", "ghi789")
+            .unwrap_err();
+        assert!(mismatch.contains("queued task revision"), "{mismatch}");
+        assert_eq!(store.snapshot("run-1").unwrap(), before);
+
+        store
+            .update_task("task-1", TaskStatus::Running, Some("started"))
+            .unwrap();
+        let running = store
+            .refresh_queued_task_revision("task-1", "def456", "ghi789")
+            .unwrap_err();
+        assert!(running.contains("queued task revision"), "{running}");
+        assert_eq!(
+            store.task("run-1", "task-1").unwrap().repo_revision,
+            "def456"
+        );
+    }
+
+    #[test]
+    fn terminal_session_always_clears_current_task() {
+        let (_db, mut store) = seeded_store("terminal-session-clears-task");
+        store
+            .add_session(&SessionInput {
+                session_id: "session-1".into(),
+                run_id: "run-1".into(),
+                host: "codex".into(),
+                handle: None,
+                role: Role::Worker,
+                profile: Profile::Standard,
+                requested_model: None,
+                actual_model: None,
+                routing_status: RoutingStatus::Unknown,
+                package_key: "package-a".into(),
+                scope_hash: "scope-a".into(),
+                repo_revision: "abc123".into(),
+                review_boundary: Some("review-a".into()),
+                status: SessionStatus::Busy,
+                current_task_id: Some("task-1".into()),
+            })
+            .unwrap();
+
+        store
+            .update_session(
+                "session-1",
+                SessionStatus::Closed,
+                Some("task-1"),
+                Some("package complete"),
+            )
+            .unwrap();
+
+        assert_eq!(
+            store.snapshot("run-1").unwrap().sessions[0].current_task_id,
+            None
+        );
+    }
+
+    #[test]
+    fn final_audit_rejects_a_legacy_terminal_session_with_current_task() {
+        let (_db, mut store) = seeded_store("terminal-session-audit");
+        store
+            .add_session(&SessionInput {
+                session_id: "session-1".into(),
+                run_id: "run-1".into(),
+                host: "codex".into(),
+                handle: None,
+                role: Role::Worker,
+                profile: Profile::Standard,
+                requested_model: None,
+                actual_model: None,
+                routing_status: RoutingStatus::Unknown,
+                package_key: "package-a".into(),
+                scope_hash: "scope-a".into(),
+                repo_revision: "abc123".into(),
+                review_boundary: Some("review-a".into()),
+                status: SessionStatus::Busy,
+                current_task_id: Some("task-1".into()),
+            })
+            .unwrap();
+        store
+            .update_session("session-1", SessionStatus::Closed, None, Some("done"))
+            .unwrap();
+        store
+            .conn
+            .execute(
+                "UPDATE sessions SET current_task_id='task-1' WHERE session_id='session-1'",
+                [],
+            )
+            .unwrap();
+
+        let errors = store.final_audit("run-1").unwrap_err();
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("terminal current assignment")),
+            "{errors:?}"
+        );
     }
 }

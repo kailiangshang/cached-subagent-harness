@@ -21,8 +21,17 @@ INVARIANT_HEADING = "## Non-negotiable Invariants"
 SKILL_INVARIANT_END = "\n## Controller Loop"
 
 REQUIRED_METHOD_SEMANTICS = [
+    "Batch known compatible ready assignments before attempting follow-up "
+    "reuse.",
     "Reuse only after an exact signature match and an atomic `idle` to `busy` "
     "claim; increment reuse only after the host accepts the follow-up.",
+    "Every reusable session has an accepted-follow-up cap and a total "
+    "effective token budget; unknown usage, either exhausted budget, or a "
+    "changed compatibility signature closes the reuse path.",
+    "Refresh a queued task's base revision only through a compare-and-swap "
+    "update while the task is unassigned; otherwise replan or register it "
+    "when ready.",
+    "A terminal session has no current assignment.",
     "When a host cannot follow up, use one bounded worker brief and report "
     "reuse as unsupported.",
     "Never emulate reuse with an unrestricted permanent role pool.",
