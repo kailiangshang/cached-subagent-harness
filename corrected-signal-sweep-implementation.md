@@ -1,7 +1,7 @@
 # Corrected Signal Sweep Implementation Report
 
-Status: READY_TO_PUSH — implementation, full verification, two independent
-reviews, visual checks, and both lifecycle audits complete; Git delivery remains.
+Status: COMPLETE — implementation, full verification, two independent reviews,
+visual checks, both lifecycle audits, commit, and remote delivery complete.
 
 ## PSOC
 
@@ -237,8 +237,7 @@ trailing whitespace. Fresh full verification passed after both fixes.
 
 ## Next Actions
 
-1. Commit the reviewed and verified tree.
-2. Push `main` and verify the remote SHA.
+None. Future policy changes require new equal-quality exact-usage evidence.
 
 ## External Agent Reconciliation
 
@@ -262,4 +261,7 @@ reviewer or nested delegation is authorized.
 - External Agent Reconciliation: only the two supplied reviewers were used;
   both completed; no nested or unknown agent remains.
 - Degraded Mode: none. Standalone operation is intentional, not degraded.
-- Git Delivery: pending the final commit/push transaction authorized by the user.
+- Git Delivery: delivery commit
+  `70765a1771206523265c3ed0e6f44ccd5f2117fa` was pushed to `origin/main`; local
+  `HEAD` and `git ls-remote origin refs/heads/main` matched exactly. This
+  documentation-only closure records that verified transaction.
