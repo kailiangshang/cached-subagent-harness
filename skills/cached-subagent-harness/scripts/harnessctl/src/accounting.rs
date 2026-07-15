@@ -1,37 +1,26 @@
 use crate::domain::{
-    EfficiencyReport, StoreSnapshot, TaskStatus, TokenTotals, UsagePhase, UsageQuality, UsageRecord,
+    EfficiencyReport, PhaseTokenTotals, StoreSnapshot, TaskStatus, TokenTotals, UsagePhase,
+    UsageQuality, UsageRecord,
 };
 use std::collections::BTreeMap;
 
 pub(crate) fn efficiency_report(snapshot: &StoreSnapshot) -> EfficiencyReport {
-    let input = aggregate(&snapshot.usage, |row| row.input_tokens);
-    let output = aggregate(&snapshot.usage, |row| row.output_tokens);
-    let reasoning = aggregate(&snapshot.usage, |row| row.reasoning_tokens);
-    let cache_read = aggregate(&snapshot.usage, |row| row.cache_read_tokens);
-    let cache_write = aggregate(&snapshot.usage, |row| row.cache_write_tokens);
-    let total_effective = [input, output, reasoning, cache_read, cache_write]
-        .into_iter()
-        .try_fold(0_u64, |total, value| total.checked_add(value?));
-    let any_known = snapshot.usage.iter().any(|row| {
-        row.input_tokens.is_some()
-            || row.output_tokens.is_some()
-            || row.reasoning_tokens.is_some()
-            || row.cache_read_tokens.is_some()
-            || row.cache_write_tokens.is_some()
-    });
-    let quality = if total_effective.is_some()
-        && !snapshot.usage.is_empty()
-        && snapshot
-            .usage
-            .iter()
-            .all(|row| row.quality == UsageQuality::Exact)
-    {
-        UsageQuality::Exact
-    } else if any_known {
-        UsageQuality::Partial
-    } else {
-        UsageQuality::Unknown
-    };
+    let totals = token_totals(snapshot.usage.iter());
+    let phase_totals = [
+        UsagePhase::Bootstrap,
+        UsagePhase::Context,
+        UsagePhase::Work,
+        UsagePhase::Retry,
+        UsagePhase::Escalation,
+        UsagePhase::Review,
+        UsagePhase::Fixer,
+    ]
+    .into_iter()
+    .map(|phase| PhaseTokenTotals {
+        phase,
+        totals: token_totals(snapshot.usage.iter().filter(|row| row.phase == phase)),
+    })
+    .collect();
     let reuse_count = snapshot
         .sessions
         .iter()
@@ -126,15 +115,8 @@ pub(crate) fn efficiency_report(snapshot: &StoreSnapshot) -> EfficiencyReport {
     };
 
     EfficiencyReport {
-        totals: TokenTotals {
-            input,
-            output,
-            reasoning,
-            cache_read,
-            cache_write,
-            total_effective,
-            quality,
-        },
+        totals,
+        phase_totals,
         assignments_per_spawn,
         churn_rate,
         reuse_count,
@@ -144,7 +126,49 @@ pub(crate) fn efficiency_report(snapshot: &StoreSnapshot) -> EfficiencyReport {
     }
 }
 
-fn aggregate(rows: &[UsageRecord], value: impl Fn(&UsageRecord) -> Option<u64>) -> Option<u64> {
+fn token_totals<'a>(rows: impl Iterator<Item = &'a UsageRecord>) -> TokenTotals {
+    let rows = rows.collect::<Vec<_>>();
+    let input = aggregate(&rows, |row| row.input_tokens);
+    let output = aggregate(&rows, |row| row.output_tokens);
+    let reasoning = aggregate(&rows, |row| row.reasoning_tokens);
+    let cache_read = aggregate(&rows, |row| row.cache_read_tokens);
+    let cache_write = aggregate(&rows, |row| row.cache_write_tokens);
+    let total_effective = [input, output, reasoning, cache_read, cache_write]
+        .into_iter()
+        .try_fold(0_u64, |total, value| total.checked_add(value?));
+    let any_known = rows.iter().any(|row| {
+        row.input_tokens.is_some()
+            || row.output_tokens.is_some()
+            || row.reasoning_tokens.is_some()
+            || row.cache_read_tokens.is_some()
+            || row.cache_write_tokens.is_some()
+    });
+    let unanimous_quality = rows.first().map(|first| {
+        rows.iter()
+            .all(|row| row.quality == first.quality)
+            .then_some(first.quality)
+    });
+    let quality = match (unanimous_quality.flatten(), total_effective) {
+        (Some(UsageQuality::Exact), Some(_)) => UsageQuality::Exact,
+        (Some(UsageQuality::Estimated), Some(_)) => UsageQuality::Estimated,
+        (Some(UsageQuality::Partial), _) => UsageQuality::Partial,
+        (Some(UsageQuality::Unsupported), _) => UsageQuality::Unsupported,
+        (Some(UsageQuality::Unknown), _) => UsageQuality::Unknown,
+        _ if any_known => UsageQuality::Partial,
+        _ => UsageQuality::Unknown,
+    };
+    TokenTotals {
+        input,
+        output,
+        reasoning,
+        cache_read,
+        cache_write,
+        total_effective,
+        quality,
+    }
+}
+
+fn aggregate(rows: &[&UsageRecord], value: impl Fn(&UsageRecord) -> Option<u64>) -> Option<u64> {
     if rows.is_empty() {
         return None;
     }
@@ -168,7 +192,7 @@ fn row_total(row: &UsageRecord) -> Option<u64> {
 mod tests {
     use super::efficiency_report;
     use crate::domain::{
-        ActivityRecord, Profile, Risk, Role, RoutingStatus, RunRecord, SessionRecord,
+        ActivityRecord, Profile, Risk, Role, RoutingStatus, RunRecord, RunStatus, SessionRecord,
         SessionStatus, StoreSnapshot, TaskRecord, TaskStatus, UsagePhase, UsageQuality,
         UsageRecord,
     };
@@ -218,9 +242,10 @@ mod tests {
             run: RunRecord {
                 run_id: "run-1".into(),
                 goal: "measure".into(),
-                status: "active".into(),
+                status: RunStatus::Active,
                 repo_root: "/repo".into(),
                 report_path: "/report".into(),
+                updated_at: "2026-07-14T00:00:00Z".into(),
             },
             tasks: ["s1", "s2", "s3"]
                 .into_iter()
@@ -286,6 +311,63 @@ mod tests {
         assert_eq!(report.totals.input, None);
         assert_eq!(report.totals.total_effective, None);
         assert_ne!(report.totals.quality, UsageQuality::Exact);
+    }
+
+    #[test]
+    fn phase_totals_preserve_local_unknown_quality_in_stable_order() {
+        let exact = usage("work", "s1", UsagePhase::Work, Some(100));
+        let mut unknown = usage("retry", "s1", UsagePhase::Retry, None);
+        unknown.output_tokens = None;
+        unknown.reasoning_tokens = None;
+        unknown.cache_read_tokens = None;
+        unknown.cache_write_tokens = None;
+        unknown.quality = UsageQuality::Unknown;
+
+        let report = efficiency_report(&snapshot(vec![exact, unknown], 0));
+        let phases = report
+            .phase_totals
+            .iter()
+            .map(|entry| entry.phase)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            phases,
+            vec![
+                UsagePhase::Bootstrap,
+                UsagePhase::Context,
+                UsagePhase::Work,
+                UsagePhase::Retry,
+                UsagePhase::Escalation,
+                UsagePhase::Review,
+                UsagePhase::Fixer,
+            ]
+        );
+        assert_eq!(report.phase_totals[2].totals.total_effective, Some(100));
+        assert_eq!(report.phase_totals[2].totals.quality, UsageQuality::Exact);
+        assert_eq!(report.phase_totals[3].totals.total_effective, None);
+        assert_eq!(report.phase_totals[3].totals.quality, UsageQuality::Unknown);
+        assert_eq!(report.phase_totals[0].totals.quality, UsageQuality::Unknown);
+    }
+
+    #[test]
+    fn phase_totals_preserve_estimated_and_unsupported_quality() {
+        let mut estimated = usage("estimated", "s1", UsagePhase::Context, Some(55));
+        estimated.quality = UsageQuality::Estimated;
+        let mut unsupported = usage("unsupported", "s1", UsagePhase::Review, None);
+        unsupported.output_tokens = None;
+        unsupported.reasoning_tokens = None;
+        unsupported.cache_read_tokens = None;
+        unsupported.cache_write_tokens = None;
+        unsupported.quality = UsageQuality::Unsupported;
+
+        let report = efficiency_report(&snapshot(vec![estimated, unsupported], 0));
+        assert_eq!(
+            report.phase_totals[1].totals.quality,
+            UsageQuality::Estimated
+        );
+        assert_eq!(
+            report.phase_totals[5].totals.quality,
+            UsageQuality::Unsupported
+        );
     }
 
     #[test]

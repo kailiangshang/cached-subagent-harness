@@ -9,8 +9,8 @@ mod status;
 mod store;
 
 use domain::{
-    ActivityInput, DispatchRequest, Language, Operation, Profile, SessionInput, SessionSignature,
-    SessionStatus, TaskInput, TemplateValues, UsageInput,
+    ActivityInput, DispatchRequest, Language, Operation, Profile, RunStatus, SessionInput,
+    SessionSignature, SessionStatus, TaskInput, TemplateValues, UsageInput,
 };
 use routing::route;
 use sessions::decide;
@@ -462,6 +462,22 @@ fn cmd_init(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+fn cmd_run(args: &[String]) -> Result<(), String> {
+    let parsed = parse_args(args)?;
+    let operation = parsed
+        .positionals
+        .first()
+        .ok_or_else(|| "run requires update".to_string())?;
+    if operation != "update" {
+        return Err(format!("unknown run operation: {operation}"));
+    }
+    let target: RunStatus = parse_value(&parsed, "status")?;
+    let mut store = open_store(&parsed)?;
+    store.update_run(&required_flag(&parsed, "run")?, target)?;
+    println!("OK: run {operation}");
+    Ok(())
+}
+
 fn cmd_task(args: &[String]) -> Result<(), String> {
     let parsed = parse_args(args)?;
     let operation = parsed
@@ -780,6 +796,7 @@ fn usage() -> &'static str {
   harnessctl render-prompt --role ROLE --report PATH [--brief PATH for worker] [--ledger PATH] [--allowed-write-paths PATH]...
   harnessctl check-prompt --file PATH [--max-lines N]
   harnessctl init --db DB --run ID --goal TEXT --repo-root PATH --report PATH
+  harnessctl run update --db DB --run ID --status complete|failed|cancelled
   harnessctl task add|update --db DB ...
   harnessctl decide --db DB --run ID --task ID --host HOST ...
   harnessctl session record|accept-followup|release|close --db DB ...
@@ -802,6 +819,7 @@ fn run() -> Result<(), String> {
         "render-prompt" => cmd_render_prompt(rest),
         "check-prompt" => cmd_check_prompt(rest),
         "init" => cmd_init(rest),
+        "run" => cmd_run(rest),
         "task" => cmd_task(rest),
         "decide" => cmd_decide(rest),
         "session" => cmd_session(rest),
@@ -833,6 +851,47 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn run_update_command_marks_an_audited_run_complete() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("harness-run-cli-{nonce}.db"));
+        let mut store = Store::open(&path).unwrap();
+        store
+            .create_run("run-1", "finish truthfully", "/repo", "/report")
+            .unwrap();
+        drop(store);
+
+        let args = [
+            "update",
+            "--db",
+            path.to_str().unwrap(),
+            "--run",
+            "run-1",
+            "--status",
+            "complete",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+        cmd_run(&args).unwrap();
+
+        assert_eq!(
+            Store::open(&path)
+                .unwrap()
+                .snapshot("run-1")
+                .unwrap()
+                .run
+                .status,
+            domain::RunStatus::Complete
+        );
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+    }
 
     #[test]
     fn check_prompt_rejects_worker_without_write_scope() {

@@ -1,5 +1,5 @@
 use crate::domain::{
-    ActivityInput, ActivityRecord, Profile, Role, RouteDemand, RunRecord, SessionInput,
+    ActivityInput, ActivityRecord, Profile, Role, RouteDemand, RunRecord, RunStatus, SessionInput,
     SessionRecord, SessionSignature, SessionStatus, StoreSnapshot, TaskInput, TaskRecord,
     TaskStatus, UsageInput, UsageRecord,
 };
@@ -210,6 +210,58 @@ impl Store {
                 session_id: None,
                 kind: "plan".into(),
                 summary: "run created".into(),
+            },
+        )?;
+        transaction.commit().map_err(|error| error.to_string())
+    }
+
+    pub(crate) fn update_run(&mut self, run_id: &str, target: RunStatus) -> Result<(), String> {
+        require_nonempty("run_id", run_id)?;
+        if target == RunStatus::Active {
+            return Err("run update requires a terminal status".into());
+        }
+        if target == RunStatus::Complete
+            && let Err(errors) = self.final_audit(run_id)
+        {
+            return Err(format!("final audit failed: {}", errors.join("; ")));
+        }
+        let transaction = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| error.to_string())?;
+        let current: RunStatus = transaction
+            .query_row("SELECT status FROM runs WHERE run_id=?1", [run_id], |row| {
+                let status: String = row.get(0)?;
+                parse_wire(status, 0)
+            })
+            .map_err(|error| error.to_string())?;
+        if current != RunStatus::Active {
+            return Err(format!(
+                "illegal run transition {run_id}: {current} -> {target}"
+            ));
+        }
+        let timestamp = now(&transaction)?;
+        let changed = transaction
+            .execute(
+                "UPDATE runs SET status=?2,updated_at=?3,ended_at=?3 WHERE run_id=?1 AND status='active'",
+                params![run_id, target.as_str(), timestamp],
+            )
+            .map_err(|error| error.to_string())?;
+        if changed != 1 {
+            return Err("run terminal transition lost".into());
+        }
+        append_activity_tx(
+            &transaction,
+            &ActivityInput {
+                run_id: run_id.into(),
+                task_id: None,
+                session_id: None,
+                kind: if target == RunStatus::Failed {
+                    "fail".into()
+                } else {
+                    "close".into()
+                },
+                summary: format!("run {target}"),
             },
         )?;
         transaction.commit().map_err(|error| error.to_string())
@@ -429,7 +481,12 @@ impl Store {
 
     pub(crate) fn record_usage(&mut self, input: &UsageInput) -> Result<(), String> {
         validate_usage_input(input)?;
-        self.conn
+        let transaction = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| error.to_string())?;
+        let timestamp = now(&transaction)?;
+        transaction
             .execute(
                 r#"INSERT INTO usage(
                     usage_id,run_id,task_id,session_id,phase,input_tokens,output_tokens,
@@ -448,11 +505,12 @@ impl Store {
                     to_i64(input.cache_write_tokens)?,
                     input.source,
                     input.quality.as_str(),
-                    now(&self.conn)?,
+                    timestamp,
                 ],
             )
-            .map(|_| ())
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string())?;
+        touch_run_tx(&transaction, &input.run_id, &timestamp)?;
+        transaction.commit().map_err(|error| error.to_string())
     }
 
     pub(crate) fn claim_idle_session(
@@ -544,6 +602,7 @@ impl Store {
         if task_changed != 1 {
             return Err("reused task is missing, active, or belongs to another run".into());
         }
+        touch_run_tx(&transaction, run_id, &timestamp)?;
         transaction.commit().map_err(|error| error.to_string())?;
         Ok(Some(session_id))
     }
@@ -614,17 +673,26 @@ impl Store {
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|error| error.to_string())?;
+        let run_id: String = transaction
+            .query_row(
+                "SELECT run_id FROM sessions WHERE session_id=?1",
+                [session_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())?;
+        let timestamp = now(&transaction)?;
         let changed = transaction
             .execute(
                 r#"UPDATE sessions SET status='idle',current_task_id=NULL,repo_revision=?3,
                        last_used_at=?4
                     WHERE session_id=?1 AND current_task_id=?2 AND status='busy'"#,
-                params![session_id, task_id, revision, now(&transaction)?],
+                params![session_id, task_id, revision, timestamp],
             )
             .map_err(|error| error.to_string())?;
         if changed != 1 {
             return Err("session is not busy on the requested task".into());
         }
+        touch_run_tx(&transaction, &run_id, &timestamp)?;
         transaction.commit().map_err(|error| error.to_string())
     }
 
@@ -642,15 +710,16 @@ impl Store {
         let run = self
             .conn
             .query_row(
-                "SELECT run_id,goal,status,repo_root,report_path FROM runs WHERE run_id=?1",
+                "SELECT run_id,goal,status,repo_root,report_path,updated_at FROM runs WHERE run_id=?1",
                 [run_id],
                 |row| {
                     Ok(RunRecord {
                         run_id: row.get(0)?,
                         goal: row.get(1)?,
-                        status: row.get(2)?,
+                        status: parse_wire(row.get(2)?, 2)?,
                         repo_root: row.get(3)?,
                         report_path: row.get(4)?,
+                        updated_at: row.get(5)?,
                     })
                 },
             )
@@ -1036,6 +1105,7 @@ fn append_activity_tx(transaction: &Transaction<'_>, input: &ActivityInput) -> R
     ) {
         return Err(format!("invalid activity kind: {}", input.kind));
     }
+    let timestamp = now(transaction)?;
     transaction
         .execute(
             "INSERT INTO activity(run_id,task_id,session_id,kind,summary,occurred_at) VALUES(?1,?2,?3,?4,?5,?6)",
@@ -1045,11 +1115,29 @@ fn append_activity_tx(transaction: &Transaction<'_>, input: &ActivityInput) -> R
                 input.session_id,
                 input.kind,
                 input.summary,
-                now(transaction)?,
+                timestamp,
             ],
         )
-        .map(|_| ())
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    touch_run_tx(transaction, &input.run_id, &timestamp)
+}
+
+fn touch_run_tx(
+    transaction: &Transaction<'_>,
+    run_id: &str,
+    timestamp: &str,
+) -> Result<(), String> {
+    let changed = transaction
+        .execute(
+            "UPDATE runs SET updated_at=?2 WHERE run_id=?1",
+            params![run_id, timestamp],
+        )
+        .map_err(|error| error.to_string())?;
+    if changed == 1 {
+        Ok(())
+    } else {
+        Err(format!("run not found while updating freshness: {run_id}"))
+    }
 }
 
 fn now(connection: &Connection) -> Result<String, String> {
@@ -1105,8 +1193,8 @@ fn optional_u64(value: Option<i64>, index: usize) -> rusqlite::Result<Option<u64
 mod tests {
     use super::Store;
     use crate::domain::{
-        Profile, Risk, Role, RoutingStatus, SessionInput, SessionStatus, TaskInput, TaskStatus,
-        UsageInput, UsagePhase, UsageQuality,
+        Profile, Risk, Role, RoutingStatus, RunStatus, SessionInput, SessionStatus, TaskInput,
+        TaskStatus, UsageInput, UsagePhase, UsageQuality,
     };
     use std::collections::BTreeSet;
     use std::fs;
@@ -1196,6 +1284,57 @@ mod tests {
             .unwrap_err();
         assert!(error.contains("illegal task transition"), "{error}");
         assert_eq!(store.snapshot("run-1").unwrap(), before);
+    }
+
+    #[test]
+    fn run_completion_requires_audit_and_terminal_state_is_irreversible() {
+        let (_db, mut store) = seeded_store("run-transition");
+        let error = store.update_run("run-1", RunStatus::Complete).unwrap_err();
+        assert!(error.contains("final audit"), "{error}");
+
+        store
+            .update_task("task-1", TaskStatus::Running, Some("implement"))
+            .unwrap();
+        store
+            .update_task("task-1", TaskStatus::Reported, Some("verify"))
+            .unwrap();
+        store
+            .update_task("task-1", TaskStatus::Accepted, None)
+            .unwrap();
+        store.update_run("run-1", RunStatus::Complete).unwrap();
+        assert_eq!(
+            store.snapshot("run-1").unwrap().run.status,
+            RunStatus::Complete
+        );
+
+        let before = store.snapshot("run-1").unwrap();
+        assert!(store.update_run("run-1", RunStatus::Active).is_err());
+        assert_eq!(store.snapshot("run-1").unwrap(), before);
+    }
+
+    #[test]
+    fn usage_write_advances_persisted_run_freshness() {
+        let (_db, mut store) = seeded_store("run-freshness");
+        let before = store.snapshot("run-1").unwrap().run.updated_at;
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        store
+            .record_usage(&UsageInput {
+                usage_id: "usage-freshness".into(),
+                run_id: "run-1".into(),
+                task_id: Some("task-1".into()),
+                session_id: None,
+                phase: UsagePhase::Work,
+                input_tokens: Some(21),
+                output_tokens: Some(3),
+                reasoning_tokens: Some(0),
+                cache_read_tokens: Some(0),
+                cache_write_tokens: Some(0),
+                source: "host".into(),
+                quality: UsageQuality::Exact,
+            })
+            .unwrap();
+        let after = store.snapshot("run-1").unwrap().run.updated_at;
+        assert!(after > before, "before={before} after={after}");
     }
 
     #[test]

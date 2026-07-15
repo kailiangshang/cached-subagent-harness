@@ -56,6 +56,13 @@ wire_enum!(Role {
     Fixer => "fixer",
 });
 
+wire_enum!(RunStatus {
+    Active => "active",
+    Complete => "complete",
+    Failed => "failed",
+    Cancelled => "cancelled",
+});
+
 wire_enum!(TaskStatus {
     Queued => "queued",
     Running => "running",
@@ -242,9 +249,10 @@ pub(crate) struct ActivityRecord {
 pub(crate) struct RunRecord {
     pub run_id: String,
     pub goal: String,
-    pub status: String,
+    pub status: RunStatus,
     pub repo_root: String,
     pub report_path: String,
+    pub updated_at: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -351,9 +359,16 @@ pub(crate) struct TokenTotals {
     pub quality: UsageQuality,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct PhaseTokenTotals {
+    pub phase: UsagePhase,
+    pub totals: TokenTotals,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct EfficiencyReport {
     pub totals: TokenTotals,
+    pub phase_totals: Vec<PhaseTokenTotals>,
     pub assignments_per_spawn: Option<f64>,
     pub churn_rate: Option<f64>,
     pub reuse_count: u64,
@@ -375,7 +390,8 @@ pub(crate) struct StatusView {
 pub(crate) struct RunStatusView {
     pub run_id: String,
     pub goal: String,
-    pub status: String,
+    pub status: RunStatus,
+    pub updated_at: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

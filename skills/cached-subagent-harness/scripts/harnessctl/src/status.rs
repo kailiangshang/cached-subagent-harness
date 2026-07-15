@@ -26,6 +26,7 @@ pub(crate) fn build_status(store: &Store, run_id: &str) -> Result<StatusView, St
             run_id: snapshot.run.run_id,
             goal: snapshot.run.goal,
             status: snapshot.run.status,
+            updated_at: snapshot.run.updated_at,
         },
         tasks: snapshot
             .tasks
@@ -150,6 +151,8 @@ mod tests {
         assert!(render_text(&view, Language::ZhCn).contains("任务"));
         assert!(render_text(&view, Language::EnUs).contains("Tasks"));
         let json = render_json(&view).unwrap();
+        assert!(json.contains("\"updated_at\":"), "{json}");
+        assert!(json.contains("\"phase_totals\":"), "{json}");
         assert!(json.contains("\"total_effective\": null"));
         assert!(json.contains("task-1"));
         assert!(!json.contains("repo_root"));
