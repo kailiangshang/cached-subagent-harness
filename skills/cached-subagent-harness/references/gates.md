@@ -70,9 +70,10 @@ batch them before attempting a follow-up; never trust a caller-supplied count.
 Every reusable session has an accepted-follow-up cap and total effective token
 budget. Runtime flags may lower but not raise the release defaults. Record
 complete exact normalized usage linked to the current assignment before
-release, and require run/task/session ownership to agree; non-exact usage,
-either exhausted budget, or a changed signature makes the session ineligible
-for reuse.
+release. Require durable follow-up acceptance plus exact usage strictly newer
+than its transactional causal boundary, and require run/task/session ownership
+to agree; non-exact usage, either exhausted budget, or a changed signature
+makes the session ineligible for reuse.
 
 Worker constraints:
 

@@ -244,7 +244,9 @@ Tokens. Flags may lower these release defaults but cannot raise them; a future
 increase requires a versioned durable evidence policy. Missing, non-exact, or
 non-normalizable usage, either exhausted cap, or a changed signature makes the
 Session ineligible. Only complete exact usage linked to the current assignment
-can release it to idle, and usage run/task/session ownership must agree. A
+can release it to idle. Release also requires the task's durable accepted state
+and usage strictly after the acceptance transaction's causal boundary; wall
+clock equality is not evidence. Usage run/task/session ownership must agree. A
 queued task may refresh a still-valid base revision only through a
 compare-and-swap update while unassigned.
 
@@ -339,7 +341,8 @@ as the cheaper successful result.
 5. `session record` stores the actual host handle and requested/actual model.
 6. `task update` records progress, report, acceptance, or failure.
 7. `usage add` atomically validates ownership and records exact normalized
-   assignment usage before release/reuse.
+   assignment usage after durable follow-up acceptance and before
+   release/reuse.
 8. `status`, `watch`, and `dashboard` read the same current-state queries.
 9. `audit` rejects unfinished tasks, nonterminal Sessions, or terminal Sessions
    that retain a current assignment.
@@ -448,8 +451,9 @@ Implementation will:
 - Six compatible ready tasks require one bounded batch and no preplanned
   follow-up chain.
 - Later reuse stops on unknown usage, either exhausted budget, or a changed
-  signature. Only exact current-assignment usage can release it; busy Sessions
-  have one current task and idle/terminal Sessions have none.
+  signature. Only exact current-assignment usage strictly after durable
+  follow-up acceptance can release it; busy Sessions have one current task and
+  idle/terminal Sessions have none.
 - Runtime budget flags can lower but never raise release defaults.
 - Changing any reuse-signature field prevents reuse.
 - Light, standard, and deep routing is deterministic and provider-neutral.

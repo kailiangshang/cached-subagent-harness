@@ -67,7 +67,8 @@ Lifecycle rules:
   cannot raise them. Busy rows have one current task; idle and terminal rows
   have none.
 - record usage only when run, task, and session ownership agree. A reusable
-  release requires complete exact usage linked to that current assignment.
+  release requires durable follow-up acceptance and complete exact usage linked
+  to that current assignment strictly after its transactional causal boundary.
 
 ## Status Names
 

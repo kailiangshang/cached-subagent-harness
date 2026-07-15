@@ -56,6 +56,8 @@ REQUIRED_METHOD_SEMANTICS = [
     "changed compatibility signature closes the reuse path.",
     "Only complete exact usage linked to the current assignment can release a "
     "session for reuse.",
+    "Release also requires durable follow-up acceptance and exact usage "
+    "strictly after its transactional causal boundary.",
     "Usage run, task, and session ownership must agree.",
     "The runtime CLI can lower reuse limits but rejects increases until a "
     "versioned durable policy authorizes them.",

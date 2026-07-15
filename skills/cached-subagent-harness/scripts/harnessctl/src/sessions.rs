@@ -356,8 +356,40 @@ mod tests {
             0,
             UsageQuality::Exact,
         );
-        std::thread::sleep(std::time::Duration::from_millis(2));
+        let unaccepted = release_verified(&mut store, "session-1", "task-1", "abc123").unwrap_err();
+        assert!(unaccepted.contains("accepted follow-up"), "{unaccepted}");
+        let preaccept_observation = "2099-01-01T00:00:00.000Z";
+        let connection = rusqlite::Connection::open(&db.0).unwrap();
+        connection
+            .execute(
+                "UPDATE usage SET observed_at=?1 WHERE usage_id='usage-task-1-before-accept'",
+                [preaccept_observation],
+            )
+            .unwrap();
+        drop(connection);
         accept_followup(&mut store, "session-1", "task-1").unwrap();
+
+        let connection = rusqlite::Connection::open(&db.0).unwrap();
+        let acceptance_boundary: String = connection
+            .query_row(
+                "SELECT last_used_at FROM sessions WHERE session_id='session-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            acceptance_boundary.as_str() > preaccept_observation,
+            "acceptance={acceptance_boundary} preaccept={preaccept_observation}"
+        );
+        connection
+            .execute(
+                r#"UPDATE usage
+                   SET observed_at=(SELECT last_used_at FROM sessions WHERE session_id='session-1')
+                   WHERE usage_id='usage-task-1-before-accept'"#,
+                [],
+            )
+            .unwrap();
+        drop(connection);
 
         let missing = release_verified(&mut store, "session-1", "task-1", "abc123").unwrap_err();
         assert!(missing.contains("exact usage"), "{missing}");
@@ -383,6 +415,20 @@ mod tests {
             0,
             UsageQuality::Exact,
         );
+        let connection = rusqlite::Connection::open(&db.0).unwrap();
+        let observed_at: String = connection
+            .query_row(
+                "SELECT observed_at FROM usage WHERE usage_id='usage-task-1-exact'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            observed_at.as_str() > acceptance_boundary.as_str(),
+            "observed={} boundary={acceptance_boundary}",
+            observed_at
+        );
+        drop(connection);
         release_verified(&mut store, "session-1", "task-1", "abc123").unwrap();
     }
 

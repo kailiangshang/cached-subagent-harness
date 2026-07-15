@@ -111,9 +111,10 @@ invariant wins.
 18. **Unknown is honest.** Unsupported or unavailable telemetry remains
     `unknown`; never convert it to zero, success, or an inferred fact. Only
     complete exact usage linked to the current assignment can release a
-    session for reuse, and usage run/task/session ownership must agree. Unknown
-    or non-exact session usage closes the reuse path because remaining budget
-    cannot be proven.
+    session for reuse. Release also requires durable follow-up acceptance and
+    exact usage strictly after its transactional causal boundary. Usage
+    run/task/session ownership must agree. Unknown or non-exact session usage
+    closes the reuse path because remaining budget cannot be proven.
 19. **Facts do not depend on an LLM.** Validated host results, lifecycle
     operations, and compact current state produce dashboard facts. The display
     never guesses missing state.
@@ -202,10 +203,12 @@ cap and total effective token budget. `harnessctl decide` defaults to one
 accepted follow-up and 200,000 effective tokens. Its flags may lower either
 value but reject increases until a versioned durable policy carries the
 supporting evidence. Record complete exact normalized usage linked to the
-current assignment before release. Usage run, task, and session ownership must
-agree. Unknown or non-exact usage, either exhausted budget, or a changed
-signature ends reuse. Busy sessions have one current task; idle and terminal
-sessions always have `current_task_id=null`.
+current assignment before release. The release transaction requires the
+durable accepted-follow-up flag and usage strictly newer than that acceptance's
+causal boundary. Usage run, task, and session ownership must agree. Unknown or
+non-exact usage, either exhausted budget, or a changed signature ends reuse.
+Busy sessions have one current task; idle and terminal sessions always have
+`current_task_id=null`.
 
 Determine role, risk, uncertainty, and quality floors before optimizing token
 cost. Security-sensitive, destructive, and control-plane changes have a deep

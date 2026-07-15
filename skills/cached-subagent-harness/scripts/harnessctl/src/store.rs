@@ -556,7 +556,6 @@ impl Store {
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|error| error.to_string())?;
-        let timestamp = now(&transaction)?;
         let task_session = if let Some(task_id) = &input.task_id {
             let (task_run_id, task_session_id): (String, Option<String>) = transaction
                 .query_row(
@@ -572,12 +571,12 @@ impl Store {
         } else {
             None
         };
-        if let Some(session_id) = &input.session_id {
-            let session_run_id: String = transaction
+        let session_boundary = if let Some(session_id) = &input.session_id {
+            let (session_run_id, last_used_at): (String, String) = transaction
                 .query_row(
-                    "SELECT run_id FROM sessions WHERE session_id=?1",
+                    "SELECT run_id,last_used_at FROM sessions WHERE session_id=?1",
                     [session_id],
-                    |row| row.get(0),
+                    |row| Ok((row.get(0)?, row.get(1)?)),
                 )
                 .map_err(|error| error.to_string())?;
             if session_run_id != input.run_id {
@@ -586,7 +585,14 @@ impl Store {
             if input.task_id.is_some() && task_session.as_deref() != Some(session_id) {
                 return Err("usage task is not linked to session".into());
             }
-        }
+            Some(last_used_at)
+        } else {
+            None
+        };
+        let timestamp = match session_boundary {
+            Some(boundary) => now_after(&transaction, &boundary)?,
+            None => now(&transaction)?,
+        };
         transaction
             .execute(
                 r#"INSERT INTO usage(
@@ -830,11 +836,11 @@ impl Store {
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|error| error.to_string())?;
-        let run_id: String = transaction
+        let (run_id, session_boundary): (String, String) = transaction
             .query_row(
-                "SELECT run_id FROM sessions WHERE session_id=?1 AND status='busy' AND current_task_id=?2",
+                "SELECT run_id,last_used_at FROM sessions WHERE session_id=?1 AND status='busy' AND current_task_id=?2",
                 params![session_id, task_id],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .map_err(|error| error.to_string())?;
         let accepted = transaction
@@ -857,21 +863,34 @@ impl Store {
             }
             return Err("follow-up task is not linked to this session".into());
         }
+        let latest_preaccept_usage: Option<String> = transaction
+            .query_row(
+                "SELECT MAX(observed_at) FROM usage WHERE run_id=?1 AND session_id=?2 AND task_id=?3",
+                params![run_id, session_id, task_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())?;
+        let causal_boundary = latest_preaccept_usage
+            .as_deref()
+            .filter(|observed_at| *observed_at > session_boundary.as_str())
+            .unwrap_or(&session_boundary);
+        let timestamp = now_after(&transaction, causal_boundary)?;
         transaction
             .execute(
                 "UPDATE sessions SET reuse_count=reuse_count+1,last_used_at=?3 WHERE session_id=?1 AND current_task_id=?2",
-                params![session_id, task_id, now(&transaction)?],
+                params![session_id, task_id, timestamp],
             )
             .map_err(|error| error.to_string())?;
-        append_activity_tx(
+        append_activity_tx_at(
             &transaction,
             &ActivityInput {
-                run_id,
+                run_id: run_id.clone(),
                 task_id: Some(task_id.into()),
                 session_id: Some(session_id.into()),
                 kind: "reuse".into(),
                 summary: "follow-up accepted".into(),
             },
+            &timestamp,
         )?;
         transaction.commit().map_err(|error| error.to_string())
     }
@@ -887,13 +906,24 @@ impl Store {
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|error| error.to_string())?;
-        let run_id: String = transaction
+        let (run_id, reuse_accepted, acceptance_boundary): (String, bool, String) = transaction
             .query_row(
-                "SELECT run_id FROM sessions WHERE session_id=?1",
-                [session_id],
-                |row| row.get(0),
+                r#"SELECT sessions.run_id,tasks.reuse_accepted,sessions.last_used_at
+                    FROM sessions JOIN tasks ON tasks.task_id=?2
+                    WHERE sessions.session_id=?1
+                      AND sessions.status='busy'
+                      AND sessions.current_task_id=tasks.task_id
+                      AND tasks.session_id=sessions.session_id
+                      AND tasks.run_id=sessions.run_id"#,
+                params![session_id, task_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .map_err(|error| error.to_string())?;
+        if !reuse_accepted {
+            return Err(format!(
+                "session release requires accepted follow-up for task {task_id}"
+            ));
+        }
         let exact_usage_count: i64 = transaction
             .query_row(
                 r#"SELECT COUNT(*) FROM usage
@@ -904,10 +934,8 @@ impl Store {
                       AND reasoning_tokens IS NOT NULL
                       AND cache_read_tokens IS NOT NULL
                       AND cache_write_tokens IS NOT NULL
-                      AND observed_at >= (
-                          SELECT last_used_at FROM sessions WHERE session_id=?2
-                      )"#,
-                params![run_id, session_id, task_id],
+                      AND observed_at > ?4"#,
+                params![run_id, session_id, task_id, acceptance_boundary],
                 |row| row.get(0),
             )
             .map_err(|error| error.to_string())?;
@@ -916,7 +944,22 @@ impl Store {
                 "session release requires fresh exact usage for task {task_id}"
             ));
         }
-        let timestamp = now(&transaction)?;
+        let latest_exact_usage: String = transaction
+            .query_row(
+                r#"SELECT MAX(observed_at) FROM usage
+                    WHERE run_id=?1 AND session_id=?2 AND task_id=?3
+                      AND quality='exact'
+                      AND input_tokens IS NOT NULL
+                      AND output_tokens IS NOT NULL
+                      AND reasoning_tokens IS NOT NULL
+                      AND cache_read_tokens IS NOT NULL
+                      AND cache_write_tokens IS NOT NULL
+                      AND observed_at > ?4"#,
+                params![run_id, session_id, task_id, acceptance_boundary],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())?;
+        let timestamp = now_after(&transaction, &latest_exact_usage)?;
         let changed = transaction
             .execute(
                 r#"UPDATE sessions SET status='idle',current_task_id=NULL,repo_revision=?3,
@@ -1344,6 +1387,15 @@ fn task_activity(target: TaskStatus) -> (&'static str, &'static str) {
 }
 
 fn append_activity_tx(transaction: &Transaction<'_>, input: &ActivityInput) -> Result<(), String> {
+    let timestamp = now(transaction)?;
+    append_activity_tx_at(transaction, input, &timestamp)
+}
+
+fn append_activity_tx_at(
+    transaction: &Transaction<'_>,
+    input: &ActivityInput,
+    timestamp: &str,
+) -> Result<(), String> {
     for (name, value) in [
         ("run_id", input.run_id.as_str()),
         ("kind", input.kind.as_str()),
@@ -1367,7 +1419,6 @@ fn append_activity_tx(transaction: &Transaction<'_>, input: &ActivityInput) -> R
     ) {
         return Err(format!("invalid activity kind: {}", input.kind));
     }
-    let timestamp = now(transaction)?;
     transaction
         .execute(
             "INSERT INTO activity(run_id,task_id,session_id,kind,summary,occurred_at) VALUES(?1,?2,?3,?4,?5,?6)",
@@ -1381,7 +1432,7 @@ fn append_activity_tx(transaction: &Transaction<'_>, input: &ActivityInput) -> R
             ],
         )
         .map_err(|error| error.to_string())?;
-    touch_run_tx(transaction, &input.run_id, &timestamp)
+    touch_run_tx(transaction, &input.run_id, timestamp)
 }
 
 fn touch_run_tx(
@@ -1391,7 +1442,7 @@ fn touch_run_tx(
 ) -> Result<(), String> {
     let changed = transaction
         .execute(
-            "UPDATE runs SET updated_at=?2 WHERE run_id=?1",
+            "UPDATE runs SET updated_at=CASE WHEN updated_at < ?2 THEN ?2 ELSE updated_at END WHERE run_id=?1",
             params![run_id, timestamp],
         )
         .map_err(|error| error.to_string())?;
@@ -1407,6 +1458,19 @@ fn now(connection: &Connection) -> Result<String, String> {
         .query_row("SELECT strftime('%Y-%m-%dT%H:%M:%fZ','now')", [], |row| {
             row.get(0)
         })
+        .map_err(|error| error.to_string())
+}
+
+fn now_after(connection: &Connection, boundary: &str) -> Result<String, String> {
+    connection
+        .query_row(
+            r#"SELECT strftime(
+                    '%Y-%m-%dT%H:%M:%fZ',
+                    MAX(julianday('now'), julianday(?1) + 1.0 / 86400000.0)
+                )"#,
+            [boundary],
+            |row| row.get(0),
+        )
         .map_err(|error| error.to_string())
 }
 

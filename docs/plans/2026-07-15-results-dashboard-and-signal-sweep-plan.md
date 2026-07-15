@@ -27,6 +27,8 @@ without changing product scope. Remaining release work uses these corrections:
 
 - known compatible ready assignments return `BatchThenSpawn` before reuse;
 - later reuse defaults to one accepted follow-up and 200,000 effective Tokens;
+- release requires durable follow-up acceptance and exact assignment usage
+  strictly after its transactional causal boundary;
 - unknown usage or either exhausted budget makes reuse ineligible;
 - queued revision refresh is compare-and-swap and unassigned-only;
 - Codex totals are normalized into non-overlapping input/cache/output/reasoning

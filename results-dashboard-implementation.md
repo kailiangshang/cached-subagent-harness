@@ -275,8 +275,8 @@ budgets.
 - Usage-gate RED: all-numeric partial/estimated/unsupported/unknown rows proved
   a reuse budget, and old exact rows could release a later assignment. Reuse
   now requires every counted row to be exact and complete; release requires a
-  complete exact task/session observation at or after the accepted assignment's
-  last-use boundary.
+  complete exact task/session observation strictly after the accepted
+  assignment's transactional causal boundary.
 - Ownership RED: independently valid foreign keys allowed a usage row to mix a
   Run with another Run's Task or Session. Transactional checks now reject task,
   Session, and linked task/Session mismatches without changing either Run.
@@ -308,6 +308,24 @@ budgets.
   Benchmark Python 15/15, Standalone 9/9, remaining Python 6/6 + 3/3,
   Clippy, prompt-cache, token-effectiveness, game A/B, and final lifecycle
   audit gates.
+- Closure re-review found one remaining causal-ordering defect: millisecond
+  timestamp equality let pre-accept exact usage release a Session, and release
+  did not require the task's durable `reuse_accepted` state. Both reviewers
+  reproduced the issue independently; no other prior Important finding
+  remained open.
+- Causal-release RED: the focused Session regression failed because exact
+  usage written after claim but before `accept_followup` released successfully.
+  The same test also fixes pre-accept usage to the acceptance millisecond and
+  freezes the wall clock behind the boundary.
+- Causal-release GREEN: release now requires `reuse_accepted=1`; acceptance
+  advances a transactionally serialized logical timestamp beyond all existing
+  assignment usage; new usage advances beyond that boundary; release requires
+  strict ordering. The focused regression and Rust 50/50 pass without sleeps or
+  a schema/table migration.
+- `scripts/verify.sh` — PASS on 2026-07-15 after the causal-release fix;
+  release metadata, Rust 50/50, Benchmark Python 15/15, Standalone 9/9,
+  remaining Python 6/6 + 3/3, Clippy, prompt-cache, token-effectiveness, game
+  A/B, release build, and final lifecycle audit all passed.
 
 ## Review Findings
 
@@ -316,8 +334,11 @@ Initial spec/compliance review by `final_reviewer` and code/security review by
 were reproduced or verified against source and addressed in one controller fix
 pass. The arbitrary budget-raise suggestion was resolved by rejecting raises
 instead of adding a migration/table, preserving the lightweight product
-boundary. Closure re-review is pending; final status remains incomplete until
-both reviewers return `Ready: Yes` with no open Critical/Important finding.
+boundary. The first closure re-review closed every original finding except the
+fresh-usage causal boundary and found no Critical issue. That final defect is
+now fixed and awaits one targeted closure confirmation; final status remains
+incomplete until both reviewers return `Ready: Yes` with no open
+Critical/Important finding.
 
 ## Risks
 
@@ -335,12 +356,10 @@ both reviewers return `Ready: Yes` with no open Critical/Important finding.
 
 ## Next Actions
 
-1. Commit the review-fix checkpoint and run closure re-review with both existing
-   read-only reviewer handles.
-2. Close any remaining Critical or Important finding.
-3. Re-run all release gates and complete the final
-   lifecycle audit.
-4. Start the Harness-only Dashboard from the exact completed Signal Sweep
+1. Obtain targeted closure confirmation for the causal-release fix from both
+   existing read-only reviewer handles.
+2. Re-run all release gates and complete the final lifecycle audit.
+3. Start the Harness-only Dashboard from the exact completed Signal Sweep
    ledger and verify `/health` plus `/api/status`.
 
 ## External Agent Reconciliation

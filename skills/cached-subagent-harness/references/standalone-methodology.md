@@ -19,7 +19,9 @@ only after the host accepts the follow-up. Every reusable session has an
 accepted-follow-up cap and a total effective token budget; unknown usage, either
 exhausted budget, or a changed compatibility signature closes the reuse path.
 Only complete exact usage linked to the current assignment can release a
-session for reuse. Usage run, task, and session ownership must agree. The
+session for reuse. Release also requires durable follow-up acceptance and exact
+usage strictly after its transactional causal boundary. Usage run, task, and
+session ownership must agree. The
 runtime CLI can lower reuse limits but rejects increases until a versioned
 durable policy authorizes them. Refresh a queued task's base revision only
 through a compare-and-swap update while the task is unassigned; otherwise
