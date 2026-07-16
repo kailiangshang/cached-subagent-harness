@@ -133,7 +133,7 @@ function Install-VerifiedRelease {
         }
         $ExpectedMembers = @('harnessctl.exe', 'LICENSE')
         if ($Members.Count -ne 2 -or
-            (Compare-Object -ReferenceObject $ExpectedMembers -DifferenceObject $Members).Count -ne 0 -or
+            @(Compare-Object -ReferenceObject $ExpectedMembers -DifferenceObject $Members).Count -ne 0 -or
             $UnsafeMemberTypes.Count -ne 0) {
             throw 'harnessctl release archive has an unsafe member set'
         }
