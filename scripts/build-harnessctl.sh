@@ -16,7 +16,7 @@ if [ ! -f "$crate_dir/Cargo.toml" ]; then
   exit 1
 fi
 
-cargo build --release --manifest-path "$crate_dir/Cargo.toml"
+cargo build --release --locked --manifest-path "$crate_dir/Cargo.toml"
 mkdir -p "$bin_dir"
 tmp_bin="$(mktemp "$bin_dir/.harnessctl.XXXXXX")"
 cleanup() {

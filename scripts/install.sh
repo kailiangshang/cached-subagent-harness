@@ -2,21 +2,25 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+. "$repo_root/scripts/install-runtime.sh"
 codex_home="${CODEX_HOME:-"$HOME/.codex"}"
 superpowers_ref="${SUPERPOWERS_REF:-main}"
 force=0
 with_superpowers=0
-skip_build=0
+binary_source="auto"
+release_base_url="${HARNESS_RELEASE_BASE_URL:-}"
 
 usage() {
   cat <<'USAGE'
-usage: scripts/install.sh [--codex-home PATH] [--force] [--skip-build] [--with-superpowers] [--skip-superpowers]
+usage: scripts/install.sh [--codex-home PATH] [--force] [--binary-source auto|download|build|none] [--release-base-url URL] [--skip-build] [--with-superpowers] [--skip-superpowers]
 
 Installs cached-subagent-harness into $CODEX_HOME/skills as a standalone skill by default.
 Use --with-superpowers to install the optional Superpowers integration.
+The default binary source is auto: verified exact-version download, then a locked Cargo build fallback.
 
 Environment:
   SUPERPOWERS_REF  Branch, tag, or commit to install from obra/superpowers. Defaults to main.
+  HARNESS_RELEASE_BASE_URL  Exact-version release asset directory used instead of GitHub.
 USAGE
 }
 
@@ -39,8 +43,17 @@ while [ "$#" -gt 0 ]; do
       shift
       ;;
     --skip-build)
-      skip_build=1
+      echo "warning: --skip-build is deprecated; use --binary-source none" >&2
+      binary_source="none"
       shift
+      ;;
+    --binary-source)
+      binary_source="$2"
+      shift 2
+      ;;
+    --release-base-url)
+      release_base_url="$2"
+      shift 2
       ;;
     -h|--help)
       usage
@@ -54,9 +67,30 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
+case "$binary_source" in
+  auto|download|build|none) ;;
+  *)
+    echo "error: --binary-source must be auto, download, build, or none" >&2
+    usage >&2
+    exit 1
+    ;;
+esac
+
 skills_dir="$codex_home/skills"
 skill_src="$repo_root/skills/cached-subagent-harness"
 skill_dst="$skills_dir/cached-subagent-harness"
+package_version="$(
+  awk -F '"' '
+    /^[[:space:]]*"version"[[:space:]]*:/ { print $4; found += 1 }
+    END { if (found != 1) exit 1 }
+  ' "$repo_root/.codex-plugin/plugin.json"
+)" || {
+  echo "error: cannot read package version" >&2
+  exit 1
+}
+if [ -z "$release_base_url" ]; then
+  release_base_url="https://github.com/kailiangshang/cached-subagent-harness/releases/download/v$package_version"
+fi
 
 has_superpowers() {
   [ -f "$skills_dir/using-superpowers/SKILL.md" ] && return 0
@@ -158,24 +192,44 @@ install_cached_skill() {
     rm -rf "$skill_dst"
   fi
   cp -a "$skill_src" "$skill_dst"
+  rm -f \
+    "$skill_dst/scripts/bin/harnessctl" \
+    "$skill_dst/scripts/bin/harnessctl.exe"
   echo "installed cached-subagent-harness skill: $skill_dst"
 }
 
-build_harnessctl() {
-  if [ "$skip_build" -eq 1 ]; then
-    echo "skipping harnessctl build"
-    return 0
-  fi
-  if command -v cargo >/dev/null 2>&1; then
-    SKILL_DIR="$skill_dst" "$repo_root/scripts/build-harnessctl.sh"
-  else
-    echo "warning: cargo not found; harnessctl binary was not built" >&2
-    echo "the skill can still use legacy Python helpers, but ledger enforcement is degraded" >&2
-  fi
+install_harnessctl() {
+  case "$binary_source" in
+    none)
+      echo "warning: harnessctl runtime was not installed (--binary-source none)" >&2
+      ;;
+    download)
+      if ! install_verified_release "$package_version" "$release_base_url" "$skill_dst"; then
+        echo "error: verified harnessctl download failed; installed Skill is preserved" >&2
+        return 1
+      fi
+      ;;
+    build)
+      if ! build_runtime "$skill_dst" "$repo_root"; then
+        echo "error: harnessctl source build failed; installed Skill is preserved" >&2
+        return 1
+      fi
+      ;;
+    auto)
+      if install_verified_release "$package_version" "$release_base_url" "$skill_dst"; then
+        return 0
+      fi
+      echo "warning: verified harnessctl download unavailable; falling back to locked Cargo build" >&2
+      if ! build_runtime "$skill_dst" "$repo_root"; then
+        echo "error: no verified harnessctl runtime could be installed; installed Skill is preserved" >&2
+        return 1
+      fi
+      ;;
+  esac
 }
 
 install_cached_skill
-build_harnessctl
+install_harnessctl
 
 if [ "$with_superpowers" -eq 1 ]; then
   if ! install_superpowers; then

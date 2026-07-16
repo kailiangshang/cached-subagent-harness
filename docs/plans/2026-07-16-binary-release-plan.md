@@ -171,7 +171,7 @@ git commit -m "feat: package versioned harnessctl releases"
   `--release-base-url URL`; `HARNESS_RELEASE_BASE_URL` is the test/mirror
   environment equivalent.
 
-- [ ] **Step 1: Write failing Bash installer tests**
+- [x] **Step 1: Write failing Bash installer tests**
 
 Extend `InstallScriptTests` with a fixture that calls the Task 1 packager to
 create a real local release directory and runs the installer against its
@@ -191,7 +191,7 @@ def test_unsupported_platform_is_explicit(self): ...
 The successful assertion is that the installed runtime bytes match the
 packaged fixture, are executable, and no fake Cargo invocation was recorded.
 
-- [ ] **Step 2: Run tests and observe RED**
+- [x] **Step 2: Run tests and observe RED**
 
 Run:
 
@@ -202,7 +202,7 @@ python3 -m unittest scripts.test_install -v
 Expected: new cases fail because binary-source parsing and verified download
 do not exist.
 
-- [ ] **Step 3: Implement the minimal Bash acquisition library**
+- [x] **Step 3: Implement the minimal Bash acquisition library**
 
 Use strict Bash mode, quoted arrays, `mktemp -d`, and a cleanup trap. Detect
 `Linux`/`Darwin` plus `x86_64|amd64` and `aarch64|arm64`. Use `curl --fail
@@ -219,7 +219,7 @@ successful core runtime handling. Print the requested version, selected source,
 observed target, and final runtime path without printing secrets or URLs with
 credentials.
 
-- [ ] **Step 4: Run installer GREEN and regression checks**
+- [x] **Step 4: Run installer GREEN and regression checks**
 
 Run:
 
@@ -230,7 +230,7 @@ bash -n scripts/install.sh scripts/install-runtime.sh
 
 Expected: every installer test passes and both scripts parse cleanly.
 
-- [ ] **Step 5: Commit Task 2**
+- [x] **Step 5: Commit Task 2**
 
 ```bash
 git add scripts/install.sh scripts/install-runtime.sh scripts/test_install.py

@@ -1,6 +1,6 @@
 # Binary Release Implementation
 
-Status: implementation — release packaging complete
+Status: implementation — Bash verified installation complete
 
 ## PSOC
 
@@ -72,6 +72,8 @@ and generated Cargo lock metadata.
 
 Task 1 adds deterministic five-target release packaging, checksum generation,
 tag/plugin/Cargo version validation, and version `0.2.0` metadata.
+Task 2 adds exact-version Bash download, SHA-256 and archive-member validation,
+atomic runtime replacement, locked Cargo fallback, and explicit source modes.
 
 ## Tests
 
@@ -80,6 +82,11 @@ Implementation plan written at
 packager and absent tag gate. GREEN passed 8/8 focused distribution tests,
 release metadata validation for `v0.2.0`, Python syntax checks, and locked Cargo
 check for `harnessctl 0.2.0`.
+- Task 2 RED rejected the absent binary-source interface. Its first GREEN run
+  exposed non-portable `awk` interval syntax and a stale ignored runtime copied
+  from a developer checkout. Both root causes were fixed without weakening the
+  tests. GREEN passed 15/15 install tests, 8/8 distribution tests, Bash syntax,
+  and release validation.
 
 ## Review Findings
 
