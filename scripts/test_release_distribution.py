@@ -220,6 +220,7 @@ class PowerShellInstallerContractTests(unittest.TestCase):
             "Get-ReleaseTarget",
             "Copy-ReleaseFile",
             "Test-ZipEntryIsRegularFile",
+            "Install-StagedRuntime",
             "Install-VerifiedRelease",
             "Build-HarnessRuntime",
             "Invoke-HarnessInstall",
@@ -247,7 +248,9 @@ class PowerShellInstallerContractTests(unittest.TestCase):
         self.assertIn("Invoke-HarnessInstall", text)
         self.assertIn("BinarySource None", text)
         for scenario in [
+            "Start-ReleaseHttpFixture",
             "Test-DownloadSuccess",
+            "Test-HttpDownloadSuccess",
             "Test-ChecksumMismatch",
             "Test-MissingAndDuplicateChecksum",
             "Test-UnsafeZipMember",
@@ -255,6 +258,7 @@ class PowerShellInstallerContractTests(unittest.TestCase):
             "Test-AutoFallsBackToBuild",
             "Test-BuildNeverDownloads",
             "Test-PathWithSpaces",
+            "Test-ReplacementFailure",
         ]:
             self.assertIn(scenario, text)
         self.assertNotIn("Pester", text)

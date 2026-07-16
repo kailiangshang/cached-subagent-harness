@@ -1,7 +1,7 @@
 # Binary Release Implementation
 
-Status: independent review fixes implemented and locally verified; re-review,
-native CI, and public Release acceptance pending
+Status: second review-fix pass locally verified; native Windows preflight,
+final re-review, and public Release acceptance pending
 
 ## PSOC
 
@@ -52,7 +52,9 @@ The durable Run currently tracks:
 | `release-docs` | main controller | accepted | `94bb940` |
 | `release-review-publish` | independent reviewer | failed | Session stalled without a report and was closed with an explicit failure reason |
 | `release-review-retry` | independent reviewer | accepted | `/tmp/cached-subagent-harness-v0.2.0-security-review.md` |
-| `release-review-fixes` | main controller/fixer | running | current batched review-fix diff |
+| `release-review-fixes` | main controller/fixer | accepted | `24f3b1a` plus fresh local verification |
+| `release-review-rereview` | independent reviewer | accepted | `/tmp/cached-subagent-harness-v0.2.0-rereview.md`; one Important gap remains |
+| `release-review-http-fix` | main controller/fixer | reported | TDD and fresh local verification complete in the current diff |
 
 ## Write Scope
 
@@ -68,6 +70,9 @@ and generated Cargo lock metadata.
 - Public claim: long-running Token-aware control; no positive live Token-saving
   claim.
 - User authorized autonomous intermediate decisions and creation of the public
+  GitHub Release.
+- Before merging to `main`, push the versioned feature branch as a preflight so
+  normal CI can execute the native Windows suite without creating a tag or
   GitHub Release.
 
 ## Evidence
@@ -108,6 +113,9 @@ behavior coverage for all acquisition boundaries, pins every Action and Rust
 version, narrows compatibility certification to the build/test runners,
 removes unenforced immutability claims, declares CI permissions explicitly,
 and enforces canonical Semantic Versioning.
+The second fix adds a dependency-free loopback HTTP fixture that exercises the
+production `Invoke-WebRequest` path and a locked-destination replacement test;
+both download and build paths now share failure-cleaned staged replacement.
 
 ## Tests
 
@@ -140,6 +148,11 @@ check for `harnessctl 0.2.0`.
   all 20 invariants. Explicit `--tag v0.2.0` validation, workflow YAML parsing,
   invariant byte-preservation against `9537711`, and `git diff --check` also
   exited 0. Native Windows execution remains an external CI gate.
+- Second-fix RED failed because the native contract lacked loopback HTTP and
+  replacement-failure scenarios. GREEN passed 2/2 focused PowerShell static
+  contracts, 12/12 release distribution tests, and 21/21 standalone contracts.
+  A fresh full `scripts/verify.sh` again passed 52/52 Rust and 71/71 Python
+  tests plus every build, benchmark, prompt, lifecycle, and invariant gate.
 
 ## Review Findings
 
@@ -148,10 +161,16 @@ The independent release/security review reported 0 Critical, 5 Important, and
 
 - I1, archive links: fixed by rejecting every non-regular tar/ZIP member and
   rechecking extracted paths; symlink and hardlink regressions are covered.
-- I2, Windows behavior unproved: fixed locally by expanding the dependency-free
+- I2, Windows behavior unproved: the first fix expanded the dependency-free
   PowerShell suite across Download, checksum failure, duplicate/missing digest,
   unsafe ZIP type, Auto fallback, Build isolation, forced Download isolation,
-  and paths with spaces. Native proof remains mandatory in Windows CI.
+  and paths with spaces. Narrow re-review found that successful cases still use
+  the local `Copy-Item` seam and that replacement failure is not exercised, so
+  production `Invoke-WebRequest` and failure-safe replacement remained open.
+  The second fix now serves the exact fixture over loopback HTTP, verifies the
+  installed bytes without Cargo, forces an exclusive-lock replacement failure,
+  preserves destination bytes, rejects misleading success, and removes staging
+  residue. Native Windows CI and re-review must still accept this evidence.
 - I3, mutable Actions/toolchain: fixed with reviewed full Action SHAs and Rust
   `1.96.1` in normal CI and Release workflows.
 - I4, undefined compatibility floor: resolved by narrowing certification to
@@ -162,7 +181,9 @@ The independent release/security review reported 0 Critical, 5 Important, and
 - M1 and M2: normal CI now declares `contents: read`; release packaging and
   validation now enforce canonical Semantic Versioning.
 
-Fresh independent re-review of the batched fixes is pending.
+The first narrow re-review resolved I1 and I3-I5 at Important severity, M1-M2,
+and found no new Critical issue. It retained I2 as Important and recorded the
+missing explicit directory/duplicate/traversal archive cases as Minor.
 
 ## Risks
 
@@ -176,8 +197,9 @@ Fresh independent re-review of the batched fixes is pending.
 
 ## Next Actions
 
-Commit this locally verified batched fix and obtain a fresh read-only re-review.
-Then merge and push source, require normal CI including the native
+Commit the second fix and push the feature branch for native Windows preflight.
+After CI and a narrow read-only re-review accept it, merge and push source,
+require normal CI including the native
 PowerShell suite to pass, publish tag `v0.2.0`, inspect and execute the public
 Linux asset, and close the lifecycle audit.
 
@@ -187,6 +209,8 @@ Linux asset, and close the lifecycle audit.
   a report; no result was used.
 - `binary-release-review-retry-20260716`: reported the accepted security
   review and is closed.
+- `binary-release-rereview-20260716`: reported one remaining Important Windows
+  proof gap and is closed; its negative publication verdict is retained.
 - UI-visible historical Sessions are outside this Run and do not affect this
   task's Agent budget or closure.
 

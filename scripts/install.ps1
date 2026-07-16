@@ -56,6 +56,29 @@ function Test-ZipEntryIsRegularFile {
     return $UnixType -eq 0x8000
 }
 
+function Install-StagedRuntime {
+    param(
+        [Parameter(Mandatory)][string]$RuntimeSource,
+        [Parameter(Mandatory)][string]$BinDir,
+        [Parameter(Mandatory)][ValidateSet('install', 'build')]
+        [string]$StageKind
+    )
+    New-Item -ItemType Directory -Path $BinDir -Force | Out-Null
+    $Destination = Join-Path $BinDir 'harnessctl.exe'
+    $Staged = Join-Path $BinDir ('.harnessctl.' + $StageKind + '.' + [guid]::NewGuid() + '.exe')
+    try {
+        if (Test-Path -LiteralPath $Destination -PathType Container) {
+            throw 'runtime destination is a directory'
+        }
+        Copy-Item -LiteralPath $RuntimeSource -Destination $Staged
+        Move-Item -LiteralPath $Staged -Destination $Destination -Force
+    }
+    catch {
+        Remove-Item -LiteralPath $Staged -Force -ErrorAction SilentlyContinue
+        throw "harnessctl runtime replacement failed: $($_.Exception.Message)"
+    }
+}
+
 function Install-VerifiedRelease {
     param(
         [Parameter(Mandatory)][string]$Version,
@@ -124,11 +147,10 @@ function Install-VerifiedRelease {
             ((Get-Item -LiteralPath $LicenseSource).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
             throw 'harnessctl release executable is missing'
         }
-        $BinDir = Join-Path $SkillRoot 'scripts/bin'
-        New-Item -ItemType Directory -Path $BinDir -Force | Out-Null
-        $Staged = Join-Path $BinDir ('.harnessctl.install.' + [guid]::NewGuid() + '.exe')
-        Copy-Item -LiteralPath $RuntimeSource -Destination $Staged
-        Move-Item -LiteralPath $Staged -Destination (Join-Path $BinDir 'harnessctl.exe') -Force
+        Install-StagedRuntime `
+            -RuntimeSource $RuntimeSource `
+            -BinDir (Join-Path $SkillRoot 'scripts/bin') `
+            -StageKind install
         Write-Output "Installed verified harnessctl $Version for $Target"
     }
     finally {
@@ -151,11 +173,10 @@ function Build-HarnessRuntime {
     if (-not (Test-Path -LiteralPath $RuntimeSource -PathType Leaf)) {
         throw "Cargo did not produce $RuntimeSource"
     }
-    $BinDir = Join-Path $SkillRoot 'scripts/bin'
-    New-Item -ItemType Directory -Path $BinDir -Force | Out-Null
-    $Staged = Join-Path $BinDir ('.harnessctl.build.' + [guid]::NewGuid() + '.exe')
-    Copy-Item -LiteralPath $RuntimeSource -Destination $Staged
-    Move-Item -LiteralPath $Staged -Destination (Join-Path $BinDir 'harnessctl.exe') -Force
+    Install-StagedRuntime `
+        -RuntimeSource $RuntimeSource `
+        -BinDir (Join-Path $SkillRoot 'scripts/bin') `
+        -StageKind build
     Write-Output "Built $($SkillRoot)/scripts/bin/harnessctl.exe"
 }
 

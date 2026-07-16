@@ -103,6 +103,114 @@ function New-ReleaseFixture {
     return $Fixture
 }
 
+function Start-ReleaseHttpFixture {
+    param(
+        [Parameter(Mandatory)][string]$ReleaseRoot,
+        [Parameter(Mandatory)][string]$StateRoot
+    )
+    $PortPath = Join-Path $StateRoot ("http-port-" + [guid]::NewGuid())
+    $Job = Start-Job -ArgumentList $ReleaseRoot, $PortPath -ScriptBlock {
+        param($Root, $PortFile)
+        $ErrorActionPreference = 'Stop'
+        $Listener = [System.Net.Sockets.TcpListener]::new(
+            [System.Net.IPAddress]::Loopback,
+            0
+        )
+        $Listener.Start()
+        try {
+            $Port = ([System.Net.IPEndPoint]$Listener.LocalEndpoint).Port
+            [IO.File]::WriteAllText($PortFile, [string]$Port)
+            foreach ($RequestNumber in 1..2) {
+                $Client = $Listener.AcceptTcpClient()
+                try {
+                    $Stream = $Client.GetStream()
+                    $Reader = [IO.StreamReader]::new(
+                        $Stream,
+                        [Text.Encoding]::ASCII,
+                        $false,
+                        1024,
+                        $true
+                    )
+                    try {
+                        $RequestLine = $Reader.ReadLine()
+                        do {
+                            $HeaderLine = $Reader.ReadLine()
+                        } while ($null -ne $HeaderLine -and $HeaderLine -ne '')
+                    }
+                    finally {
+                        $Reader.Dispose()
+                    }
+
+                    $Parts = @($RequestLine -split ' ')
+                    $Name = ''
+                    if ($Parts.Count -ge 2) {
+                        $RequestPath = $Parts[1].Split('?')[0].TrimStart([char]'/')
+                        $Name = [Uri]::UnescapeDataString($RequestPath)
+                    }
+                    $SafeName = $Name -and $Name -notmatch '[/\\]' -and $Name -notin @('.', '..')
+                    $Source = if ($SafeName) { Join-Path $Root $Name } else { '' }
+                    if ($SafeName -and (Test-Path -LiteralPath $Source -PathType Leaf)) {
+                        $Status = '200 OK'
+                        $Body = [IO.File]::ReadAllBytes($Source)
+                    }
+                    else {
+                        $Status = '404 Not Found'
+                        $Body = [Text.Encoding]::UTF8.GetBytes('not found')
+                    }
+                    $Header = "HTTP/1.1 $Status`r`nContent-Length: $($Body.Length)`r`nConnection: close`r`n`r`n"
+                    $HeaderBytes = [Text.Encoding]::ASCII.GetBytes($Header)
+                    $Stream.Write($HeaderBytes, 0, $HeaderBytes.Length)
+                    $Stream.Write($Body, 0, $Body.Length)
+                    $Stream.Flush()
+                }
+                finally {
+                    $Client.Dispose()
+                }
+            }
+        }
+        finally {
+            $Listener.Stop()
+        }
+    }
+
+    $Deadline = [DateTime]::UtcNow.AddSeconds(10)
+    while (-not (Test-Path -LiteralPath $PortPath -PathType Leaf)) {
+        if ($Job.State -in @('Completed', 'Failed', 'Stopped')) {
+            $Details = Receive-Job -Job $Job -ErrorAction SilentlyContinue | Out-String
+            Remove-Job -Job $Job -Force
+            throw "Loopback HTTP fixture stopped before startup: $Details"
+        }
+        if ([DateTime]::UtcNow -ge $Deadline) {
+            Stop-Job -Job $Job -ErrorAction SilentlyContinue
+            Remove-Job -Job $Job -Force
+            throw 'Loopback HTTP fixture startup timed out'
+        }
+        Start-Sleep -Milliseconds 25
+    }
+
+    return [pscustomobject]@{
+        Job = $Job
+        BaseUrl = 'http://127.0.0.1:' + (Get-Content -LiteralPath $PortPath -Raw)
+    }
+}
+
+function Complete-ReleaseHttpFixture {
+    param([Parameter(Mandatory)]$Server)
+    $Completed = Wait-Job -Job $Server.Job -Timeout 10
+    if ($null -eq $Completed) {
+        Stop-Job -Job $Server.Job -ErrorAction SilentlyContinue
+        Receive-Job -Job $Server.Job -ErrorAction SilentlyContinue | Out-Null
+        Remove-Job -Job $Server.Job -Force
+        throw 'Loopback HTTP fixture did not receive both release requests'
+    }
+    $State = $Server.Job.State
+    $Details = Receive-Job -Job $Server.Job -ErrorAction SilentlyContinue | Out-String
+    Remove-Job -Job $Server.Job -Force
+    if ($State -ne 'Completed') {
+        throw "Loopback HTTP fixture failed: $Details"
+    }
+}
+
 function Get-InstalledRuntime {
     param([Parameter(Mandatory)][string]$CodexHome)
     return Join-Path $CodexHome 'skills/cached-subagent-harness/scripts/bin/harnessctl.exe'
@@ -144,6 +252,27 @@ function Test-DownloadSuccess {
     Assert-Equal $script:CargoInvocationCount $Before 'Download invoked Cargo'
     $Actual = [IO.File]::ReadAllBytes((Get-InstalledRuntime -CodexHome $CodexHome))
     Assert-Equal ([Convert]::ToBase64String($Actual)) ([Convert]::ToBase64String($Fixture.RuntimeBytes)) 'Downloaded runtime bytes differ'
+}
+
+function Test-HttpDownloadSuccess {
+    param([string]$Root)
+    $Fixture = New-ReleaseFixture -Root (Join-Path $Root 'HTTP fixture')
+    $Server = Start-ReleaseHttpFixture -ReleaseRoot $Fixture.ReleaseRoot -StateRoot $Root
+    $CodexHome = Join-Path $Root 'HTTP download home'
+    $Before = $script:CargoInvocationCount
+    try {
+        Invoke-HarnessInstall `
+            -RepoRoot $RepoRoot `
+            -CodexHome $CodexHome `
+            -BinarySource Download `
+            -ReleaseBaseUrl $Server.BaseUrl
+    }
+    finally {
+        Complete-ReleaseHttpFixture -Server $Server
+    }
+    Assert-Equal $script:CargoInvocationCount $Before 'HTTP Download invoked Cargo'
+    $Actual = [IO.File]::ReadAllBytes((Get-InstalledRuntime -CodexHome $CodexHome))
+    Assert-Equal ([Convert]::ToBase64String($Actual)) ([Convert]::ToBase64String($Fixture.RuntimeBytes)) 'HTTP runtime bytes differ'
 }
 
 function Test-ChecksumMismatch {
@@ -233,6 +362,48 @@ function Test-PathWithSpaces {
     Assert-True (Test-Path -LiteralPath (Get-InstalledRuntime -CodexHome $CodexHome) -PathType Leaf) 'Path with spaces failed'
 }
 
+function Test-ReplacementFailure {
+    param([string]$Root)
+    $Fixture = New-ReleaseFixture -Root (Join-Path $Root 'replacement fixture')
+    $SkillRoot = Join-Path $Root 'replacement skill'
+    $BinDir = Join-Path $SkillRoot 'scripts/bin'
+    $Destination = Join-Path $BinDir 'harnessctl.exe'
+    New-Item -ItemType Directory -Path $BinDir -Force | Out-Null
+    $PreservedBytes = [Text.Encoding]::UTF8.GetBytes('preserved-runtime')
+    [IO.File]::WriteAllBytes($Destination, $PreservedBytes)
+
+    $Output = @()
+    $Caught = $null
+    $Lock = [IO.File]::Open(
+        $Destination,
+        [IO.FileMode]::Open,
+        [IO.FileAccess]::ReadWrite,
+        [IO.FileShare]::None
+    )
+    try {
+        try {
+            $Output = @(Install-VerifiedRelease `
+                -Version '0.2.0' `
+                -BaseUrl $Fixture.ReleaseRoot `
+                -SkillRoot $SkillRoot)
+        }
+        catch {
+            $Caught = $_.Exception.Message
+        }
+    }
+    finally {
+        $Lock.Dispose()
+    }
+
+    Assert-True ($null -ne $Caught) 'Replacement failure did not throw'
+    Assert-True ($Caught -like '*runtime replacement failed*') "Unexpected replacement error: $Caught"
+    Assert-False (($Output -join "`n") -like '*Installed verified*') 'Replacement failure reported success'
+    $Actual = [IO.File]::ReadAllBytes($Destination)
+    Assert-Equal ([Convert]::ToBase64String($Actual)) ([Convert]::ToBase64String($PreservedBytes)) 'Replacement failure changed destination bytes'
+    $Staged = @(Get-ChildItem -LiteralPath $BinDir -Filter '.harnessctl.*.exe' -Force)
+    Assert-Equal $Staged.Count 0 'Replacement failure left a staged runtime'
+}
+
 Assert-Equal (Get-ReleaseTarget) 'x86_64-pc-windows-msvc' 'release target mismatch'
 Assert-Equal (Get-PackageVersion -RepoRoot $RepoRoot) '0.2.0' 'package version mismatch'
 
@@ -241,6 +412,7 @@ New-Item -ItemType Directory -Path $TempRoot -Force | Out-Null
 try {
     Test-NoneSource -Root $TempRoot
     Test-DownloadSuccess -Root $TempRoot
+    Test-HttpDownloadSuccess -Root $TempRoot
     Test-ChecksumMismatch -Root $TempRoot
     Test-MissingAndDuplicateChecksum -Root $TempRoot
     Test-UnsafeZipMember -Root $TempRoot
@@ -248,6 +420,7 @@ try {
     Test-AutoFallsBackToBuild -Root $TempRoot
     Test-BuildNeverDownloads -Root $TempRoot
     Test-PathWithSpaces -Root $TempRoot
+    Test-ReplacementFailure -Root $TempRoot
 }
 finally {
     Remove-Item -LiteralPath $TempRoot -Recurse -Force -ErrorAction SilentlyContinue
