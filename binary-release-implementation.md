@@ -1,6 +1,6 @@
 # Binary Release Implementation
 
-Status: design
+Status: implementation plan complete
 
 ## PSOC
 
@@ -70,11 +70,12 @@ and generated Cargo lock metadata.
 
 ## Changed Files
 
-Design and implementation report only at this gate.
+Design, implementation plan, and implementation report only at this gate.
 
 ## Tests
 
-Pending implementation plan and RED/GREEN cycles.
+Implementation plan written at
+`docs/plans/2026-07-16-binary-release-plan.md`; RED/GREEN cycles pending.
 
 ## Review Findings
 
@@ -90,8 +91,8 @@ Pending.
 
 ## Next Actions
 
-Write the implementation plan, implement test-first, verify, independently
-review, tag `v0.2.0`, inspect the public Release, and close the lifecycle audit.
+Implement test-first, verify, independently review, tag `v0.2.0`, inspect the
+public Release, and close the lifecycle audit.
 
 ## External Agent Reconciliation
 
