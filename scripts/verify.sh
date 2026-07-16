@@ -20,6 +20,8 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest \
   "$repo_root/scripts/test_install.py"
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest \
   "$repo_root/scripts/test_standalone_contract.py"
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest \
+  "$repo_root/scripts/test_release_distribution.py"
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest "$repo_root/scripts/test_token_effectiveness_task.py"
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest "$repo_root/scripts/test_game_dev_ab_benchmark.py"
 

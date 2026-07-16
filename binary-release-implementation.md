@@ -1,6 +1,6 @@
 # Binary Release Implementation
 
-Status: implementation plan complete
+Status: implementation — release packaging complete
 
 ## PSOC
 
@@ -70,12 +70,16 @@ and generated Cargo lock metadata.
 
 ## Changed Files
 
-Design, implementation plan, and implementation report only at this gate.
+Task 1 adds deterministic five-target release packaging, checksum generation,
+tag/plugin/Cargo version validation, and version `0.2.0` metadata.
 
 ## Tests
 
 Implementation plan written at
-`docs/plans/2026-07-16-binary-release-plan.md`; RED/GREEN cycles pending.
+`docs/plans/2026-07-16-binary-release-plan.md`. Task 1 RED failed on the absent
+packager and absent tag gate. GREEN passed 8/8 focused distribution tests,
+release metadata validation for `v0.2.0`, Python syntax checks, and locked Cargo
+check for `harnessctl 0.2.0`.
 
 ## Review Findings
 

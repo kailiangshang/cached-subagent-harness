@@ -1,6 +1,6 @@
 {
   "name": "cached-subagent-harness",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Token-aware subagent batching, safe model routing, bounded session reuse, lifecycle state, and results visualization for agentic CLIs.",
   "author": {
     "name": "kailiangshang",

@@ -62,7 +62,7 @@ GitHub Actions, GitHub CLI, SHA-256, tar.gz, zip.
 - `validate-release.py REPO --tag vX.Y.Z` requires plugin, Cargo, and tag
   versions to match.
 
-- [ ] **Step 1: Write failing package and metadata tests**
+- [x] **Step 1: Write failing package and metadata tests**
 
 Add tests that import `package-release.py` through `importlib`, then assert:
 
@@ -92,7 +92,7 @@ def test_checksums_are_sorted_and_exact(self):
 Also invoke `validate-release.py . --tag v0.2.1` and expect nonzero version
 mismatch, while `--tag v0.2.0` succeeds after the version update.
 
-- [ ] **Step 2: Run the focused suite and observe RED**
+- [x] **Step 2: Run the focused suite and observe RED**
 
 Run:
 
@@ -103,7 +103,7 @@ python3 -m unittest scripts.test_release_distribution -v
 Expected: FAIL because `scripts/package-release.py` and the version/tag
 contract do not exist.
 
-- [ ] **Step 3: Implement deterministic packaging and validation**
+- [x] **Step 3: Implement deterministic packaging and validation**
 
 Implement an allowlisted target table. Normalize versions by accepting
 `0.2.0` at the function boundary and emitting the `v` only in asset names.
@@ -127,7 +127,7 @@ If `--locked` reports the expected local package version drift, run
 `cargo check --manifest-path ...` once to refresh `Cargo.lock`, then rerun with
 `--locked`.
 
-- [ ] **Step 4: Add the focused suite to full verification and run GREEN**
+- [x] **Step 4: Add the focused suite to full verification and run GREEN**
 
 Modify `scripts/verify.sh` to run:
 
@@ -144,7 +144,7 @@ python3 scripts/validate-release.py . --tag v0.2.0
 
 Expected: all release distribution tests pass and metadata validation exits 0.
 
-- [ ] **Step 5: Commit Task 1**
+- [x] **Step 5: Commit Task 1**
 
 ```bash
 git add .codex-plugin/plugin.json scripts/package-release.py \

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import re
 import sys
@@ -294,10 +295,59 @@ def validate_skill(repo: Path) -> None:
             fail(f"standalone methodology missing binding contract: {required}")
 
 
+def validate_versions(repo: Path, expected_tag: str | None) -> None:
+    manifest = load_json(repo / ".codex-plugin" / "plugin.json")
+    plugin_version = manifest.get("version")
+    cargo_path = (
+        repo
+        / "skills"
+        / SKILL_NAME
+        / "scripts"
+        / "harnessctl"
+        / "Cargo.toml"
+    )
+    try:
+        cargo_text = cargo_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        fail(f"missing file: {cargo_path}")
+    in_package = False
+    cargo_version: str | None = None
+    for raw_line in cargo_text.splitlines():
+        line = raw_line.strip()
+        if line.startswith("[") and line.endswith("]"):
+            in_package = line == "[package]"
+            continue
+        if in_package:
+            match = re.fullmatch(r'version\s*=\s*"([^"]+)"', line)
+            if match:
+                cargo_version = match.group(1)
+                break
+    if cargo_version is None or not SEMVER_RE.fullmatch(cargo_version):
+        fail(f"missing or invalid package.version in {cargo_path}")
+    if plugin_version != cargo_version:
+        fail(
+            "release version mismatch: "
+            f"plugin={plugin_version}, cargo={cargo_version}"
+        )
+    if expected_tag is not None:
+        if not expected_tag.startswith("v"):
+            fail("release tag must start with v")
+        if expected_tag[1:] != plugin_version:
+            fail(
+                "release tag version mismatch: "
+                f"tag={expected_tag}, package={plugin_version}"
+            )
+
+
 def main() -> None:
-    repo = Path(sys.argv[1] if len(sys.argv) > 1 else ".").resolve()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("repo", nargs="?", default=".")
+    parser.add_argument("--tag")
+    args = parser.parse_args()
+    repo = Path(args.repo).resolve()
     validate_plugin(repo)
     validate_skill(repo)
+    validate_versions(repo, args.tag)
     print("release metadata validation passed")
 
 
