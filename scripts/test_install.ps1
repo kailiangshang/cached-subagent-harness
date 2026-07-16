@@ -404,26 +404,34 @@ function Test-ReplacementFailure {
     Assert-Equal $Staged.Count 0 'Replacement failure left a staged runtime'
 }
 
-Assert-Equal (Get-ReleaseTarget) 'x86_64-pc-windows-msvc' 'release target mismatch'
-Assert-Equal (Get-PackageVersion -RepoRoot $RepoRoot) '0.2.0' 'package version mismatch'
-
-$TempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("harness install tests " + [guid]::NewGuid())
-New-Item -ItemType Directory -Path $TempRoot -Force | Out-Null
 try {
-    Test-NoneSource -Root $TempRoot
-    Test-DownloadSuccess -Root $TempRoot
-    Test-HttpDownloadSuccess -Root $TempRoot
-    Test-ChecksumMismatch -Root $TempRoot
-    Test-MissingAndDuplicateChecksum -Root $TempRoot
-    Test-UnsafeZipMember -Root $TempRoot
-    Test-ForcedDownloadNeverBuilds -Root $TempRoot
-    Test-AutoFallsBackToBuild -Root $TempRoot
-    Test-BuildNeverDownloads -Root $TempRoot
-    Test-PathWithSpaces -Root $TempRoot
-    Test-ReplacementFailure -Root $TempRoot
+    Assert-Equal (Get-ReleaseTarget) 'x86_64-pc-windows-msvc' 'release target mismatch'
+    Assert-Equal (Get-PackageVersion -RepoRoot $RepoRoot) '0.2.0' 'package version mismatch'
+
+    $TempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("harness install tests " + [guid]::NewGuid())
+    New-Item -ItemType Directory -Path $TempRoot -Force | Out-Null
+    try {
+        Test-NoneSource -Root $TempRoot
+        Test-DownloadSuccess -Root $TempRoot
+        Test-HttpDownloadSuccess -Root $TempRoot
+        Test-ChecksumMismatch -Root $TempRoot
+        Test-MissingAndDuplicateChecksum -Root $TempRoot
+        Test-UnsafeZipMember -Root $TempRoot
+        Test-ForcedDownloadNeverBuilds -Root $TempRoot
+        Test-AutoFallsBackToBuild -Root $TempRoot
+        Test-BuildNeverDownloads -Root $TempRoot
+        Test-PathWithSpaces -Root $TempRoot
+        Test-ReplacementFailure -Root $TempRoot
+    }
+    finally {
+        Remove-Item -LiteralPath $TempRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
 }
-finally {
-    Remove-Item -LiteralPath $TempRoot -Recurse -Force -ErrorAction SilentlyContinue
+catch {
+    $Annotation = $_.Exception.Message.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+    Write-Output "::error title=PowerShell installer behavior tests::$Annotation"
+    Write-Output $_.ScriptStackTrace
+    throw
 }
 
 Write-Output 'PowerShell installer behavior tests passed'
