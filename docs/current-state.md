@@ -4,7 +4,8 @@ Date: 2026-07-16
 
 Status: Subagent/Session terminology and the delegation-value gate are aligned
 across the standalone Skill, documentation, and bilingual results Dashboard;
-post-fix verification is complete and fresh independent re-review is pending
+all independent review findings are fixed and accepted; final full verification
+and lifecycle audit passed
 
 This is the shortest current-state entry point for `cached-subagent-harness`.
 It summarizes the implemented product and points to the binding contracts and
@@ -198,9 +199,8 @@ The 2026-07-16 Subagent Session and Token strategy increment passed fresh
 post-fix verification:
 
 - Rust tests: 52/52;
-- Python suite: 47 tests across install, standalone contract,
-  Token-effectiveness, and game A/B; the new attribution contract passed and a
-  final full rerun remains pending;
+- Python tests: 47/47 across install, standalone contract, Token-effectiveness,
+  and game A/B suites;
 - Clippy with warnings denied and a release build;
 - release metadata plus the system Skill package validator;
 - prompt-cache, offline Token, game A/B, and lifecycle regression gates;
@@ -211,9 +211,11 @@ post-fix verification:
 The first independent whole-diff review found no Critical issue and four
 Important issues. The delegation gate, Dashboard branch semantics, invariant
 boundary, and authoritative documentation were corrected in one bounded pass;
-the two Minor test/type-size findings were corrected with them. A fresh
-independent re-review and final Run lifecycle audit remain the release-closure
-gates and are recorded in
+the two Minor test/type-size findings were corrected with them. The fresh
+whole-diff re-review verified those fixes and found one stale historical
+evidence attribution; a focused RED/GREEN fix and narrow independent re-review
+then passed with no remaining finding. Final full verification and the Run
+lifecycle audit passed and are recorded in
 [`subagent-session-token-strategy-implementation.md`](../subagent-session-token-strategy-implementation.md).
 
 The preceding Dashboard delivery has its separate historical 50-Rust/33-Python

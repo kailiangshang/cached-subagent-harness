@@ -319,13 +319,13 @@ Chinese and English do not clip
 Moonlight Indigo liquid-glass hierarchy remains consistent
 ```
 
-- [ ] **Step 4: Run independent whole-diff review**
+- [x] **Step 4: Run independent whole-diff review**
 
 Provide the approved design, implementation report, and diff package by path.
 Require severity-ordered Critical/Important/Minor findings and fix all Critical
 or Important issues in one bounded pass before re-review.
 
-- [ ] **Step 5: Update authoritative state and lifecycle audit**
+- [x] **Step 5: Update authoritative state and lifecycle audit**
 
 Record exact test counts, visual results, review disposition, changed files,
 commits, risks, and no-install boundary. Mark every Harness-created Session
@@ -339,7 +339,7 @@ skills/cached-subagent-harness/scripts/bin/harnessctl audit \
 
 Expected: audit PASS with no open Session or unfinished Task.
 
-- [ ] **Step 6: Final verification, commit, and push**
+- [x] **Step 6: Final verification, commit, and push**
 
 Run `git diff --check`, the focused contracts, and `scripts/verify.sh` after any
 review fix. Commit the final report/state update, verify a clean worktree, and

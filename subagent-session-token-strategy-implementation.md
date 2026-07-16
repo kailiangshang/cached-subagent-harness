@@ -1,6 +1,6 @@
 # Subagent Session Token Strategy Implementation
 
-Status: in progress — attribution fix verified; final narrow re-review pending
+Status: DONE
 
 ## PSOC
 
@@ -55,15 +55,15 @@ release limits.
 
 | handle | role | task | status | report_path | spawned_at | waited | closed | write_scope | token_risk | session_budget | final_reason | next_action |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
-| /root/baseline_term_clarity | discussion | baseline-term-clarity | closed | collaboration final response | 2026-07-16 | yes | yes | none | low | no reuse | Baseline explanation consumed | Implement the terminology contract |
-| /root/subagent_session_final_review | reviewer | final-whole-diff-review | closed | collaboration final response | 2026-07-16 | yes | yes | none | medium | no reuse | Four Important and two Minor findings consumed | Apply one bounded fix pass, verify, then re-review |
-| /root/subagent_session_rereview | reviewer | final-whole-diff-rereview | closed | collaboration final response | 2026-07-16 | yes | yes | none | medium | no reuse | One Important stale-attribution finding consumed | Fix with a focused contract, then run narrow re-review |
-| /root/subagent_session_attribution_review | reviewer | final-attribution-review | planned | pending | pending | no | no | none | low | no reuse; close after verdict | pending | Verify only the attribution fix and release-document consistency |
+| /root/baseline_term_clarity | discussion | baseline-term-clarity | closed | collaboration final response | 2026-07-16 | yes | yes | none | low | no reuse | Baseline explanation consumed | none |
+| /root/subagent_session_final_review | reviewer | final-whole-diff-review | closed | collaboration final response | 2026-07-16 | yes | yes | none | medium | no reuse | Four Important and two Minor findings consumed | none |
+| /root/subagent_session_rereview | reviewer | final-whole-diff-rereview | closed | collaboration final response | 2026-07-16 | yes | yes | none | medium | no reuse | One Important stale-attribution finding consumed | none |
+| /root/subagent_session_attribution_review | reviewer | final-attribution-review | closed | collaboration final response | 2026-07-16 | yes | yes | none | low | no reuse | Ready yes; no Critical/Important/Minor finding | none |
 
 ## Write Scope
 
 - Main controller: approved files listed in the implementation plan.
-- Baseline and final review Sessions: `none`.
+- All delegated discussion/review Sessions: `none`.
 
 ## Decision Log
 
@@ -115,6 +115,18 @@ release limits.
   semantic policy map and responsive Subagent Session presentation.
 - Design, plan, and this report record the approved scope and evidence.
 
+## Commits
+
+- `9011989`: approved design specification.
+- `e7efb9a`: implementation plan and durable report.
+- `3b9d2be`: four-term terminology and Mermaid documentation.
+- `baaa4ae`: bilingual Dashboard policy map.
+- `afe833d`: review-driven delegation gate, contracts, copy, and typography.
+- `2167722`: stale current-delivery evidence attribution fix and regression
+  contract.
+- The final closure commit contains this completed audit record and is the
+  repository tip delivered to `origin/main`.
+
 ## Tests
 
 - Clean pre-change baseline: `scripts/verify.sh` passed with Rust 52/52 and
@@ -140,14 +152,16 @@ release limits.
 - Attribution RED/GREEN: a focused current-state contract failed on the stale
   Signal Sweep evidence attribution, then passed after the current increment
   was pointed only to its own implementation report.
-- The complete Python suite now contains 47 tests (install 7, standalone 19,
-  Token effectiveness 3, game A/B 18); the final full verification will rerun
-  it after review closure.
+- The complete Python suite contains 47 tests (install 7, standalone 19, Token
+  effectiveness 3, game A/B 18).
 - Full post-fix `scripts/verify.sh` passed before the attribution contract: Rust
   52/52; Python 46/46 (install 7, standalone 18, Token effectiveness 3, game A/B
   18); release
   metadata, Rust formatting, Clippy, release build, both offline Benchmark
   thresholds, prompt-cache check, lifecycle smoke, and audit passed.
+- Final post-review `scripts/verify.sh` passed: Rust 52/52; Python 47/47;
+  formatting, Clippy, release build, release metadata, both offline Benchmark
+  thresholds, prompt-cache checks, lifecycle smoke, and audit all passed.
 - The system Skill package validator reported `Skill is valid!` without copying
   or installing the Skill.
 - Post-fix visual audit: zh-CN/en-US at 1440×960 and constrained 390×844 have
@@ -172,8 +186,8 @@ issues, and two Minor issues:
 6. Locale parity and decision-order/branch semantics lacked automated contracts.
 
 Items 1–6 are fixed; behavioral and boundary changes are covered by RED/GREEN
-tests, and the authoritative documents now record the current increment. A
-fresh independent re-review is mandatory before release closure.
+tests, and the authoritative documents now record the current increment. The
+required fresh independent re-review was completed.
 
 The fresh whole-diff re-review verified the invariant hash, decision order,
 terminology, bilingual policy branch, responsive artifacts, privacy boundary,
@@ -181,24 +195,27 @@ and absence of scope expansion. It found no Critical or Minor issue and one
 Important issue: a historical paragraph in `docs/current-state.md` still
 attributed the current increment's final evidence to
 `corrected-signal-sweep-implementation.md`. The attribution is fixed under a
-focused RED/GREEN contract; a final narrow re-review remains required.
+focused RED/GREEN contract. The final narrow re-review found no Critical,
+Important, or Minor issue and returned Ready: Yes.
 
 ## Risks
 
-- Static policy could be mistaken for live progress; label it explicitly.
-- Extra explanatory UI could reduce density; keep one compact map and one note.
-- Terminology could diverge between locales; enforce exact asset markers.
+- No open correctness or delivery risk requires action.
+- The retained real A/B evidence is negative, so the release makes no positive
+  Token-saving claim and keeps conservative limits.
+- Missing exact Session telemetry remains `unknown` and prohibited reuse during
+  this increment, producing four fresh read-only Sessions rather than unsafe
+  continuation.
 
 ## Next Actions
 
-1. Run the final narrow independent attribution re-review.
-2. Close the lifecycle ledger, finalize authoritative verification state, and
-   push `origin/main`.
+None.
 
 ## External Agent Reconciliation
 
-Only Sessions created for this increment count toward this report. Previously
-completed review threads are outside this Run and require no cleanup.
+All four Sessions created for this increment were waited, consumed, and closed.
+Previously completed review threads are outside this Run; no externally unknown
+Session affects budget, cleanup, or correctness.
 
 ## Degraded Mode Notes
 
@@ -206,4 +223,21 @@ None.
 
 ## Final Audit
 
-Pending.
+- Lifecycle Audit: all four Harness-created Sessions are closed; all four Tasks
+  are accepted; the Run is `complete`; final audit passed before and after the
+  Run transition.
+- Harness Commands: `scripts/verify.sh`, the system `quick_validate.py`, and
+  `harnessctl audit` all exited zero.
+- Focused Tests: standalone contracts 19/19, including policy order, no-value
+  branch, locale parity, typography, invariant boundary, and evidence
+  attribution.
+- Project Harness: Rust 52/52 and Python 47/47, with formatting, Clippy,
+  release build, offline Benchmarks, prompt checks, and lifecycle smoke passed.
+- Review Status: initial findings fixed; whole-diff re-review and narrow final
+  re-review completed; no Critical, Important, or Minor finding remains open.
+- Open Risks: none requiring action; negative savings evidence and unknown
+  telemetry remain explicitly disclosed.
+- External Agent Reconciliation: four in-scope Sessions closed; no relevant
+  unknown external Session.
+- Degraded Mode: none. No Skill installation, copying, or active 7347 preview
+  replacement was performed.
