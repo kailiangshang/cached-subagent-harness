@@ -1,6 +1,6 @@
 # Subagent Session Token Strategy Implementation
 
-Status: in progress
+Status: in progress — post-review fixes verified; fresh re-review pending
 
 ## PSOC
 
@@ -42,17 +42,21 @@ release limits.
 ## Agent Budget
 
 - Maximum open delegated Sessions: 2.
-- Maximum total spawned Sessions: 2.
-- Planned use: one fresh read-only baseline comprehension Session and one fresh
-  read-only final review Session. Implementation remains on main to avoid the
-  short-lived worker churn this product is designed to prevent.
+- Maximum total spawned Sessions: 3.
+- Planned use: one fresh read-only baseline comprehension Session, one fresh
+  read-only final review Session, and one fresh read-only re-review Session.
+  The third Session is required because the first review found Important issues
+  and exact Token telemetry is unavailable for safe reuse. Implementation
+  remains on main to avoid short-lived writer churn.
 - Nested delegation: disabled.
 
 ## Agent Ledger
 
 | handle | role | task | status | report_path | spawned_at | waited | closed | write_scope | token_risk | session_budget | final_reason | next_action |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
-| baseline-terminology | discussion | baseline-term-clarity | planned | pending | pending | no | no | none | low | no reuse; close after report | pending | Explain current artifacts without expected-answer hints |
+| /root/baseline_term_clarity | discussion | baseline-term-clarity | closed | collaboration final response | 2026-07-16 | yes | yes | none | low | no reuse | Baseline explanation consumed | Implement the terminology contract |
+| /root/subagent_session_final_review | reviewer | final-whole-diff-review | closed | collaboration final response | 2026-07-16 | yes | yes | none | medium | no reuse | Four Important and two Minor findings consumed | Apply one bounded fix pass, verify, then re-review |
+| /root/subagent_session_rereview | reviewer | final-whole-diff-rereview | planned | pending | pending | no | no | none | medium | no reuse; close after verdict | pending | Verify the complete fixed diff independently |
 
 ## Write Scope
 
@@ -83,6 +87,11 @@ release limits.
 - Existing README/current-state define Run, Task, and Session, but do not define
   Subagent as a separate logical concept or show the complete decision flow at
   the Dashboard.
+- Fresh-context baseline result: the reader could infer that Subagents still
+  exist from role language, but found no formal Subagent-to-Session cardinality,
+  noted that the Web UI reports all Session records rather than live Subagent
+  count, and found CLI/Web terminology mixed. This reproduces the user's
+  confusion without exposing the intended fix to the evaluator.
 - Approved design:
   `docs/specs/2026-07-16-subagent-session-token-strategy-design.md`.
 - Implementation plan:
@@ -90,15 +99,72 @@ release limits.
 
 ## Changed Files
 
-Pending.
+- `skills/cached-subagent-harness/SKILL.md`: four-term execution model and
+  explicit Token decision order; all 20 invariants preserved.
+- `README.md`: public Subagent/Session contract and Mermaid decision flow.
+- `docs/current-state.md`: authoritative terminology, Mermaid flow, and
+  Dashboard policy/live-state boundary.
+- `docs/specs/2026-07-15-results-dashboard-design.md`: six-region amendment for
+  the static policy map and Subagent Session dock.
+- `scripts/test_standalone_contract.py` and `scripts/validate-release.py`:
+  RED/GREEN documentation, policy-order, locale, typography, and invariant
+  boundary contracts.
+- Dashboard `index.html`, `app.js`, `styles.css`, and Rust asset tests: bilingual
+  semantic policy map and responsive Subagent Session presentation.
+- Design, plan, and this report record the approved scope and evidence.
 
 ## Tests
 
-Pending RED/GREEN evidence and full verification.
+- Clean pre-change baseline: `scripts/verify.sh` passed with Rust 52/52 and
+  Python 38/38.
+- Documentation RED: two focused tests failed on the missing Subagent mapping,
+  account-login distinction, Mermaid flow, and Dashboard design terminology.
+- Documentation GREEN: both focused tests passed; the full standalone contract
+  passed 12/12 and release validation passed.
+- Dashboard RED: the focused Rust test failed on missing
+  `data-view="strategy-map"`.
+- Dashboard GREEN: Rust Dashboard tests passed 2/2; JavaScript syntax, Rust
+  formatting, Python standalone contracts 12/12, and `git diff --check` passed.
+- Visual audit: populated zh-CN/en-US 1440×960 and exact 390×844 plus extended
+  compact captures inspected. The policy map is explicitly static, both locales
+  fit, the compact flow stacks without horizontal clipping, live Task/Session
+  surfaces remain primary, and the Session note is readable. Artifacts live
+  only under ignored `target/visual-audit/`.
+- Review-fix RED: the new focused suite exposed the stale invariant boundary,
+  late delegation-value gate, missing no-value Dashboard branch, and three
+  11px explanatory rules; the pre-existing locale keys were already equal.
+- Review-fix GREEN: all six focused contracts passed, including exact zh-CN /
+  en-US key parity and policy-order assertions.
+- Full post-fix `scripts/verify.sh` passed: Rust 52/52; Python 46/46
+  (install 7, standalone 18, Token effectiveness 3, game A/B 18); release
+  metadata, Rust formatting, Clippy, release build, both offline Benchmark
+  thresholds, prompt-cache check, lifecycle smoke, and audit passed.
+- The system Skill package validator reported `Skill is valid!` without copying
+  or installing the Skill.
+- Post-fix visual audit: zh-CN/en-US at 1440×960 and constrained 390×844 have
+  no horizontal overflow or clipped strategy copy; the five-card map remains
+  static policy, live Task/Session surfaces remain primary, and 12px body notes
+  remain readable. Temporary preview and WebDriver processes were closed; the
+  user's existing 7347 preview was untouched.
 
 ## Review Findings
 
-Pending independent whole-diff review.
+The first independent whole-diff review found no Critical issue, four Important
+issues, and two Minor issues:
+
+1. The Skill checked delegation value after batching/routing rather than before.
+2. The Dashboard omitted the no-net-value path back to main and could imply
+   every non-reusable Session should spawn a replacement.
+3. Test and release-validator invariant extraction included the new terminology
+   section because the end marker was stale.
+4. Current-state, authority links, implementation status, and Task 3 closure
+   evidence were stale.
+5. Strategy and Session explanation text used 11px instead of the planned 12px.
+6. Locale parity and decision-order/branch semantics lacked automated contracts.
+
+Items 1–6 are fixed; behavioral and boundary changes are covered by RED/GREEN
+tests, and the authoritative documents now record the current increment. A
+fresh independent re-review is mandatory before release closure.
 
 ## Risks
 
@@ -108,9 +174,10 @@ Pending independent whole-diff review.
 
 ## Next Actions
 
-1. Initialize durable runtime state and record the planned baseline Task.
-2. Run clean baseline tests and the fresh comprehension scenario.
-3. Execute the TDD plan, visual audit, full verification, and independent review.
+1. Run the fresh independent whole-diff re-review and resolve any remaining
+   Critical/Important finding.
+2. Close the lifecycle ledger, finalize authoritative verification state, and
+   push `origin/main`.
 
 ## External Agent Reconciliation
 

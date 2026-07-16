@@ -13,12 +13,18 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 VALIDATOR = REPO_ROOT / "scripts" / "validate-release.py"
 SKILL_PATH = "skills/cached-subagent-harness/SKILL.md"
+APP_PATH = (
+    "skills/cached-subagent-harness/scripts/harnessctl/assets/app.js"
+)
+STYLES_PATH = (
+    "skills/cached-subagent-harness/scripts/harnessctl/assets/styles.css"
+)
 METHOD_PATH = (
     "skills/cached-subagent-harness/references/standalone-methodology.md"
 )
 DESIGN_PATH = "docs/specs/2026-07-14-lightweight-token-harness-design.md"
 INVARIANT_HEADING = "## Non-negotiable Invariants"
-SKILL_INVARIANT_END = "\n## Controller Loop"
+SKILL_INVARIANT_END = "\n## Run, Task, Subagent, and Session"
 
 REQUIRED_METHOD_SEMANTICS = [
     "Batch known compatible ready assignments before attempting follow-up "
@@ -151,6 +157,54 @@ class StandaloneContractTests(unittest.TestCase):
         for number in range(1, 21):
             self.assertRegex(invariants, rf"(?m)^{number}\. \*\*")
 
+    def test_skill_invariant_section_excludes_execution_terminology(
+        self,
+    ) -> None:
+        skill = self.read(SKILL_PATH)
+        invariants = extract_section(
+            skill,
+            INVARIANT_HEADING,
+            SKILL_INVARIANT_END,
+        )
+        self.assertNotIn("## Run, Task, Subagent, and Session", invariants)
+        self.assertNotIn(
+            "Subagent is the delegated logical executor or role",
+            invariants,
+        )
+
+    def test_release_validator_uses_the_execution_terminology_boundary(
+        self,
+    ) -> None:
+        result = self.run_mutated_validation(
+            SKILL_PATH,
+            "\n## Run, Task, Subagent, and Session",
+            "\n## Execution Terminology",
+        )
+        self.assertNotEqual(
+            result.returncode,
+            0,
+            result.stdout + result.stderr,
+        )
+
+    def test_skill_gates_delegation_value_before_batching_and_routing(
+        self,
+    ) -> None:
+        skill = self.read(SKILL_PATH)
+        decision_order = extract_section(
+            skill,
+            "Apply Token decisions in this order:",
+            "\nUse `references/standalone-methodology.md`",
+        )
+        delegation_gate = (
+            "Execute on main when delegation value does not exceed complete "
+            "cost."
+        )
+        self.assertIn(delegation_gate, " ".join(decision_order.split()))
+        self.assertLess(
+            decision_order.index("delegation value"),
+            decision_order.index("Derive known compatible queued Tasks"),
+        )
+
     def test_skill_explains_subagent_task_and_session_boundaries(self) -> None:
         skill = " ".join(self.read(SKILL_PATH).split())
         for required in [
@@ -177,6 +231,47 @@ class StandaloneContractTests(unittest.TestCase):
         )
         self.assertIn("Subagent sessions", dashboard_design)
         self.assertIn("static release policy", dashboard_design)
+
+    def test_dashboard_strategy_returns_nonvaluable_delegation_to_main(
+        self,
+    ) -> None:
+        app = self.read(APP_PATH)
+        for required in [
+            "简单任务或委派净收益不为正 → 主线程；仅在收益为正时继续",
+            "Simple Task or no net delegation value → main; continue only "
+            "when valuable",
+            "仅在委派门槛通过后：可证明且预算充足则续接 1 次；无可复用会话才新建",
+            "Only after delegation passes: reuse once with exact proof and "
+            "budget; spawn only when no eligible Session",
+        ]:
+            self.assertIn(required, app)
+
+    def test_dashboard_locale_keys_match(self) -> None:
+        app = self.read(APP_PATH)
+        zh_start = app.index('    "zh-CN": {')
+        en_start = app.index('    "en-US": {')
+        copy_end = app.index("\n    }\n  };", en_start)
+        key_pattern = re.compile(r"(?m)^      ([A-Za-z][A-Za-z0-9_]*):")
+        zh_keys = set(key_pattern.findall(app[zh_start:en_start]))
+        en_keys = set(key_pattern.findall(app[en_start:copy_end]))
+        self.assertTrue(zh_keys)
+        self.assertSetEqual(zh_keys, en_keys)
+
+    def test_dashboard_explanatory_copy_uses_body_text_size(self) -> None:
+        styles = self.read(STYLES_PATH)
+        for selector in [
+            ".strategy-heading > p:last-child",
+            ".strategy-step small",
+            ".session-definition",
+        ]:
+            with self.subTest(selector=selector):
+                match = re.search(
+                    rf"{re.escape(selector)}\s*\{{(?P<body>.*?)\n\}}",
+                    styles,
+                    re.DOTALL,
+                )
+                self.assertIsNotNone(match, f"missing rule: {selector}")
+                self.assertIn("font-size: 12px;", match.group("body"))
 
     def test_skill_limits_batching_to_evidence_bounded_compatible_micro_batches(
         self,

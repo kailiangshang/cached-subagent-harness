@@ -1,10 +1,10 @@
 # Current Product State
 
-Date: 2026-07-15
+Date: 2026-07-16
 
-Status: lightweight runtime and results Dashboard complete; two candidate
-context-reuse strategies rejected by equal-quality real A/B evidence; current
-strict micro-batch policy remains deliberately conservative
+Status: Subagent/Session terminology and the delegation-value gate are aligned
+across the standalone Skill, documentation, and bilingual results Dashboard;
+post-fix verification is complete and fresh independent re-review is pending
 
 This is the shortest current-state entry point for `cached-subagent-harness`.
 It summarizes the implemented product and points to the binding contracts and
@@ -194,22 +194,26 @@ live Token-saving claim for batching or reuse.
 
 ## Verification State
 
-The corrected Signal Sweep increment passed a fresh full verification on
-2026-07-15:
+The 2026-07-16 Subagent Session and Token strategy increment passed fresh
+post-fix verification:
 
 - Rust tests: 52/52;
-- Python tests: 38/38 across install, standalone contract, Token-effectiveness,
+- Python tests: 46/46 across install, standalone contract, Token-effectiveness,
   and game A/B suites;
 - Clippy with warnings denied and a release build;
-- release metadata and Skill validation;
-- prompt-cache, offline Token, and game A/B regression gates;
-- exact successful-run status and Dashboard health checks;
-- focused independent review, including regression-tested fixes for its two
-  Important findings;
-- final whole-diff review, two final Minor fixes, and fresh full verification
-  while live Dashboard processes remained healthy;
-- successful Benchmark and development lifecycle audits, with no Critical or
-  Important issue left open.
+- release metadata plus the system Skill package validator;
+- prompt-cache, offline Token, game A/B, and lifecycle regression gates;
+- exact zh-CN/en-US locale-key parity and decision-order/branch contracts;
+- zh-CN/en-US 1440×960 and constrained 390×844 visual checks with no horizontal
+  overflow or clipped policy copy.
+
+The first independent whole-diff review found no Critical issue and four
+Important issues. The delegation gate, Dashboard branch semantics, invariant
+boundary, and authoritative documentation were corrected in one bounded pass;
+the two Minor test/type-size findings were corrected with them. A fresh
+independent re-review and final Run lifecycle audit remain the release-closure
+gates and are recorded in
+[`subagent-session-token-strategy-implementation.md`](../subagent-session-token-strategy-implementation.md).
 
 The preceding Dashboard delivery has its separate historical 50-Rust/33-Python
 verification and two-review record in
@@ -223,11 +227,13 @@ for this increment's full verification, final review, and lifecycle audit.
 | Document | Current role |
 |---|---|
 | [`SKILL.md`](../skills/cached-subagent-harness/SKILL.md) | Binding controller constitution and workflow |
+| [`2026-07-16 Subagent Session strategy`](specs/2026-07-16-subagent-session-token-strategy-design.md) | Approved four-term model, Token decision order, and presentation boundary |
+| [`subagent-session-token-strategy-implementation.md`](../subagent-session-token-strategy-implementation.md) | Current increment, tests, visual evidence, reviews, and lifecycle audit |
 | [`2026-07-14 lightweight design`](specs/2026-07-14-lightweight-token-harness-design.md) | Canonical lightweight architecture, amended by live evidence |
 | [`2026-07-15 Dashboard design`](specs/2026-07-15-results-dashboard-design.md) | Implemented presentation and validation boundary |
 | [`Corrected Signal Sweep evidence`](benchmarks/2026-07-15-signal-sweep-corrected-ab.md) | Exact large-batch RED result and current policy correction |
 | [`Historical Signal Sweep evidence`](benchmarks/2026-07-15-signal-sweep-real-ab.md) | Exact repeated-follow-up RED result |
-| [`corrected-signal-sweep-implementation.md`](../corrected-signal-sweep-implementation.md) | Current corrected increment, verification, reviews, and audit |
+| [`corrected-signal-sweep-implementation.md`](../corrected-signal-sweep-implementation.md) | Retained policy-correction verification, reviews, and audit |
 | [`results-dashboard-implementation.md`](../results-dashboard-implementation.md) | Completed delivery, tests, fixes, and final audit |
 | 2026-07-10/12 umbrella and event-runtime documents | Historical/superseded evidence only |
 | Implementation plans | Historical execution records; status banners identify completion or supersession |

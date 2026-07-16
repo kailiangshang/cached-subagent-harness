@@ -47,7 +47,7 @@ vanilla JavaScript, SQLite-backed `harnessctl`.
 - Produces: one public four-term model and Token decision flow used by users,
   future Skill runners, and Dashboard copy.
 
-- [ ] **Step 1: Add failing documentation contract tests**
+- [x] **Step 1: Add failing documentation contract tests**
 
 Add tests that normalize whitespace and require:
 
@@ -73,7 +73,7 @@ def test_public_docs_explain_execution_model_and_token_flow(self) -> None:
         self.assertIn("Count complete effective Tokens", text)
 ```
 
-- [ ] **Step 2: Run the focused tests and confirm RED**
+- [x] **Step 2: Run the focused tests and confirm RED**
 
 Run:
 
@@ -86,7 +86,7 @@ python3 -m unittest \
 Expected: FAIL because the existing Skill has no explicit Subagent/Session
 mapping and the public current-state entry has no Mermaid decision flow.
 
-- [ ] **Step 3: Implement the smallest consistent documentation update**
+- [x] **Step 3: Implement the smallest consistent documentation update**
 
 Add a compact `Run, Task, Subagent, and Session` table and these binding
 sentences to the Skill:
@@ -105,21 +105,23 @@ Add the same four-term table to README/current-state and this Mermaid path:
 flowchart TD
     A[Queued Task] --> B{Simple and no isolation value?}
     B -- Yes --> C[Main executes directly]
-    B -- No --> D[Compatible Tasks: preserve order, batch at most 2]
-    D --> E[Fix quality floors; choose lowest eligible model]
-    E --> F{Compatible reusable Session with exact budget?}
-    F -- Yes --> G[Reuse once]
-    F -- No --> H[Start a new Subagent Session]
-    C --> I[Count complete effective Tokens]
-    G --> I
-    H --> I
-    I --> J[Tests, review, audit, close]
+    B -- No --> D{Delegation value exceeds complete cost?}
+    D -- No --> C
+    D -- Yes --> E[Compatible Tasks: preserve order, batch at most 2]
+    E --> F[Fix quality floors; choose lowest eligible model]
+    F --> G{Compatible reusable Session with exact budget?}
+    G -- Yes --> H[Reuse once]
+    G -- No --> I[Start a new Subagent Session]
+    C --> J[Count complete effective Tokens]
+    H --> J
+    I --> J
+    J --> K[Tests, review, audit, close]
 ```
 
 Amend the 2026-07-15 Dashboard design with the implemented terminology and
 policy-map boundary; do not rewrite its historical design narrative.
 
-- [ ] **Step 4: Run documentation contracts and release validation**
+- [x] **Step 4: Run documentation contracts and release validation**
 
 Run:
 
@@ -130,7 +132,7 @@ python3 scripts/validate-release.py .
 
 Expected: all tests PASS; validator prints a successful release result.
 
-- [ ] **Step 5: Commit the documentation contract**
+- [x] **Step 5: Commit the documentation contract**
 
 ```bash
 git add scripts/test_standalone_contract.py \
@@ -157,7 +159,7 @@ git commit -m "docs: clarify subagent session token flow"
   title/note, and responsive static policy steps clearly separated from live
   route facts.
 
-- [ ] **Step 1: Extend the embedded-asset test and confirm RED**
+- [x] **Step 1: Extend the embedded-asset test and confirm RED**
 
 Require the following markers in
 `dashboard_serves_embedded_assets_status_and_security_headers`:
@@ -191,7 +193,7 @@ cargo test --manifest-path \
 
 Expected: FAIL on the first missing marker.
 
-- [ ] **Step 2: Add semantic HTML and bilingual copy**
+- [x] **Step 2: Add semantic HTML and bilingual copy**
 
 Place the policy map after the live dispatch-policy bar:
 
@@ -212,7 +214,7 @@ Change the execution heading to `subagentSessions` and add
 zh-CN/en-US dictionary keys for intake, main/delegate, compatible batching,
 quality route, Session spawn/reuse, complete cost, and close/audit.
 
-- [ ] **Step 3: Render steps without unsafe HTML**
+- [x] **Step 3: Render steps without unsafe HTML**
 
 Add `renderStrategy()` that uses the existing `make()`/`textContent` helpers:
 
@@ -240,14 +242,14 @@ function renderStrategy() {
 
 Call it from the main `render()` path so a language switch refreshes it.
 
-- [ ] **Step 4: Add responsive liquid-glass styling**
+- [x] **Step 4: Add responsive liquid-glass styling**
 
 Use a five-column desktop flow with connector lines, a two-column tablet flow,
 and a single-column compact flow. Keep labels at 11 px or larger, body copy at
 12 px or larger, and preserve the existing reduced-motion/transparency
 fallbacks. Do not introduce animation required for comprehension.
 
-- [ ] **Step 5: Run focused Rust and Python contracts**
+- [x] **Step 5: Run focused Rust and Python contracts**
 
 Run:
 
@@ -259,7 +261,7 @@ python3 -m unittest scripts.test_standalone_contract -v
 
 Expected: all PASS.
 
-- [ ] **Step 6: Commit the Dashboard increment**
+- [x] **Step 6: Commit the Dashboard increment**
 
 ```bash
 git add skills/cached-subagent-harness/scripts/harnessctl/src/dashboard.rs \
@@ -284,7 +286,7 @@ git commit -m "feat: explain subagent execution in dashboard"
 - Produces: fresh test evidence, visual audit, independent findings, closed
   lifecycle ledger, final commit, and pushed `origin/main`.
 
-- [ ] **Step 1: Build and run full verification**
+- [x] **Step 1: Build and run full verification**
 
 Run:
 
@@ -296,14 +298,14 @@ Expected: Rust tests, Python tests, formatting, Clippy/release build when
 available, release validation, prompt/cache/benchmark smoke, and lifecycle
 audits all PASS.
 
-- [ ] **Step 2: Validate the Skill package**
+- [x] **Step 2: Validate the Skill package**
 
 Run the available Skill validator against
 `skills/cached-subagent-harness`; if the system validator is not bundled in
 this repository, record the successful repository release validator as the
 portable equivalent rather than installing or copying the Skill.
 
-- [ ] **Step 3: Inspect zh-CN/en-US desktop and compact layouts**
+- [x] **Step 3: Inspect zh-CN/en-US desktop and compact layouts**
 
 Serve a populated local run on loopback and inspect at least 1440×960 and
 390×844. Verify:
@@ -342,4 +344,3 @@ Expected: audit PASS with no open Session or unfinished Task.
 Run `git diff --check`, the focused contracts, and `scripts/verify.sh` after any
 review fix. Commit the final report/state update, verify a clean worktree, and
 push `main` to `origin/main`.
-

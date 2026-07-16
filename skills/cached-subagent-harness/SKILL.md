@@ -172,6 +172,9 @@ decision.
 
 After PSOC:
 
+- keep a simple Task on main when it needs no isolation, context, capability,
+  or independent judgment; for other work, continue to delegation only when
+  its value exceeds complete cost;
 - choose bounded work packages and decide whether strictly compatible
   assignments can share an evidence-bounded micro-batch; derive known
   compatible ready assignments from the durable queued ledger, partition them
@@ -188,15 +191,18 @@ Apply Token decisions in this order:
 
 1. Execute a simple Task on main when delegation provides no isolation,
    context, capability, or independent-judgment value.
-2. Derive known compatible queued Tasks from durable state, preserve declared
+2. Compare delegation value with complete cost before batching or routing.
+   Execute on main when delegation value does not exceed complete cost.
+   Continue only when it does.
+3. Derive known compatible queued Tasks from durable state, preserve declared
    order, and partition them into micro-batches of at most two.
-3. Fix role, risk, uncertainty, and quality floors, then choose the lowest
+4. Fix role, risk, uncertainty, and quality floors, then choose the lowest
    eligible `light`, `standard`, or `deep` route.
-4. For one later compatible Task, reuse an idle Session only after atomic claim,
+5. For one later compatible Task, reuse an idle Session only after atomic claim,
    durable follow-up acceptance, complete exact causal usage, and proof that
-   both reuse budgets remain. Otherwise start a new Subagent Session only when
-   delegation value exceeds complete cost; execute on main when it does not.
-5. Count bootstrap, context, work, retry, escalation, review, and fixer Tokens,
+   both reuse budgets remain. When no eligible reusable Session exists, start
+   a new Subagent Session only after the delegation gate has passed.
+6. Count bootstrap, context, work, retry, escalation, review, and fixer Tokens,
    then enforce tests, review, lifecycle audit, and deliberate closure.
 
 Use `references/standalone-methodology.md` for the complete built-in method and
