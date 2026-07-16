@@ -330,7 +330,7 @@ git commit -m "feat: add native Windows installation"
   artifacts, generates `SHA256SUMS`, validates the exact asset set, and runs
   `gh release create` only for a tag event.
 
-- [ ] **Step 1: Write failing workflow contract tests**
+- [x] **Step 1: Write failing workflow contract tests**
 
 Read the YAML as text and assert the exact target set, `contents: write`,
 manual dispatch, tag trigger, `cargo test --locked`, Task 1 packaging CLI,
@@ -338,7 +338,7 @@ artifact aggregation, checksum generation, `gh release create --verify-tag`,
 and a publication condition restricted to `refs/tags/v`. Reject `latest`,
 wildcard asset upload, and third-party release actions.
 
-- [ ] **Step 2: Run tests and observe RED**
+- [x] **Step 2: Run tests and observe RED**
 
 ```bash
 python3 -m unittest scripts.test_release_distribution -v
@@ -346,12 +346,12 @@ python3 -m unittest scripts.test_release_distribution -v
 
 Expected: FAIL because `release.yml` and the Windows CI job are absent.
 
-- [ ] **Step 3: Implement verify/build/publish jobs**
+- [x] **Step 3: Implement verify/build/publish jobs**
 
 Use official `actions/checkout@v4`, `dtolnay/rust-toolchain@stable`,
 `actions/upload-artifact@v4`, and `actions/download-artifact@v4`. The verify job
 runs `scripts/verify.sh` and the tag equality gate. Native runners are
-`ubuntu-24.04`, `ubuntu-24.04-arm`, `macos-15`, `macos-15-arm64`, and
+`ubuntu-24.04`, `ubuntu-24.04-arm`, `macos-15-intel`, `macos-15`, and
 `windows-latest`. Every matrix job runs locked tests, builds its explicit
 target, packages exactly one archive, and uploads it under a target-specific
 artifact name.
@@ -361,7 +361,7 @@ uses GitHub CLI with `${{ github.token }}`. Manual runs stop after uploading
 workflow artifacts. Add a Windows CI job that runs the PowerShell test on every
 push and pull request.
 
-- [ ] **Step 4: Run GREEN static and full local checks**
+- [x] **Step 4: Run GREEN static and full local checks**
 
 ```bash
 python3 -m unittest scripts.test_release_distribution -v
@@ -371,7 +371,7 @@ scripts/verify.sh
 
 Expected: contract tests, release validation, and full verification pass.
 
-- [ ] **Step 5: Commit Task 4**
+- [x] **Step 5: Commit Task 4**
 
 ```bash
 git add .github/workflows/ci.yml .github/workflows/release.yml \

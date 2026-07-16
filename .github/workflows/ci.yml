@@ -21,3 +21,13 @@ jobs:
 
       - name: Verify package
         run: scripts/verify.sh
+
+  windows-install:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify native PowerShell installer
+        shell: pwsh
+        run: pwsh -NoProfile -File scripts/test_install.ps1

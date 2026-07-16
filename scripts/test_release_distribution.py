@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import re
 import subprocess
 import sys
 import tarfile
@@ -17,6 +18,8 @@ PACKAGER_PATH = REPO_ROOT / "scripts" / "package-release.py"
 VALIDATOR_PATH = REPO_ROOT / "scripts" / "validate-release.py"
 INSTALL_PS1 = REPO_ROOT / "scripts" / "install.ps1"
 TEST_INSTALL_PS1 = REPO_ROOT / "scripts" / "test_install.ps1"
+RELEASE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "release.yml"
+CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 EXPECTED_TARGETS = {
     "x86_64-unknown-linux-gnu",
     "aarch64-unknown-linux-gnu",
@@ -210,6 +213,66 @@ class PowerShellInstallerContractTests(unittest.TestCase):
         self.assertIn("Invoke-HarnessInstall", text)
         self.assertIn("BinarySource None", text)
         self.assertNotIn("Pester", text)
+
+
+class ReleaseWorkflowContractTests(unittest.TestCase):
+    def test_release_workflow_has_exact_matrix_and_publication_gate(self) -> None:
+        self.assertTrue(RELEASE_WORKFLOW.is_file())
+        text = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+        matrix_entries = re.findall(
+            r"- os: (\S+)\n\s+target: (\S+)\n\s+binary: (\S+)\n\s+archive: (\S+)",
+            text,
+        )
+        self.assertEqual(
+            set(matrix_entries),
+            {
+                ("ubuntu-24.04", "x86_64-unknown-linux-gnu", "harnessctl", "tar.gz"),
+                ("ubuntu-24.04-arm", "aarch64-unknown-linux-gnu", "harnessctl", "tar.gz"),
+                ("macos-15-intel", "x86_64-apple-darwin", "harnessctl", "tar.gz"),
+                ("macos-15", "aarch64-apple-darwin", "harnessctl", "tar.gz"),
+                ("windows-latest", "x86_64-pc-windows-msvc", "harnessctl.exe", "zip"),
+            },
+        )
+        for marker in [
+            "workflow_dispatch:",
+            "tags:",
+            "contents: write",
+            "cargo test --locked",
+            "package-release.py archive",
+            "actions/upload-artifact@v4",
+            "actions/download-artifact@v4",
+            "merge-multiple: true",
+            "package-release.py checksums",
+            "gh release create",
+            "--verify-tag",
+            "refs/tags/v",
+            "scripts/verify.sh",
+            "scripts/validate-release.py",
+        ]:
+            self.assertIn(marker, text)
+        self.assertNotIn("softprops/", text)
+        self.assertNotIn("/releases/latest", text)
+        self.assertNotIn("download/latest", text)
+        self.assertNotIn("dist/*", text)
+        extensions = {
+            "x86_64-unknown-linux-gnu": "tar.gz",
+            "aarch64-unknown-linux-gnu": "tar.gz",
+            "x86_64-apple-darwin": "tar.gz",
+            "aarch64-apple-darwin": "tar.gz",
+            "x86_64-pc-windows-msvc": "zip",
+        }
+        for target, extension in extensions.items():
+            self.assertIn(
+                f'"dist/harnessctl-${{GITHUB_REF_NAME}}-{target}.{extension}"',
+                text,
+            )
+        self.assertIn('"dist/SHA256SUMS"', text)
+
+    def test_ci_runs_native_windows_installer_smoke(self) -> None:
+        text = CI_WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("windows-install", text)
+        self.assertIn("runs-on: windows-latest", text)
+        self.assertIn("scripts/test_install.ps1", text)
 
 
 if __name__ == "__main__":
