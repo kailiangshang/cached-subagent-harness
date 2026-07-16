@@ -198,8 +198,9 @@ The 2026-07-16 Subagent Session and Token strategy increment passed fresh
 post-fix verification:
 
 - Rust tests: 52/52;
-- Python tests: 46/46 across install, standalone contract, Token-effectiveness,
-  and game A/B suites;
+- Python suite: 47 tests across install, standalone contract,
+  Token-effectiveness, and game A/B; the new attribution contract passed and a
+  final full rerun remains pending;
 - Clippy with warnings denied and a release build;
 - release metadata plus the system Skill package validator;
 - prompt-cache, offline Token, game A/B, and lifecycle regression gates;
@@ -218,9 +219,10 @@ gates and are recorded in
 The preceding Dashboard delivery has its separate historical 50-Rust/33-Python
 verification and two-review record in
 [`results-dashboard-implementation.md`](../results-dashboard-implementation.md).
-See
+The corrected Signal Sweep policy increment retains its own verification,
+review, and lifecycle evidence in
 [`corrected-signal-sweep-implementation.md`](../corrected-signal-sweep-implementation.md)
-for this increment's full verification, final review, and lifecycle audit.
+and does not represent the current delivery.
 
 ## Document Authority
 

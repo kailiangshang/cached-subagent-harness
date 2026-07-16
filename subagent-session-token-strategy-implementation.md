@@ -1,6 +1,6 @@
 # Subagent Session Token Strategy Implementation
 
-Status: in progress — post-review fixes verified; fresh re-review pending
+Status: in progress — attribution fix verified; final narrow re-review pending
 
 ## PSOC
 
@@ -42,12 +42,13 @@ release limits.
 ## Agent Budget
 
 - Maximum open delegated Sessions: 2.
-- Maximum total spawned Sessions: 3.
+- Maximum total spawned Sessions: 4.
 - Planned use: one fresh read-only baseline comprehension Session, one fresh
-  read-only final review Session, and one fresh read-only re-review Session.
-  The third Session is required because the first review found Important issues
-  and exact Token telemetry is unavailable for safe reuse. Implementation
-  remains on main to avoid short-lived writer churn.
+  read-only final review Session, one fresh read-only whole-diff re-review
+  Session, and one narrowly scoped final attribution-review Session. The third
+  and fourth Sessions are mandatory re-reviews after Important findings; exact
+  Token telemetry is unavailable, so invariant 18 forbids Session reuse.
+  Implementation remains on main to avoid short-lived writer churn.
 - Nested delegation: disabled.
 
 ## Agent Ledger
@@ -56,7 +57,8 @@ release limits.
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
 | /root/baseline_term_clarity | discussion | baseline-term-clarity | closed | collaboration final response | 2026-07-16 | yes | yes | none | low | no reuse | Baseline explanation consumed | Implement the terminology contract |
 | /root/subagent_session_final_review | reviewer | final-whole-diff-review | closed | collaboration final response | 2026-07-16 | yes | yes | none | medium | no reuse | Four Important and two Minor findings consumed | Apply one bounded fix pass, verify, then re-review |
-| /root/subagent_session_rereview | reviewer | final-whole-diff-rereview | planned | pending | pending | no | no | none | medium | no reuse; close after verdict | pending | Verify the complete fixed diff independently |
+| /root/subagent_session_rereview | reviewer | final-whole-diff-rereview | closed | collaboration final response | 2026-07-16 | yes | yes | none | medium | no reuse | One Important stale-attribution finding consumed | Fix with a focused contract, then run narrow re-review |
+| /root/subagent_session_attribution_review | reviewer | final-attribution-review | planned | pending | pending | no | no | none | low | no reuse; close after verdict | pending | Verify only the attribution fix and release-document consistency |
 
 ## Write Scope
 
@@ -135,8 +137,15 @@ release limits.
   11px explanatory rules; the pre-existing locale keys were already equal.
 - Review-fix GREEN: all six focused contracts passed, including exact zh-CN /
   en-US key parity and policy-order assertions.
-- Full post-fix `scripts/verify.sh` passed: Rust 52/52; Python 46/46
-  (install 7, standalone 18, Token effectiveness 3, game A/B 18); release
+- Attribution RED/GREEN: a focused current-state contract failed on the stale
+  Signal Sweep evidence attribution, then passed after the current increment
+  was pointed only to its own implementation report.
+- The complete Python suite now contains 47 tests (install 7, standalone 19,
+  Token effectiveness 3, game A/B 18); the final full verification will rerun
+  it after review closure.
+- Full post-fix `scripts/verify.sh` passed before the attribution contract: Rust
+  52/52; Python 46/46 (install 7, standalone 18, Token effectiveness 3, game A/B
+  18); release
   metadata, Rust formatting, Clippy, release build, both offline Benchmark
   thresholds, prompt-cache check, lifecycle smoke, and audit passed.
 - The system Skill package validator reported `Skill is valid!` without copying
@@ -166,6 +175,14 @@ Items 1–6 are fixed; behavioral and boundary changes are covered by RED/GREEN
 tests, and the authoritative documents now record the current increment. A
 fresh independent re-review is mandatory before release closure.
 
+The fresh whole-diff re-review verified the invariant hash, decision order,
+terminology, bilingual policy branch, responsive artifacts, privacy boundary,
+and absence of scope expansion. It found no Critical or Minor issue and one
+Important issue: a historical paragraph in `docs/current-state.md` still
+attributed the current increment's final evidence to
+`corrected-signal-sweep-implementation.md`. The attribution is fixed under a
+focused RED/GREEN contract; a final narrow re-review remains required.
+
 ## Risks
 
 - Static policy could be mistaken for live progress; label it explicitly.
@@ -174,8 +191,7 @@ fresh independent re-review is mandatory before release closure.
 
 ## Next Actions
 
-1. Run the fresh independent whole-diff re-review and resolve any remaining
-   Critical/Important finding.
+1. Run the final narrow independent attribution re-review.
 2. Close the lifecycle ledger, finalize authoritative verification state, and
    push `origin/main`.
 

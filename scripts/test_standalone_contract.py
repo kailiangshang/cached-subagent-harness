@@ -232,6 +232,20 @@ class StandaloneContractTests(unittest.TestCase):
         self.assertIn("Subagent sessions", dashboard_design)
         self.assertIn("static release policy", dashboard_design)
 
+    def test_current_state_attributes_this_increment_to_its_own_report(
+        self,
+    ) -> None:
+        current_state = self.read("docs/current-state.md")
+        self.assertIn(
+            "subagent-session-token-strategy-implementation.md",
+            current_state,
+        )
+        self.assertNotIn(
+            "for this increment's full verification, final review, and "
+            "lifecycle audit",
+            " ".join(current_state.split()),
+        )
+
     def test_dashboard_strategy_returns_nonvaluable_delegation_to_main(
         self,
     ) -> None:
