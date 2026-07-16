@@ -1,5 +1,8 @@
 # Verified Binary Release Implementation Plan
 
+Status: complete — `v0.2.0` is published, its five native archives and checksum
+manifest are accepted, and the durable release Run passed final audit.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `executing-plans` to
 > implement this plan task-by-task and `test-driven-development` for every
 > behavior change. The standalone workflow is complete without Superpowers.
@@ -291,7 +294,7 @@ only release-acquisition failure before entering Cargo fallback. `Download` and
 `Build` never cross sources. Preserve the copied Skill on a runtime failure and
 emit an actionable nonzero error.
 
-- [ ] **Step 4: Run GREEN checks**
+- [x] **Step 4: Run GREEN checks**
 
 Run locally:
 
@@ -306,6 +309,10 @@ pwsh -NoProfile -File scripts/test_install.ps1
 ```
 
 Expected: Python contracts and native PowerShell assertions pass.
+
+Observed: local Python contracts passed; native PowerShell behavior passed
+feature-branch CI `29484406668`, main CI `29485169389`, and the Windows build
+of Release workflow `29485571155`.
 
 - [x] **Step 5: Commit Task 3**
 
@@ -482,7 +489,7 @@ focused tests and `scripts/verify.sh`, commit the fixes, and dispatch a fresh
 read-only re-review. Do not publish with an unresolved Critical or Important
 finding.
 
-- [ ] **Step 4: Push source, create and push the annotated version tag**
+- [x] **Step 4: Push source, create and push the annotated version tag**
 
 ```bash
 git push origin main
@@ -493,7 +500,11 @@ git push origin v0.2.0
 
 Expected: the release workflow starts from the exact pushed commit.
 
-- [ ] **Step 5: Monitor and inspect the public Release**
+Observed: annotated tag `v0.2.0` dereferences to release source
+`0349449383c31f186eb26dac7081c0cf15f52401` and started Release run
+`29485571155` after main CI `29485169389` succeeded.
+
+- [x] **Step 5: Monitor and inspect the public Release**
 
 Poll GitHub's Actions and Releases APIs without exposing credentials. Require
 workflow success and verify the public Release contains exactly:
@@ -510,7 +521,12 @@ SHA256SUMS
 Download the current Linux archive and checksum, verify it, extract it into a
 temporary directory, and run `harnessctl --help` before accepting the Release.
 
-- [ ] **Step 6: Close the durable Run**
+Observed: all five matrix builds and `publish` succeeded. The public Release
+contained exactly the six explicit assets. The Linux x86-64 archive matched its
+manifest checksum, contained only two regular members, and its extracted
+`harnessctl --help` path executed successfully.
+
+- [x] **Step 6: Close the durable Run**
 
 Update every reviewer Task and Session to terminal accepted/closed state, run:
 
@@ -522,4 +538,11 @@ skills/cached-subagent-harness/scripts/bin/harnessctl audit \
 Record exact tests, commits, workflow URL/status, Release URL/assets, known
 unsigned-binary limitation, review disposition, and final audit in
 `binary-release-implementation.md`. Commit and push the closure report, then
-confirm `HEAD`, `origin/main`, and the public Release source commit agree.
+confirm `HEAD` and `origin/main` agree while the published Release source and
+`v0.2.0` tag remain fixed to `0349449`; the closure-only documentation
+commit is intentionally newer than the released source.
+
+Observed: `release-publish` reached `accepted`; all four delegated Sessions are
+terminal; final audit passed before and after Run
+`binary-release-20260716` became `complete`. The closure-only documentation
+commit was then pushed without moving `v0.2.0`.

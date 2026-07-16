@@ -1,7 +1,7 @@
 # Binary Release Implementation
 
-Status: source candidate accepted by local, native Windows, and independent
-review gates; merge, main CI, tag, and public Release acceptance pending
+Status: `v0.2.0` published and accepted; local, native Windows, independent
+review, main CI, five-target Release, checksum, and downloaded-binary gates pass
 
 ## PSOC
 
@@ -58,6 +58,7 @@ The durable Run currently tracks:
 | `release-review-rereview` | independent reviewer | accepted | `/tmp/cached-subagent-harness-v0.2.0-rereview.md`; one Important gap remains |
 | `release-review-http-fix` | main controller/fixer | accepted | `b5d62db`, diagnostic `8e0d60d`, native fix `bf45aae`, and successful preflight CI |
 | `release-review-final` | independent reviewer | accepted | `/tmp/cached-subagent-harness-v0.2.0-final-rereview.md`; no open Critical/Important finding |
+| `release-publish` | main controller | accepted | annotated tag `v0.2.0`, Release run `29485571155`, exact public asset inspection, and Linux binary execution |
 
 ## Write Scope
 
@@ -98,6 +99,23 @@ and generated Cargo lock metadata.
 - Feature-branch CI run `29484406668` completed successfully at `bf45aae`; its
   `windows-install` and full Linux `verify` jobs both passed before any merge or
   version tag was created.
+- Main CI run
+  [`29485169389`](https://github.com/kailiangshang/cached-subagent-harness/actions/runs/29485169389)
+  completed successfully at release source `0349449`; both Linux `verify` and
+  native Windows installer jobs passed before tagging.
+- Annotated tag `v0.2.0` dereferences to
+  `0349449383c31f186eb26dac7081c0cf15f52401`. Release workflow run
+  [`29485571155`](https://github.com/kailiangshang/cached-subagent-harness/actions/runs/29485571155)
+  passed `verify`, all five explicit native matrix builds, and `publish`.
+- The public
+  [`v0.2.0` Release](https://github.com/kailiangshang/cached-subagent-harness/releases/tag/v0.2.0)
+  is published from `0349449` with exactly five platform archives and
+  `SHA256SUMS`, in addition to GitHub's generated source archives.
+- Public acceptance downloaded the Linux x86-64 archive and checksum manifest.
+  The 1,688,956-byte archive matched SHA-256
+  `79b8365e71056cfcd6b3f385f6eec35b8dc54e16a66b0d01c0b2b906acbe4f47`,
+  contained exactly two regular members (`harnessctl` and `LICENSE`), extracted
+  an executable x86-64 ELF, and returned the expected `harnessctl --help` usage.
 
 ## Changed Files
 
@@ -164,6 +182,16 @@ check for `harnessctl 0.2.0`.
   Wrapping that result as an array in `bf45aae` fixed the source. GitHub Actions
   run `29484406668` then passed both the Windows behavior job and Linux verify
   job from the exact commit.
+- A fresh pre-tag `scripts/verify.sh` run at `0349449` passed 52/52 Rust tests,
+  71/71 Python tests, formatting, Clippy with warnings denied, the release
+  build, both offline benchmarks, prompt/lifecycle smoke, and all 20 Skill
+  invariants. `validate-release.py --tag v0.2.0` and `git diff --check` also
+  exited 0. Main CI and the tag-triggered Release workflow then repeated the
+  relevant native and full-package gates on GitHub-hosted runners.
+- Public Release acceptance compared the six explicit downloadable assets,
+  required five exact checksum entries, verified the Linux x86-64 SHA-256 and
+  two-member regular-file archive, and executed the downloaded binary's help
+  path successfully.
 
 ## Review Findings
 
@@ -181,8 +209,8 @@ The independent release/security review reported 0 Critical, 5 Important, and
   The second fix now serves the exact fixture over loopback HTTP, verifies the
   installed bytes without Cargo, forces an exclusive-lock replacement failure,
   preserves destination bytes, rejects misleading success, and removes staging
-  residue. Native Windows CI accepted the exact source at `bf45aae`; final
-  independent re-review remains the last local publication gate.
+  residue. Native Windows CI accepted the exact source at `bf45aae`, and the
+  final independent re-review closed the publication gate.
 - I3, mutable Actions/toolchain: fixed with reviewed full Action SHAs and Rust
   `1.96.1` in normal CI and Release workflows.
 - I4, undefined compatibility floor: resolved by narrowing certification to
@@ -203,19 +231,21 @@ accepted for a later patch release.
 
 ## Risks
 
-- Native PowerShell behavior must pass on GitHub's Windows runner before the
-  tag is created; local Linux static contracts are not accepted as a substitute.
-- GitHub runner-label availability and platform toolchain drift remain external
-  publication risks and will be resolved from observed CI rather than assumed.
 - Public binaries are checksummed but unsigned in this increment.
 - Compatibility is intentionally certified only for the documented runners;
   matching target triples on older systems may require the Cargo build path.
+- The retained Minor review gap does not enumerate every malicious archive
+  shape separately, although the implementation structurally rejects any
+  member set or file type outside the exact two-regular-file contract.
+- GitHub runner labels, toolchains, and asset CDN behavior remain external
+  service dependencies for future releases; `v0.2.0` completed every observed
+  publication and download-integrity gate.
 
 ## Next Actions
 
-Merge and push source, require normal `main` CI including the native
-PowerShell suite to pass, publish tag `v0.2.0`, inspect and execute the public
-Linux asset, and close the lifecycle audit.
+No release-blocking action remains. Address the retained Minor archive-case
+test matrix, signing, broader compatibility, or packaging channels only in a
+future patch or planned release; do not move the published `v0.2.0` tag.
 
 ## External Agent Reconciliation
 
@@ -232,10 +262,36 @@ Linux asset, and close the lifecycle audit.
 
 ## Degraded Mode Notes
 
-The local Linux environment has no `pwsh`; native PowerShell execution is
-therefore an explicit Windows CI gate, not a waived test. Standalone methodology
-and the bundled `harnessctl` remain available.
+The local Linux environment has no `pwsh`. Native PowerShell execution was not
+waived: feature-branch CI, main CI, and the Windows Release matrix all passed on
+GitHub's Windows runner. Standalone methodology and the bundled `harnessctl`
+remained available throughout.
 
 ## Final Audit
 
-Pending.
+- **Lifecycle Audit:** `harnessctl audit --db
+  binary-release-implementation.db --run binary-release-20260716` passed before
+  and after the Run was marked `complete`. Eight Tasks are `accepted`; the one
+  stalled reviewer Task is `failed` with an explicit reason. Three delegated
+  Sessions are `closed`, the stalled Session is terminal `failed`, and no
+  Session owns a current Task.
+- **Harness Commands:** `task update` recorded `release-publish` as
+  `reported` then `accepted`; `run update --status complete`, final `audit`, and
+  bilingual/JSON `status` all completed without a lifecycle error.
+- **Focused Tests:** the public API confirmed one published, non-draft,
+  non-prerelease `v0.2.0` Release, seven successful workflow jobs, six exact
+  nonempty uploaded assets, and release source `0349449`. The downloaded Linux
+  asset passed manifest, SHA-256, member-type, extraction, executable, and
+  `--help` checks.
+- **Project Harness:** the final pre-tag `scripts/verify.sh`, explicit
+  `validate-release.py --tag v0.2.0`, `git diff --check`, main CI, and the
+  tag-triggered Release workflow all passed.
+- **Review Status:** 0 open Critical and 0 open Important findings. One
+  accepted Minor malicious-archive test-matrix gap remains for a patch release.
+- **Open Risks:** binaries are unsigned; compatibility is restricted to the
+  documented release runners; GitHub remains an external distribution service.
+- **External Agent Reconciliation:** all four Sessions created for this Run are
+  terminal and represented in the durable ledger; historical UI Sessions are
+  outside this Run.
+- **Degraded Mode:** none. Local absence of `pwsh` was covered by three native
+  Windows CI/Release executions rather than waived.

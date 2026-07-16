@@ -2,10 +2,9 @@
 
 Date: 2026-07-16
 
-Status: the `v0.2.0` source candidate adds verified five-target binary
-distribution, Bash and native PowerShell installation, and a tag-gated GitHub
-Release workflow; local release gates pass and public tag acceptance remains
-part of the release lifecycle
+Status: `v0.2.0` is published and accepted with verified five-target binary
+distribution, Bash and native PowerShell installation, a successful tag-gated
+GitHub Release workflow, and downloaded-binary checksum/execution evidence
 
 This is the shortest current-state entry point for `cached-subagent-harness`.
 It summarizes the implemented product and points to the binding contracts and
@@ -203,7 +202,7 @@ live Token-saving claim for batching or reuse.
 
 ## Verification State
 
-The `v0.2.0` source candidate passed fresh local verification on 2026-07-16:
+The published `v0.2.0` source passed fresh local verification on 2026-07-16:
 
 - Rust tests: 52/52;
 - Python tests: 71/71 across Bash installation, standalone contracts, release
@@ -218,8 +217,21 @@ The native PowerShell behavior suite passed feature-branch CI run
 at exact source `bf45aae`, including production loopback HTTP acquisition and
 failure-safe replacement. Independent release/security review found no Critical
 issue; after two bounded fix/re-review cycles, the final review reported no open
-Critical or Important finding. Tag publication, public asset inspection, and
-downloaded-binary execution remain acceptance gates recorded in
+Critical or Important finding. Main CI run
+[`29485169389`](https://github.com/kailiangshang/cached-subagent-harness/actions/runs/29485169389)
+then passed Linux verification and native Windows behavior at release source
+`0349449`.
+
+Annotated tag `v0.2.0` and the public
+[`v0.2.0` Release](https://github.com/kailiangshang/cached-subagent-harness/releases/tag/v0.2.0)
+both resolve to `0349449383c31f186eb26dac7081c0cf15f52401`. Release run
+[`29485571155`](https://github.com/kailiangshang/cached-subagent-harness/actions/runs/29485571155)
+passed full verification, five native builds, and publication. The Release has
+exactly the five documented platform archives plus `SHA256SUMS`. A fresh public
+download of the 1,688,956-byte Linux x86-64 archive matched checksum
+`79b8365e71056cfcd6b3f385f6eec35b8dc54e16a66b0d01c0b2b906acbe4f47`,
+contained only regular `harnessctl` and `LICENSE` members, and executed
+`harnessctl --help`. Full acceptance and residual risks are recorded in
 [`binary-release-implementation.md`](../binary-release-implementation.md).
 
 The preceding 2026-07-16 Subagent Session and Token strategy increment passed
