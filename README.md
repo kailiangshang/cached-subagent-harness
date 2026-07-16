@@ -239,6 +239,14 @@ The five prebuilt targets are:
 | macOS Apple Silicon | `aarch64-apple-darwin` | `.tar.gz` |
 | Windows x86-64 | `x86_64-pc-windows-msvc` | `.zip` |
 
+The `v0.2.0` native compatibility claim is intentionally narrow: Linux is
+built and executed on Ubuntu 24.04 / glibc 2.39, macOS on macOS 15, and Windows
+on GitHub's current `windows-latest` x86-64 runner.
+Older operating-system releases are not certified in this version.
+A matching architecture is not by itself a minimum-OS guarantee; `auto` enters
+the locked Cargo fallback if the downloaded runtime cannot be acquired, and
+users can select `build` directly.
+
 SHA-256 confirms that downloaded bytes match the published manifest, but the
 binaries are currently unsigned: this release does not provide Apple
 notarization, Windows Authenticode, or another platform trust signature.

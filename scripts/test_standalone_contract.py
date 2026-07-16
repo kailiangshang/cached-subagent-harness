@@ -270,6 +270,13 @@ class StandaloneContractTests(unittest.TestCase):
             "x86_64-pc-windows-msvc",
         ]:
             self.assertIn(target, install)
+        for boundary in [
+            "Ubuntu 24.04 / glibc 2.39",
+            "macOS 15",
+            "windows-latest",
+            "Older operating-system releases are not certified",
+        ]:
+            self.assertIn(boundary, install)
 
         notes_path = REPO_ROOT / "docs" / "releases" / "0.2.0.md"
         self.assertTrue(notes_path.is_file(), "missing v0.2.0 release notes")
@@ -290,6 +297,8 @@ class StandaloneContractTests(unittest.TestCase):
             "2,642,029",
         ]:
             self.assertIn(asset, notes)
+        self.assertIn("Ubuntu 24.04 / glibc 2.39", notes)
+        self.assertIn("Older operating-system releases are not certified", notes)
 
         current_state = self.read("docs/current-state.md")
         for link in [
@@ -299,6 +308,20 @@ class StandaloneContractTests(unittest.TestCase):
             "releases/0.2.0.md",
         ]:
             self.assertIn(link, current_state)
+
+        for relative in [
+            "docs/specs/2026-07-16-binary-release-design.md",
+            "docs/plans/2026-07-16-binary-release-plan.md",
+            "binary-release-implementation.md",
+            ".github/workflows/release.yml",
+        ]:
+            text = self.read(relative)
+            self.assertNotIn("immutable GitHub Release", text)
+            self.assertNotIn("immutable tag", text)
+        self.assertIn(
+            "repository settings, not this workflow",
+            " ".join(notes.split()),
+        )
 
     def test_current_state_attributes_this_increment_to_its_own_report(
         self,
@@ -409,6 +432,15 @@ class StandaloneContractTests(unittest.TestCase):
             0,
             result.stdout + result.stderr,
         )
+
+    def test_release_validator_rejects_noncanonical_semver(self) -> None:
+        result = self.run_mutated_validation(
+            ".codex-plugin/plugin.json",
+            '"version": "0.2.0"',
+            '"version": "01.2.3"',
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("plugin version must be semver", result.stderr)
 
     def test_release_validator_rejects_method_semantic_mutation(self) -> None:
         result = self.run_mutated_validation(

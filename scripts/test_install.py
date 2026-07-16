@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import hashlib
+import io
 import os
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import unittest
 from pathlib import Path
@@ -238,6 +241,28 @@ chmod 755 "$crate_dir/target/release/harnessctl"
         )
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def _replace_linux_archive_with_link(self, link_type: bytes, target: str) -> None:
+        asset = "harnessctl-v0.2.0-x86_64-unknown-linux-gnu.tar.gz"
+        archive_path = self.release_dir / asset
+        with tarfile.open(archive_path, "w:gz") as archive:
+            license_data = b"MIT fixture\n"
+            license_info = tarfile.TarInfo("LICENSE")
+            license_info.size = len(license_data)
+            archive.addfile(license_info, fileobj=io.BytesIO(license_data))
+            link_info = tarfile.TarInfo("harnessctl")
+            link_info.type = link_type
+            link_info.linkname = target
+            archive.addfile(link_info)
+
+        checksum_path = self.release_dir / "SHA256SUMS"
+        replacement = f"{hashlib.sha256(archive_path.read_bytes()).hexdigest()}  {asset}"
+        lines = checksum_path.read_text(encoding="utf-8").splitlines()
+        checksum_path.write_text(
+            "\n".join(replacement if line.endswith(asset) else line for line in lines)
+            + "\n",
+            encoding="utf-8",
+        )
+
     @property
     def installed_runtime(self) -> Path:
         return (
@@ -412,6 +437,32 @@ chmod 755 "$crate_dir/target/release/harnessctl"
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("checksum", result.stderr.lower())
+
+    def test_download_rejects_symlink_runtime_member(self) -> None:
+        self._replace_linux_archive_with_link(tarfile.SYMTYPE, str(self.real_true))
+        result = self.run_install(
+            "--binary-source",
+            "download",
+            "--release-base-url",
+            self.release_base_url,
+            skip_build=False,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("unsafe member", result.stderr.lower())
+        self.assertFalse(self.installed_runtime.exists())
+
+    def test_download_rejects_hardlink_runtime_member(self) -> None:
+        self._replace_linux_archive_with_link(tarfile.LNKTYPE, "LICENSE")
+        result = self.run_install(
+            "--binary-source",
+            "download",
+            "--release-base-url",
+            self.release_base_url,
+            skip_build=False,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("unsafe member", result.stderr.lower())
+        self.assertFalse(self.installed_runtime.exists())
 
     def test_forced_download_does_not_fallback_to_cargo(self) -> None:
         result = self.run_install(

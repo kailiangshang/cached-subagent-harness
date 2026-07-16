@@ -1,7 +1,7 @@
 # Binary Release Implementation
 
-Status: local implementation complete; independent review and public Release
-acceptance pending
+Status: independent review fixes implemented and locally verified; re-review,
+native CI, and public Release acceptance pending
 
 ## PSOC
 
@@ -17,7 +17,7 @@ runtime unavailable.
 2. Native Windows has an equivalent PowerShell path.
 3. Download and verification failures fail closed or enter the explicitly
    documented `auto` Cargo fallback.
-4. A `v0.2.0` tag publishes one immutable five-target GitHub Release only after
+4. A `v0.2.0` tag publishes one versioned five-target GitHub Release only after
    complete verification.
 
 ### Options
@@ -44,13 +44,15 @@ Option 2. The approved design is
 
 ## Agent Ledger
 
-No delegated Session has been spawned. The durable Run currently tracks:
+The durable Run currently tracks:
 
 | Task | Role | State | Evidence |
 |---|---|---|---|
 | `release-workflow` | main controller | accepted | `094d634` |
-| `release-docs` | main controller | reported | current Task 5 diff |
-| `release-review-publish` | independent reviewer | queued | Task 6 gate |
+| `release-docs` | main controller | accepted | `94bb940` |
+| `release-review-publish` | independent reviewer | failed | Session stalled without a report and was closed with an explicit failure reason |
+| `release-review-retry` | independent reviewer | accepted | `/tmp/cached-subagent-harness-v0.2.0-security-review.md` |
+| `release-review-fixes` | main controller/fixer | running | current batched review-fix diff |
 
 ## Write Scope
 
@@ -78,6 +80,13 @@ and generated Cargo lock metadata.
   the tag-gated workflow are covered by offline contracts.
 - The workflow publishes only five explicit archives plus `SHA256SUMS`; it
   does not use a wildcard release upload.
+- The independent security review found no Critical issue, five Important
+  issues, and two Minor issues. Every finding has one bounded disposition in
+  the current review-fix diff.
+- Focused RED/GREEN evidence covers tar symlink/hardlink rejection, ZIP
+  regular-file metadata, native Windows acquisition scenarios, immutable
+  action references, strict SemVer, compatibility claims, and Release
+  mutability language.
 
 ## Changed Files
 
@@ -94,6 +103,11 @@ tag-only publication gate, and explicit six-asset release command (`094d634`).
 Task 5 adds recommended prebuilt installation, source-policy and unsigned
 binary documentation, `v0.2.0` notes, current-state authority links, and public
 contract tests.
+The review-fix pass rejects link-like archive members, adds native PowerShell
+behavior coverage for all acquisition boundaries, pins every Action and Rust
+version, narrows compatibility certification to the build/test runners,
+removes unenforced immutability claims, declares CI permissions explicitly,
+and enforces canonical Semantic Versioning.
 
 ## Tests
 
@@ -117,32 +131,70 @@ check for `harnessctl 0.2.0`.
   passed 20/20 standalone tests. `scripts/verify.sh` then passed on the current
   Task 5 tree: 52 Rust tests and 68 Python tests, Clippy/format/release build,
   both offline benchmark gates, prompt/lifecycle smoke, and all 20 invariants.
+- Review fixes followed focused RED/GREEN cycles. The current focused suites
+  pass 17/17 Bash installer tests, 12/12 release distribution/workflow tests,
+  and 21/21 standalone contract tests.
+- Fresh post-fix `scripts/verify.sh` passed 52/52 Rust tests and 71/71 Python
+  tests, release metadata validation, formatting, Clippy with warnings denied,
+  a release build, both offline benchmark gates, prompt/lifecycle smoke, and
+  all 20 invariants. Explicit `--tag v0.2.0` validation, workflow YAML parsing,
+  invariant byte-preservation against `9537711`, and `git diff --check` also
+  exited 0. Native Windows execution remains an external CI gate.
 
 ## Review Findings
 
-Independent release/security review pending.
+The independent release/security review reported 0 Critical, 5 Important, and
+2 Minor findings:
+
+- I1, archive links: fixed by rejecting every non-regular tar/ZIP member and
+  rechecking extracted paths; symlink and hardlink regressions are covered.
+- I2, Windows behavior unproved: fixed locally by expanding the dependency-free
+  PowerShell suite across Download, checksum failure, duplicate/missing digest,
+  unsafe ZIP type, Auto fallback, Build isolation, forced Download isolation,
+  and paths with spaces. Native proof remains mandatory in Windows CI.
+- I3, mutable Actions/toolchain: fixed with reviewed full Action SHAs and Rust
+  `1.96.1` in normal CI and Release workflows.
+- I4, undefined compatibility floor: resolved by narrowing certification to
+  Ubuntu 24.04 / glibc 2.39, macOS 15, and the current Windows runner. Older
+  systems are not claimed; locked Cargo build remains the fallback.
+- I5, unenforced immutability: resolved by removing the false property and
+  documenting that tag/Release mutability is governed by repository settings.
+- M1 and M2: normal CI now declares `contents: read`; release packaging and
+  validation now enforce canonical Semantic Versioning.
+
+Fresh independent re-review of the batched fixes is pending.
 
 ## Risks
 
-- Cross-platform runner or toolchain drift.
-- Installer quoting, archive traversal, or checksum-selection defects.
-- Release workflow could publish partial or version-mismatched assets without
-  explicit aggregation gates.
+- Native PowerShell behavior must pass on GitHub's Windows runner before the
+  tag is created; local Linux static contracts are not accepted as a substitute.
+- GitHub runner-label availability and platform toolchain drift remain external
+  publication risks and will be resolved from observed CI rather than assumed.
 - Public binaries are checksummed but unsigned in this increment.
+- Compatibility is intentionally certified only for the documented runners;
+  matching target triples on older systems may require the Cargo build path.
 
 ## Next Actions
 
-Commit Task 5, independently review the whole release branch, fix and re-review
-all Critical/Important findings, merge and push source, publish tag `v0.2.0`,
-inspect and execute the public Linux asset, then close the lifecycle audit.
+Commit this locally verified batched fix and obtain a fresh read-only re-review.
+Then merge and push source, require normal CI including the native
+PowerShell suite to pass, publish tag `v0.2.0`, inspect and execute the public
+Linux asset, and close the lifecycle audit.
 
 ## External Agent Reconciliation
 
-No in-scope delegated Session yet.
+- `binary-release-review-20260716`: failed and closed after it stalled without
+  a report; no result was used.
+- `binary-release-review-retry-20260716`: reported the accepted security
+  review and is closed.
+- UI-visible historical Sessions are outside this Run and do not affect this
+  task's Agent budget or closure.
 
 ## Degraded Mode Notes
 
-None. Standalone methodology is the normal mode.
+The local Linux environment has no `pwsh`; native PowerShell execution is
+therefore an explicit Windows CI gate, not a waived test. Standalone methodology
+and the bundled `harnessctl` remain available.
 
 ## Final Audit
 

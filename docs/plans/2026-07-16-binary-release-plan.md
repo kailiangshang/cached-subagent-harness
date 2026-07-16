@@ -348,9 +348,9 @@ Expected: FAIL because `release.yml` and the Windows CI job are absent.
 
 - [x] **Step 3: Implement verify/build/publish jobs**
 
-Use official `actions/checkout@v4`, `dtolnay/rust-toolchain@stable`,
-`actions/upload-artifact@v4`, and `actions/download-artifact@v4`. The verify job
-runs `scripts/verify.sh` and the tag equality gate. Native runners are
+Use reviewed full commit SHAs for official Actions and the Rust toolchain
+action, retain version comments, and pin Rust `1.96.1`. The verify job runs
+`scripts/verify.sh` and the tag equality gate. Native runners are
 `ubuntu-24.04`, `ubuntu-24.04-arm`, `macos-15-intel`, `macos-15`, and
 `windows-latest`. Every matrix job runs locked tests, builds its explicit
 target, packages exactly one archive, and uploads it under a target-specific
@@ -458,7 +458,7 @@ git commit -m "docs: prepare v0.2.0 binary release"
 - Release acceptance uses the GitHub API to confirm tag, five archives,
   `SHA256SUMS`, nonzero asset sizes, and published state.
 
-- [ ] **Step 1: Run final local verification before review**
+- [x] **Step 1: Run final local verification before review**
 
 ```bash
 scripts/verify.sh
@@ -468,7 +468,7 @@ git diff --check
 
 Expected: all commands exit 0.
 
-- [ ] **Step 2: Dispatch independent release/security review**
+- [x] **Step 2: Dispatch independent release/security review**
 
 Record the planned reviewer in the machine ledger before spawn. Require
 severity-ordered findings for archive safety, installer quoting and fallback,
@@ -482,7 +482,7 @@ focused tests and `scripts/verify.sh`, commit the fixes, and dispatch a fresh
 read-only re-review. Do not publish with an unresolved Critical or Important
 finding.
 
-- [ ] **Step 4: Push source, create and push the immutable tag**
+- [ ] **Step 4: Push source, create and push the annotated version tag**
 
 ```bash
 git push origin main

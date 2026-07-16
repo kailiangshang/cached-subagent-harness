@@ -8,12 +8,23 @@ import gzip
 import hashlib
 import io
 import re
+import stat
 import tarfile
 import zipfile
 from pathlib import Path
 
 
-VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$")
+SEMVER_NUMERIC = r"(?:0|[1-9][0-9]*)"
+SEMVER_PRERELEASE_ID = (
+    r"(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)"
+)
+SEMVER_BUILD_ID = r"[0-9A-Za-z-]+"
+SEMVER_PATTERN = (
+    rf"{SEMVER_NUMERIC}\.{SEMVER_NUMERIC}\.{SEMVER_NUMERIC}"
+    rf"(?:-(?:{SEMVER_PRERELEASE_ID})(?:\.(?:{SEMVER_PRERELEASE_ID}))*)?"
+    rf"(?:\+(?:{SEMVER_BUILD_ID})(?:\.(?:{SEMVER_BUILD_ID}))*)?"
+)
+VERSION_RE = re.compile(rf"^{SEMVER_PATTERN}$")
 SUPPORTED_TARGETS: dict[str, tuple[str, str]] = {
     "x86_64-unknown-linux-gnu": ("harnessctl", ".tar.gz"),
     "aarch64-unknown-linux-gnu": ("harnessctl", ".tar.gz"),
@@ -22,8 +33,8 @@ SUPPORTED_TARGETS: dict[str, tuple[str, str]] = {
     "x86_64-pc-windows-msvc": ("harnessctl.exe", ".zip"),
 }
 ASSET_RE = re.compile(
-    r"^harnessctl-v(?P<version>[0-9]+\.[0-9]+\.[0-9]+"
-    r"(?:[-+][0-9A-Za-z.-]+)?)-(?P<target>.+?)(?:\.tar\.gz|\.zip)$"
+    rf"^harnessctl-v(?P<version>{SEMVER_PATTERN})-"
+    r"(?P<target>.+?)(?:\.tar\.gz|\.zip)$"
 )
 
 
@@ -71,7 +82,7 @@ def _create_zip(output: Path, members: list[tuple[str, bytes, int]]) -> None:
             info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
             info.create_system = 3
             info.compress_type = zipfile.ZIP_DEFLATED
-            info.external_attr = (mode & 0xFFFF) << 16
+            info.external_attr = ((stat.S_IFREG | mode) & 0xFFFF) << 16
             archive.writestr(info, data, compress_type=zipfile.ZIP_DEFLATED, compresslevel=9)
 
 

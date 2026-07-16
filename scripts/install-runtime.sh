@@ -86,6 +86,7 @@ expected_checksum() {
 validate_release_archive() {
   local archive="$1"
   local members="$2"
+  local details="${members}.details"
   if ! tar -tzf "$archive" > "$members"; then
     echo "error: harnessctl release archive is unreadable" >&2
     return 1
@@ -94,6 +95,12 @@ validate_release_archive() {
     || [ "$(grep -Fxc 'harnessctl' "$members")" != "1" ] \
     || [ "$(grep -Fxc 'LICENSE' "$members")" != "1" ]; then
     echo "error: harnessctl release archive has an unsafe member set" >&2
+    return 1
+  fi
+  if ! LC_ALL=C tar -tvzf "$archive" > "$details" \
+    || [ "$(wc -l < "$details" | tr -d ' ')" != "2" ] \
+    || ! awk 'substr($1, 1, 1) != "-" { unsafe = 1 } END { exit unsafe }' "$details"; then
+    echo "error: harnessctl release archive has an unsafe member type" >&2
     return 1
   fi
 }
@@ -140,7 +147,10 @@ install_verified_release() {
     rm -rf "$tmp_dir"
     return 1
   fi
-  if [ ! -f "$extract_dir/harnessctl" ]; then
+  if [ -L "$extract_dir/harnessctl" ] \
+    || [ -L "$extract_dir/LICENSE" ] \
+    || [ ! -f "$extract_dir/harnessctl" ] \
+    || [ ! -f "$extract_dir/LICENSE" ]; then
     echo "error: harnessctl release executable is missing" >&2
     rm -rf "$tmp_dir"
     return 1

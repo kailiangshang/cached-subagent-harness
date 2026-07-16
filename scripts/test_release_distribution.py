@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import re
+import stat
 import subprocess
 import sys
 import tarfile
@@ -26,6 +27,13 @@ EXPECTED_TARGETS = {
     "x86_64-apple-darwin",
     "aarch64-apple-darwin",
     "x86_64-pc-windows-msvc",
+}
+PINNED_ACTIONS = {
+    "actions/checkout": "34e114876b0b11c390a56381ad16ebd13914f8d5",
+    "actions/setup-python": "a26af69be951a213d495a4c3e4e4022e16d87065",
+    "actions/upload-artifact": "ea165f8d65b6e75b540449e92b4886f43607fa02",
+    "actions/download-artifact": "d3f86a106a0bac45b974a628896c90dbdf5c8093",
+    "dtolnay/rust-toolchain": "4be7066ada62dd38de10e7b70166bc74ed198c30",
 }
 
 
@@ -115,6 +123,11 @@ class ReleaseArchiveTests(unittest.TestCase):
                 {entry.date_time for entry in archive.infolist()},
                 {(1980, 1, 1, 0, 0, 0)},
             )
+            for entry in archive.infolist():
+                self.assertEqual(
+                    (entry.external_attr >> 16) & 0o170000,
+                    stat.S_IFREG,
+                )
 
     def test_checksum_manifest_is_sorted_and_exact(self) -> None:
         dist = self.root / "dist"
@@ -143,8 +156,27 @@ class ReleaseArchiveTests(unittest.TestCase):
             self.module.write_checksums(dist, dist / "SHA256SUMS")
 
     def test_invalid_version_target_and_binary_suffix_are_rejected(self) -> None:
-        with self.assertRaisesRegex(ValueError, "version"):
-            self.module.asset_name("v0.2.0", "x86_64-unknown-linux-gnu")
+        for invalid in [
+            "v0.2.0",
+            "01.2.3",
+            "1.02.3",
+            "1.2.03",
+            "1.2.3-01",
+            "1.2.3-alpha..1",
+            "1.2.3+build..1",
+            "1.2.3-",
+            "1.2.3+",
+        ]:
+            with self.subTest(version=invalid):
+                with self.assertRaisesRegex(ValueError, "version"):
+                    self.module.asset_name(invalid, "x86_64-unknown-linux-gnu")
+        self.assertEqual(
+            self.module.asset_name(
+                "1.2.3-alpha.1+build.5",
+                "x86_64-unknown-linux-gnu",
+            ),
+            "harnessctl-v1.2.3-alpha.1+build.5-x86_64-unknown-linux-gnu.tar.gz",
+        )
         with self.assertRaisesRegex(ValueError, "target"):
             self.module.asset_name("0.2.0", "powerpc-unknown-linux-gnu")
         wrong_binary = self.root / "harnessctl"
@@ -186,6 +218,8 @@ class PowerShellInstallerContractTests(unittest.TestCase):
         for marker in [
             "Get-PackageVersion",
             "Get-ReleaseTarget",
+            "Copy-ReleaseFile",
+            "Test-ZipEntryIsRegularFile",
             "Install-VerifiedRelease",
             "Build-HarnessRuntime",
             "Invoke-HarnessInstall",
@@ -212,6 +246,17 @@ class PowerShellInstallerContractTests(unittest.TestCase):
         self.assertIn("Get-PackageVersion", text)
         self.assertIn("Invoke-HarnessInstall", text)
         self.assertIn("BinarySource None", text)
+        for scenario in [
+            "Test-DownloadSuccess",
+            "Test-ChecksumMismatch",
+            "Test-MissingAndDuplicateChecksum",
+            "Test-UnsafeZipMember",
+            "Test-ForcedDownloadNeverBuilds",
+            "Test-AutoFallsBackToBuild",
+            "Test-BuildNeverDownloads",
+            "Test-PathWithSpaces",
+        ]:
+            self.assertIn(scenario, text)
         self.assertNotIn("Pester", text)
 
 
@@ -239,12 +284,11 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
             "contents: write",
             "cargo test --locked",
             "package-release.py archive",
-            "actions/upload-artifact@v4",
-            "actions/download-artifact@v4",
             "merge-multiple: true",
             "package-release.py checksums",
             "gh release create",
             "--verify-tag",
+            "--notes-file docs/releases/0.2.0.md",
             "refs/tags/v",
             "scripts/verify.sh",
             "scripts/validate-release.py",
@@ -254,6 +298,10 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.assertNotIn("/releases/latest", text)
         self.assertNotIn("download/latest", text)
         self.assertNotIn("dist/*", text)
+        for action, revision in PINNED_ACTIONS.items():
+            self.assertIn(f"uses: {action}@{revision}", text)
+        self.assertIn("toolchain: 1.96.1", text)
+        self.assertNotRegex(text, r"uses: [^\s]+@(?:v\d+|stable)(?:\s|$)")
         extensions = {
             "x86_64-unknown-linux-gnu": "tar.gz",
             "aarch64-unknown-linux-gnu": "tar.gz",
@@ -273,6 +321,16 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.assertIn("windows-install", text)
         self.assertIn("runs-on: windows-latest", text)
         self.assertIn("scripts/test_install.ps1", text)
+        self.assertIn("permissions:\n  contents: read", text)
+        self.assertIn(
+            f"uses: actions/checkout@{PINNED_ACTIONS['actions/checkout']}",
+            text,
+        )
+        self.assertIn(
+            f"uses: dtolnay/rust-toolchain@{PINNED_ACTIONS['dtolnay/rust-toolchain']}",
+            text,
+        )
+        self.assertIn("toolchain: 1.96.1", text)
 
 
 if __name__ == "__main__":

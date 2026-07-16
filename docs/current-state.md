@@ -206,7 +206,7 @@ live Token-saving claim for batching or reuse.
 The `v0.2.0` source candidate passed fresh local verification on 2026-07-16:
 
 - Rust tests: 52/52;
-- Python tests: 68/68 across Bash installation, standalone contracts, release
+- Python tests: 71/71 across Bash installation, standalone contracts, release
   distribution/workflow contracts, Token effectiveness, and game A/B;
 - release metadata/tag equality, deterministic archive generation, checksum
   exactness, YAML parsing, Clippy with warnings denied, and a release build;

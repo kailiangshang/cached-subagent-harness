@@ -39,9 +39,9 @@ upgrade path.
    and Cargo version agree, builds every supported target, packages deterministic
    archives, creates `SHA256SUMS`, and publishes one GitHub Release only after
    every build succeeds.
-5. A later bug fix publishes a new semantic version. Existing releases remain
-   immutable and installers derive the requested asset names from the checked
-   out package version rather than silently selecting `latest`.
+5. A later bug fix publishes a new semantic version. Maintainers treat prior
+   version assets as append-only, and installers derive requested asset names
+   from the checked-out package version rather than selecting `latest`.
 
 ## Options
 
@@ -87,6 +87,11 @@ Every archive contains only the executable and `LICENSE`. GitHub's generated
 source archives remain the Skill/source distribution. Release binaries are not
 committed to Git.
 
+For `v0.2.0`, compatibility certification is limited to the native build/test
+runners: Ubuntu 24.04 / glibc 2.39, macOS 15, and the current Windows x86-64
+runner. The target triple does not claim an untested older operating-system
+floor; the locked Cargo path remains the compatibility fallback.
+
 ## Release Pipeline
 
 `.github/workflows/release.yml` runs only for `v*` tags and manual dry runs.
@@ -95,10 +100,11 @@ Release. Tag publication uses this sequence:
 
 1. validate repository metadata and require tag/version equality;
 2. run the existing full verification on Linux;
-3. build and test the five target artifacts on native GitHub runners;
+3. build and test the five target artifacts on native GitHub runners with
+   commit-pinned Actions and Rust `1.96.1`;
 4. package each binary through one cross-platform deterministic Python tool;
 5. aggregate artifacts and generate `SHA256SUMS` from the final bytes;
-6. create the GitHub Release with the immutable tag and generated notes.
+6. create the versioned GitHub Release from the verified tag and curated notes.
 
 The workflow uses GitHub's own token and CLI for publication. It never embeds
 credentials in scripts or artifacts. A failed matrix job prevents publication.
@@ -165,12 +171,14 @@ Behavior changes follow RED/GREEN tests. Acceptance requires:
 - Bash installer tests cover platform mapping, download success, checksum
   mismatch, missing checksum, unsupported platform, Cargo fallback, forced
   download failure, and backward-compatible flags;
-- PowerShell smoke tests run on Windows CI;
+- PowerShell behavior tests cover all source modes, checksum failures, unsafe
+  ZIP types, fallback separation, and paths with spaces on Windows CI;
 - release validation rejects version or asset-matrix drift;
 - the existing Rust, Python, benchmark, prompt, Skill, and lifecycle suites
   remain green;
 - a fresh independent review covers supply-chain safety, shell quoting,
-  workflow permissions, release immutability, and documentation truthfulness;
+  workflow permissions, repository mutability boundaries, and documentation
+  truthfulness;
 - the release tag produces all five archives plus `SHA256SUMS`, and the public
   GitHub Release is inspected before completion.
 

@@ -32,6 +32,30 @@ function Get-ReleaseTarget {
     return 'x86_64-pc-windows-msvc'
 }
 
+function Copy-ReleaseFile {
+    param(
+        [Parameter(Mandatory)][string]$BaseUrl,
+        [Parameter(Mandatory)][string]$Name,
+        [Parameter(Mandatory)][string]$Destination
+    )
+    if (Test-Path -LiteralPath $BaseUrl -PathType Container) {
+        $Source = Join-Path $BaseUrl $Name
+        if (-not (Test-Path -LiteralPath $Source -PathType Leaf)) {
+            throw "Missing local release file: $Name"
+        }
+        Copy-Item -LiteralPath $Source -Destination $Destination
+        return
+    }
+    Invoke-WebRequest -Uri ($BaseUrl.TrimEnd('/') + '/' + $Name) -OutFile $Destination
+}
+
+function Test-ZipEntryIsRegularFile {
+    param([Parameter(Mandatory)][System.IO.Compression.ZipArchiveEntry]$Entry)
+    $UnixMode = ($Entry.ExternalAttributes -shr 16) -band 0xFFFF
+    $UnixType = $UnixMode -band 0xF000
+    return $UnixType -eq 0x8000
+}
+
 function Install-VerifiedRelease {
     param(
         [Parameter(Mandatory)][string]$Version,
@@ -49,8 +73,8 @@ function Install-VerifiedRelease {
 
     try {
         try {
-            Invoke-WebRequest -Uri ($BaseUrl.TrimEnd('/') + '/' + $Asset) -OutFile $ArchivePath
-            Invoke-WebRequest -Uri ($BaseUrl.TrimEnd('/') + '/SHA256SUMS') -OutFile $ChecksumPath
+            Copy-ReleaseFile -BaseUrl $BaseUrl -Name $Asset -Destination $ArchivePath
+            Copy-ReleaseFile -BaseUrl $BaseUrl -Name 'SHA256SUMS' -Destination $ChecksumPath
         }
         catch {
             throw 'harnessctl release download failed'
@@ -75,19 +99,29 @@ function Install-VerifiedRelease {
         $Zip = [System.IO.Compression.ZipFile]::OpenRead($ArchivePath)
         try {
             $Members = @($Zip.Entries | ForEach-Object { $_.FullName })
+            $UnsafeMemberTypes = @(
+                $Zip.Entries | Where-Object {
+                    -not (Test-ZipEntryIsRegularFile -Entry $_)
+                }
+            )
         }
         finally {
             $Zip.Dispose()
         }
         $ExpectedMembers = @('harnessctl.exe', 'LICENSE')
         if ($Members.Count -ne 2 -or
-            (Compare-Object -ReferenceObject $ExpectedMembers -DifferenceObject $Members).Count -ne 0) {
+            (Compare-Object -ReferenceObject $ExpectedMembers -DifferenceObject $Members).Count -ne 0 -or
+            $UnsafeMemberTypes.Count -ne 0) {
             throw 'harnessctl release archive has an unsafe member set'
         }
 
         Expand-Archive -LiteralPath $ArchivePath -DestinationPath $ExtractPath
         $RuntimeSource = Join-Path $ExtractPath 'harnessctl.exe'
-        if (-not (Test-Path -LiteralPath $RuntimeSource -PathType Leaf)) {
+        $LicenseSource = Join-Path $ExtractPath 'LICENSE'
+        if (-not (Test-Path -LiteralPath $RuntimeSource -PathType Leaf) -or
+            -not (Test-Path -LiteralPath $LicenseSource -PathType Leaf) -or
+            ((Get-Item -LiteralPath $RuntimeSource).Attributes -band [IO.FileAttributes]::ReparsePoint) -or
+            ((Get-Item -LiteralPath $LicenseSource).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
             throw 'harnessctl release executable is missing'
         }
         $BinDir = Join-Path $SkillRoot 'scripts/bin'

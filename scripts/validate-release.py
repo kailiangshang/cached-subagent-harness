@@ -16,7 +16,17 @@ SKILL_NAME = "cached-subagent-harness"
 DESIGN_RELATIVE = "docs/specs/2026-07-14-lightweight-token-harness-design.md"
 INVARIANT_HEADING = "## Non-negotiable Invariants"
 SKILL_INVARIANT_END = "\n## Run, Task, Subagent, and Session"
-SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$")
+SEMVER_NUMERIC = r"(?:0|[1-9][0-9]*)"
+SEMVER_PRERELEASE_ID = (
+    r"(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)"
+)
+SEMVER_BUILD_ID = r"[0-9A-Za-z-]+"
+SEMVER_PATTERN = (
+    rf"{SEMVER_NUMERIC}\.{SEMVER_NUMERIC}\.{SEMVER_NUMERIC}"
+    rf"(?:-(?:{SEMVER_PRERELEASE_ID})(?:\.(?:{SEMVER_PRERELEASE_ID}))*)?"
+    rf"(?:\+(?:{SEMVER_BUILD_ID})(?:\.(?:{SEMVER_BUILD_ID}))*)?"
+)
+SEMVER_RE = re.compile(rf"^{SEMVER_PATTERN}$")
 SKILL_NAME_RE = re.compile(r"^[a-z0-9-]+$")
 REQUIRED_PLUGIN_FIELDS = {
     "name",
