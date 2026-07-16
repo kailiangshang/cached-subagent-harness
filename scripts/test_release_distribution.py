@@ -15,6 +15,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PACKAGER_PATH = REPO_ROOT / "scripts" / "package-release.py"
 VALIDATOR_PATH = REPO_ROOT / "scripts" / "validate-release.py"
+INSTALL_PS1 = REPO_ROOT / "scripts" / "install.ps1"
+TEST_INSTALL_PS1 = REPO_ROOT / "scripts" / "test_install.ps1"
 EXPECTED_TARGETS = {
     "x86_64-unknown-linux-gnu",
     "aarch64-unknown-linux-gnu",
@@ -172,6 +174,42 @@ class ReleaseMetadataTests(unittest.TestCase):
         result = self.run_validator("v0.2.1")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("version", result.stderr.lower() + result.stdout.lower())
+
+
+class PowerShellInstallerContractTests(unittest.TestCase):
+    def test_native_installer_has_verified_source_contract(self) -> None:
+        self.assertTrue(INSTALL_PS1.is_file())
+        text = INSTALL_PS1.read_text(encoding="utf-8")
+        for marker in [
+            "Get-PackageVersion",
+            "Get-ReleaseTarget",
+            "Install-VerifiedRelease",
+            "Build-HarnessRuntime",
+            "Invoke-HarnessInstall",
+            "x86_64-pc-windows-msvc",
+            "Get-FileHash",
+            "-Algorithm SHA256",
+            "Invoke-WebRequest",
+            "Expand-Archive",
+            "Move-Item",
+            "Auto",
+            "Download",
+            "Build",
+            "None",
+        ]:
+            self.assertIn(marker, text)
+        self.assertNotIn("Invoke-Expression", text)
+        self.assertIn("SHA256SUMS", text)
+        self.assertIn("harnessctl.exe", text)
+
+    def test_native_installer_has_dependency_free_smoke_test(self) -> None:
+        self.assertTrue(TEST_INSTALL_PS1.is_file())
+        text = TEST_INSTALL_PS1.read_text(encoding="utf-8")
+        self.assertIn("Get-ReleaseTarget", text)
+        self.assertIn("Get-PackageVersion", text)
+        self.assertIn("Invoke-HarnessInstall", text)
+        self.assertIn("BinarySource None", text)
+        self.assertNotIn("Pester", text)
 
 
 if __name__ == "__main__":

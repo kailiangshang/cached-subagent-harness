@@ -254,7 +254,7 @@ git commit -m "feat: install verified release binaries"
 - `scripts/test_install.ps1` is a dependency-free assertion runner returning
   nonzero on any failed contract.
 
-- [ ] **Step 1: Add failing static and PowerShell contract tests**
+- [x] **Step 1: Add failing static and PowerShell contract tests**
 
 In Python, require the PowerShell file and exact source values, fixed Windows
 target, checksum use through `Get-FileHash -Algorithm SHA256`, temporary
@@ -270,7 +270,7 @@ Assert-True (Test-Path "$TempHome/skills/cached-subagent-harness/SKILL.md")
 Assert-False (Test-Path "$TempHome/skills/cached-subagent-harness/scripts/bin/harnessctl.exe")
 ```
 
-- [ ] **Step 2: Run available tests and observe RED**
+- [x] **Step 2: Run available tests and observe RED**
 
 Run on Linux:
 
@@ -282,7 +282,7 @@ Expected: FAIL because the PowerShell contract files do not exist. On Windows,
 `pwsh -NoProfile -File scripts/test_install.ps1` must also fail before
 implementation.
 
-- [ ] **Step 3: Implement the PowerShell installer**
+- [x] **Step 3: Implement the PowerShell installer**
 
 Use terminating errors, `try/finally` cleanup, `Invoke-WebRequest`, exact
 checksum-line selection, `Get-FileHash`, `Expand-Archive`, exact member-set
@@ -307,7 +307,7 @@ pwsh -NoProfile -File scripts/test_install.ps1
 
 Expected: Python contracts and native PowerShell assertions pass.
 
-- [ ] **Step 5: Commit Task 3**
+- [x] **Step 5: Commit Task 3**
 
 ```bash
 git add scripts/install.ps1 scripts/test_install.ps1 \

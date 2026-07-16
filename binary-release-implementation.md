@@ -1,6 +1,6 @@
 # Binary Release Implementation
 
-Status: implementation — Bash verified installation complete
+Status: implementation — native Windows installer implemented; CI execution pending
 
 ## PSOC
 
@@ -74,6 +74,10 @@ Task 1 adds deterministic five-target release packaging, checksum generation,
 tag/plugin/Cargo version validation, and version `0.2.0` metadata.
 Task 2 adds exact-version Bash download, SHA-256 and archive-member validation,
 atomic runtime replacement, locked Cargo fallback, and explicit source modes.
+Task 3 adds the native PowerShell installer with the same exact-version,
+checksum, archive-member, atomic replacement, source selection, and stale
+runtime removal boundaries. Native execution is assigned to the Windows CI gate
+in Task 4 because PowerShell is unavailable in the local Linux environment.
 
 ## Tests
 
@@ -87,6 +91,9 @@ check for `harnessctl 0.2.0`.
   from a developer checkout. Both root causes were fixed without weakening the
   tests. GREEN passed 15/15 install tests, 8/8 distribution tests, Bash syntax,
   and release validation.
+- Task 3 RED failed on the absent PowerShell installer. GREEN passed 10/10 local
+  release distribution and PowerShell static-contract tests; the dependency-free
+  native smoke script is ready for Windows CI.
 
 ## Review Findings
 
