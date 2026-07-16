@@ -475,7 +475,7 @@ severity-ordered findings for archive safety, installer quoting and fallback,
 workflow permissions and publication gating, version consistency, platform
 matrix, documentation truthfulness, and all 20 invariants.
 
-- [ ] **Step 3: Fix and re-review findings**
+- [x] **Step 3: Fix and re-review findings**
 
 Batch all Critical and Important findings into one test-first fixer pass. Run
 focused tests and `scripts/verify.sh`, commit the fixes, and dispatch a fresh
@@ -486,6 +486,7 @@ finding.
 
 ```bash
 git push origin main
+# Wait for normal CI, including native Windows behavior, to succeed.
 git tag -a v0.2.0 -m "Release v0.2.0"
 git push origin v0.2.0
 ```

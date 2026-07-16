@@ -1,7 +1,7 @@
 # Binary Release Implementation
 
-Status: second review-fix pass locally verified; native Windows preflight,
-final re-review, and public Release acceptance pending
+Status: source candidate accepted by local, native Windows, and independent
+review gates; merge, main CI, tag, and public Release acceptance pending
 
 ## PSOC
 
@@ -36,7 +36,9 @@ Option 2. The approved design is
 - Main controller performs the coupled design, installer, packaging, CI, test,
   documentation, versioning, and release work serially.
 - Maximum concurrent delegated Sessions: 2.
-- Maximum total delegated Sessions: 3.
+- Maximum total delegated Sessions: 4. The original limit was 3; the first
+  reviewer stalled and the first completed re-review correctly retained one
+  Important issue, so one additional final read-only reviewer is justified.
 - Delegation is reserved for independent release/security review and required
   re-review. No worker delegation and no nested delegation.
 - Exact delegated Token telemetry may be unavailable, so no Session reuse is
@@ -54,7 +56,8 @@ The durable Run currently tracks:
 | `release-review-retry` | independent reviewer | accepted | `/tmp/cached-subagent-harness-v0.2.0-security-review.md` |
 | `release-review-fixes` | main controller/fixer | accepted | `24f3b1a` plus fresh local verification |
 | `release-review-rereview` | independent reviewer | accepted | `/tmp/cached-subagent-harness-v0.2.0-rereview.md`; one Important gap remains |
-| `release-review-http-fix` | main controller/fixer | reported | TDD and fresh local verification complete in the current diff |
+| `release-review-http-fix` | main controller/fixer | accepted | `b5d62db`, diagnostic `8e0d60d`, native fix `bf45aae`, and successful preflight CI |
+| `release-review-final` | independent reviewer | accepted | `/tmp/cached-subagent-harness-v0.2.0-final-rereview.md`; no open Critical/Important finding |
 
 ## Write Scope
 
@@ -92,6 +95,9 @@ and generated Cargo lock metadata.
   regular-file metadata, native Windows acquisition scenarios, immutable
   action references, strict SemVer, compatibility claims, and Release
   mutability language.
+- Feature-branch CI run `29484406668` completed successfully at `bf45aae`; its
+  `windows-install` and full Linux `verify` jobs both passed before any merge or
+  version tag was created.
 
 ## Changed Files
 
@@ -153,6 +159,11 @@ check for `harnessctl 0.2.0`.
   contracts, 12/12 release distribution tests, and 21/21 standalone contracts.
   A fresh full `scripts/verify.sh` again passed 52/52 Rust and 71/71 Python
   tests plus every build, benchmark, prompt, lifecycle, and invariant gate.
+- Native RED at `b5d62db` and diagnostic rerun `8e0d60d` exposed a real
+  StrictMode defect: an empty `Compare-Object` result has no `.Count` property.
+  Wrapping that result as an array in `bf45aae` fixed the source. GitHub Actions
+  run `29484406668` then passed both the Windows behavior job and Linux verify
+  job from the exact commit.
 
 ## Review Findings
 
@@ -170,7 +181,8 @@ The independent release/security review reported 0 Critical, 5 Important, and
   The second fix now serves the exact fixture over loopback HTTP, verifies the
   installed bytes without Cargo, forces an exclusive-lock replacement failure,
   preserves destination bytes, rejects misleading success, and removes staging
-  residue. Native Windows CI and re-review must still accept this evidence.
+  residue. Native Windows CI accepted the exact source at `bf45aae`; final
+  independent re-review remains the last local publication gate.
 - I3, mutable Actions/toolchain: fixed with reviewed full Action SHAs and Rust
   `1.96.1` in normal CI and Release workflows.
 - I4, undefined compatibility floor: resolved by narrowing certification to
@@ -184,6 +196,10 @@ The independent release/security review reported 0 Critical, 5 Important, and
 The first narrow re-review resolved I1 and I3-I5 at Important severity, M1-M2,
 and found no new Critical issue. It retained I2 as Important and recorded the
 missing explicit directory/duplicate/traversal archive cases as Minor.
+The final I2-only re-review matched local and public source hashes, inspected
+successful native CI run `29484406668`, closed I2, and found no open Critical
+or Important issue. The retained archive-case matrix gap remains Minor and is
+accepted for a later patch release.
 
 ## Risks
 
@@ -197,9 +213,7 @@ missing explicit directory/duplicate/traversal archive cases as Minor.
 
 ## Next Actions
 
-Commit the second fix and push the feature branch for native Windows preflight.
-After CI and a narrow read-only re-review accept it, merge and push source,
-require normal CI including the native
+Merge and push source, require normal `main` CI including the native
 PowerShell suite to pass, publish tag `v0.2.0`, inspect and execute the public
 Linux asset, and close the lifecycle audit.
 
@@ -211,6 +225,8 @@ Linux asset, and close the lifecycle audit.
   review and is closed.
 - `binary-release-rereview-20260716`: reported one remaining Important Windows
   proof gap and is closed; its negative publication verdict is retained.
+- `binary-release-final-review-20260716`: accepted the native I2 fix with no
+  open Critical/Important finding and is closed.
 - UI-visible historical Sessions are outside this Run and do not affect this
   task's Agent budget or closure.
 

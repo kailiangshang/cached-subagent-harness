@@ -213,9 +213,13 @@ The `v0.2.0` source candidate passed fresh local verification on 2026-07-16:
 - both offline Benchmark gates, prompt/ledger smoke, and all 20 Skill
   invariants.
 
-The native PowerShell smoke is also wired into Windows CI. Independent release
-review, tag publication, public asset inspection, and downloaded-binary
-execution remain acceptance gates recorded in
+The native PowerShell behavior suite passed feature-branch CI run
+[`29484406668`](https://github.com/kailiangshang/cached-subagent-harness/actions/runs/29484406668)
+at exact source `bf45aae`, including production loopback HTTP acquisition and
+failure-safe replacement. Independent release/security review found no Critical
+issue; after two bounded fix/re-review cycles, the final review reported no open
+Critical or Important finding. Tag publication, public asset inspection, and
+downloaded-binary execution remain acceptance gates recorded in
 [`binary-release-implementation.md`](../binary-release-implementation.md).
 
 The preceding 2026-07-16 Subagent Session and Token strategy increment passed
