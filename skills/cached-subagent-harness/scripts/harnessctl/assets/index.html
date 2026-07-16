@@ -111,6 +111,15 @@
       </div>
     </section>
 
+    <section class="strategy-map glass" data-view="strategy-map" aria-labelledby="strategy-title">
+      <div class="strategy-heading">
+        <p class="section-kicker" data-i18n="releasePolicy">Release policy</p>
+        <h2 id="strategy-title" data-i18n="howHarnessWorks">How the Harness works</h2>
+        <p data-i18n="policyNotLive">Fixed decision order · not the current Task trace</p>
+      </div>
+      <ol id="strategy-steps" class="strategy-steps"></ol>
+    </section>
+
     <main class="operational-grid">
       <section class="task-board glass" data-view="task-board" aria-labelledby="tasks-title">
         <div class="section-head">
@@ -128,14 +137,15 @@
         <div id="task-packages" class="package-list" aria-live="polite"></div>
       </section>
 
-      <aside class="session-dock glass" data-view="session-dock" aria-labelledby="sessions-title">
+      <aside class="session-dock glass" data-view="session-dock" aria-labelledby="sessions-title" aria-describedby="sessions-note">
         <div class="section-head">
           <div>
             <p class="section-kicker" data-i18n="execution">Execution</p>
-            <h2 id="sessions-title" data-i18n="sessions">Sessions</h2>
+            <h2 id="sessions-title" data-i18n="subagentSessions">Subagent sessions</h2>
           </div>
           <span id="session-count" class="section-count mono">0</span>
         </div>
+        <p id="sessions-note" class="session-definition" data-i18n="sessionDefinition">A Session is a Subagent execution context, not an account login; the list includes current and historical records.</p>
         <div id="sessions" class="session-list" aria-live="polite"></div>
       </aside>
     </main>

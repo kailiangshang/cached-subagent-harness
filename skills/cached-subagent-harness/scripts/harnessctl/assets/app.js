@@ -13,9 +13,9 @@
       deliveryProgress: "交付进度",
       acceptedTasks: "项任务已验收",
       effectiveTokens: "有效 Token",
-      sessionReuse: "Session 复用",
+      sessionReuse: "子 Agent 会话复用",
       acceptedFollowups: "已接受的续接任务",
-      assignmentsPerSpawn: "每次 Spawn 任务数",
+      assignmentsPerSpawn: "每次子 Agent 启动任务数",
       churn: "Session 周转率",
       avoidedContext: "避免重复上下文",
       routingControl: "路由控制",
@@ -28,13 +28,28 @@
       evidenceRequired: "提高上限需同质量精确用量证据",
       latestRoute: "最近路由",
       noRoute: "尚无路由决策",
+      releasePolicy: "发布策略",
+      howHarnessWorks: "Harness 如何工作",
+      policyNotLive: "固定决策顺序 · 非当前任务轨迹",
+      strategyIntake: "任务入口",
+      strategyIntakeNote: "简单且无需隔离 → 主线程执行；否则评估委派价值",
+      strategyShape: "兼容分组",
+      strategyShapeNote: "严格匹配并保持顺序 · 每批最多 2 项",
+      strategyRoute: "能力路由",
+      strategyRouteNote: "先定质量与风险下限 · 再选最低合格模型",
+      strategySession: "子 Agent 会话",
+      strategySessionNote: "可证明且预算充足则续接 1 次 · 否则新建",
+      strategyAccount: "完整成本与收口",
+      strategyAccountNote: "统计全部 Token · 测试、审查、审计、关闭",
       workstream: "工作流",
       tasks: "任务",
       task: "任务",
       assignment: "执行归属",
       latestState: "最近状态",
-      execution: "执行会话",
+      execution: "委派执行",
       sessions: "Session",
+      subagentSessions: "子 Agent 会话",
+      sessionDefinition: "Session 是子 Agent 的执行上下文，不是账户登录；列表包含当前与历史记录。",
       evidence: "消耗证据",
       tokenEconomy: "Token 经济性",
       costByPhase: "分阶段消耗",
@@ -96,7 +111,7 @@
       phase_fixer: "修复",
       kind_plan: "已规划",
       kind_batch: "已合并",
-      kind_spawn: "已启动 Session",
+      kind_spawn: "已启动子 Agent 会话",
       kind_reuse: "已接受复用",
       kind_route: "已完成路由",
       kind_start: "开始执行",
@@ -124,9 +139,9 @@
       deliveryProgress: "Delivery progress",
       acceptedTasks: "tasks accepted",
       effectiveTokens: "Effective tokens",
-      sessionReuse: "Session reuse",
+      sessionReuse: "Subagent Session reuse",
       acceptedFollowups: "accepted follow-ups",
-      assignmentsPerSpawn: "Assignments / spawn",
+      assignmentsPerSpawn: "Tasks / Subagent spawn",
       churn: "Session churn",
       avoidedContext: "Avoided context",
       routingControl: "Routing control",
@@ -139,13 +154,28 @@
       evidenceRequired: "Higher limits require equal-quality exact-usage evidence",
       latestRoute: "Latest route",
       noRoute: "No route decision yet",
+      releasePolicy: "Release policy",
+      howHarnessWorks: "How the Harness works",
+      policyNotLive: "Fixed decision order · not the current Task trace",
+      strategyIntake: "Task intake",
+      strategyIntakeNote: "Simple, no isolation value → main; otherwise test delegation value",
+      strategyShape: "Compatible shape",
+      strategyShapeNote: "Strict match, declared order · at most 2 per batch",
+      strategyRoute: "Capability route",
+      strategyRouteNote: "Fix quality and risk floors · choose the lowest eligible model",
+      strategySession: "Subagent Session",
+      strategySessionNote: "Reuse once only with exact proof and budget · otherwise start new",
+      strategyAccount: "Complete cost and closure",
+      strategyAccountNote: "Count every Token · test, review, audit, close",
       workstream: "Workstream",
       tasks: "Tasks",
       task: "Task",
       assignment: "Assignment",
       latestState: "Latest state",
-      execution: "Execution",
+      execution: "Delegated execution",
       sessions: "Sessions",
+      subagentSessions: "Subagent sessions",
+      sessionDefinition: "A Session is a Subagent execution context, not an account login; the list includes current and historical records.",
       evidence: "Evidence",
       tokenEconomy: "Token economy",
       costByPhase: "Cost by phase",
@@ -207,7 +237,7 @@
       phase_fixer: "Fixer",
       kind_plan: "Planned",
       kind_batch: "Batched",
-      kind_spawn: "Session started",
+      kind_spawn: "Subagent Session started",
       kind_reuse: "Reuse accepted",
       kind_route: "Route selected",
       kind_start: "Execution started",
@@ -441,6 +471,26 @@
       : "—";
   }
 
+  function renderStrategy() {
+    const root = el("strategy-steps");
+    clear(root);
+    [
+      ["01", "strategyIntake", "strategyIntakeNote"],
+      ["02", "strategyShape", "strategyShapeNote"],
+      ["03", "strategyRoute", "strategyRouteNote"],
+      ["04", "strategySession", "strategySessionNote"],
+      ["05", "strategyAccount", "strategyAccountNote"]
+    ].forEach(([index, title, note]) => {
+      const item = make("li", "strategy-step");
+      item.append(
+        make("span", "strategy-index mono", index),
+        make("strong", "", translate(title)),
+        make("small", "", translate(note))
+      );
+      root.appendChild(item);
+    });
+  }
+
   function renderTasks(tasks, activity) {
     el("task-count").textContent = number(tasks.length);
     const root = el("task-packages");
@@ -639,6 +689,7 @@
     renderRun(data);
     renderOutcomes(data);
     renderPolicy(data.dispatch_policy, data.recent_activity);
+    renderStrategy();
     renderTasks(data.tasks, data.recent_activity);
     renderSessions(data.sessions, data.tasks);
     renderTokens(data.efficiency);
@@ -667,11 +718,13 @@
     language = language === "zh-CN" ? "en-US" : "zh-CN";
     localStorage.setItem("harness-language", language);
     applyLanguage();
+    renderStrategy();
     setConnection(connectionState);
     if (lastGoodSnapshot) render(lastGoodSnapshot);
   });
 
   applyLanguage();
+  renderStrategy();
   setConnection("connecting");
   refresh();
   window.setInterval(refresh, 1500);

@@ -181,9 +181,12 @@ mod tests {
             "data-view=\"run-bar\"",
             "data-view=\"outcome-band\"",
             "data-view=\"dispatch-policy\"",
+            "data-view=\"strategy-map\"",
             "data-view=\"task-board\"",
             "data-view=\"session-dock\"",
             "data-view=\"evidence-deck\"",
+            "id=\"sessions-note\"",
+            "id=\"strategy-steps\"",
         ] {
             assert!(html.contains(marker), "missing {marker}");
         }
@@ -211,6 +214,15 @@ mod tests {
         assert!(app.contains("max_effective_tokens"));
         assert!(app.contains("复用资格 Token 上限"));
         assert!(app.contains("Reuse eligibility Token cap"));
+        for copy in [
+            "子 Agent 会话",
+            "Subagent sessions",
+            "Session 是子 Agent 的执行上下文，不是账户登录",
+            "A Session is a Subagent execution context, not an account login",
+            "releasePolicy",
+        ] {
+            assert!(app.contains(copy), "missing {copy}");
+        }
         assert!(app.contains("item.summary"));
         assert!(app.contains("updated_at"));
         assert!(app.contains("progressOf"));
