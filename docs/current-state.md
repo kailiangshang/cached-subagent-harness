@@ -2,10 +2,10 @@
 
 Date: 2026-07-16
 
-Status: Subagent/Session terminology and the delegation-value gate are aligned
-across the standalone Skill, documentation, and bilingual results Dashboard;
-all independent review findings are fixed and accepted; final full verification
-and lifecycle audit passed
+Status: the `v0.2.0` source candidate adds verified five-target binary
+distribution, Bash and native PowerShell installation, and a tag-gated GitHub
+Release workflow; local release gates pass and public tag acceptance remains
+part of the release lifecycle
 
 This is the shortest current-state entry point for `cached-subagent-harness`.
 It summarizes the implemented product and points to the binding contracts and
@@ -19,6 +19,11 @@ The Harness optimizes one objective:
 > Minimize total effective Token use while preserving complete development and
 > review quality.
 
+The product is a long-running Token-aware control plane. Its measured value
+includes durable recovery and prevention of known high-cost Session
+regressions; it does not claim positive end-to-end Token savings while retained
+equal-quality live comparisons remain negative.
+
 The Dashboard is mandatory because users need to see work, Sessions, quality,
 and cost. It is still a supporting read-only view, not a second controller and
 not the primary product objective.
@@ -31,7 +36,7 @@ routing, and final audit.
 
 ## Implemented Architecture
 
-The product has three compact layers:
+The product has four compact layers:
 
 1. **Skill policy** defines controller behavior, role gates, prompt discipline,
    Token strategy, and completion requirements.
@@ -40,6 +45,9 @@ The product has three compact layers:
    host command templates, accounting, status, and the embedded Web server.
 3. **Presentation** exposes terminal status, JSON, watch mode, and one
    bilingual single-Run Dashboard from the same limited status projection.
+4. **Distribution** packages five versioned native binaries, publishes an exact
+   `SHA256SUMS` manifest, and installs the matching verified runtime through
+   Bash or PowerShell with an explicit locked Cargo fallback.
 
 Current-state tables are authoritative. The small activity feed is useful for
 display and debugging but is never replayed to reconstruct state. There is no
@@ -140,9 +148,9 @@ actual behavior separately.
 Compatible runtimes such as desktop agents can be added with a JSON template
 when they expose equivalent Skill and agent/session commands. This needs no
 scanner, bridge, or adapter framework. A custom template proves configuration
-compatibility, not live certification. The bundled installer currently targets
-a Codex-compatible Skill directory; other runtimes use their own discovery
-path.
+compatibility, not live certification. The Bash and PowerShell installers
+target a Codex-compatible Skill directory; other runtimes use their own
+discovery path.
 
 ## Dashboard Boundary
 
@@ -195,8 +203,23 @@ live Token-saving claim for batching or reuse.
 
 ## Verification State
 
-The 2026-07-16 Subagent Session and Token strategy increment passed fresh
-post-fix verification:
+The `v0.2.0` source candidate passed fresh local verification on 2026-07-16:
+
+- Rust tests: 52/52;
+- Python tests: 68/68 across Bash installation, standalone contracts, release
+  distribution/workflow contracts, Token effectiveness, and game A/B;
+- release metadata/tag equality, deterministic archive generation, checksum
+  exactness, YAML parsing, Clippy with warnings denied, and a release build;
+- both offline Benchmark gates, prompt/ledger smoke, and all 20 Skill
+  invariants.
+
+The native PowerShell smoke is also wired into Windows CI. Independent release
+review, tag publication, public asset inspection, and downloaded-binary
+execution remain acceptance gates recorded in
+[`binary-release-implementation.md`](../binary-release-implementation.md).
+
+The preceding 2026-07-16 Subagent Session and Token strategy increment passed
+its own post-fix verification:
 
 - Rust tests: 52/52;
 - Python tests: 47/47 across install, standalone contract, Token-effectiveness,
@@ -231,6 +254,10 @@ and does not represent the current delivery.
 | Document | Current role |
 |---|---|
 | [`SKILL.md`](../skills/cached-subagent-harness/SKILL.md) | Binding controller constitution and workflow |
+| [`v0.2.0 release notes`](releases/0.2.0.md) | User-facing assets, installers, compatibility, evidence, and security boundary |
+| [`v0.2.0 binary release design`](specs/2026-07-16-binary-release-design.md) | Approved distribution and installer architecture |
+| [`v0.2.0 binary release plan`](plans/2026-07-16-binary-release-plan.md) | Task-by-task release execution and acceptance gates |
+| [`binary-release-implementation.md`](../binary-release-implementation.md) | Current release tests, reviews, public acceptance, and lifecycle audit |
 | [`2026-07-16 Subagent Session strategy`](specs/2026-07-16-subagent-session-token-strategy-design.md) | Approved four-term model, Token decision order, and presentation boundary |
 | [`subagent-session-token-strategy-implementation.md`](../subagent-session-token-strategy-implementation.md) | Current increment, tests, visual evidence, reviews, and lifecycle audit |
 | [`2026-07-14 lightweight design`](specs/2026-07-14-lightweight-token-harness-design.md) | Canonical lightweight architecture, amended by live evidence |

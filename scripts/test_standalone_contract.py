@@ -232,6 +232,74 @@ class StandaloneContractTests(unittest.TestCase):
         self.assertIn("Subagent sessions", dashboard_design)
         self.assertIn("static release policy", dashboard_design)
 
+    def test_public_docs_define_the_v020_binary_release_contract(self) -> None:
+        readme = self.read("README.md")
+        install = extract_section(readme, "## Install", "\n## Host Support")
+        normalized = " ".join(readme.split())
+        for required in [
+            "long-running",
+            "Token-aware control plane",
+            "does not claim positive end-to-end Token savings",
+            "prevents known high-cost Session regressions",
+        ]:
+            self.assertIn(required, normalized)
+        for required in [
+            "Prebuilt binary (recommended)",
+            "scripts/install.sh",
+            "scripts/install.ps1",
+            "SHA256SUMS",
+            "--binary-source",
+            "auto",
+            "download",
+            "build",
+            "none",
+            "exact checked-out version",
+            "unsigned",
+            "Source build fallback",
+        ]:
+            self.assertIn(required, install)
+        self.assertLess(
+            install.index("Prebuilt binary (recommended)"),
+            install.index("Source build fallback"),
+        )
+        for target in [
+            "x86_64-unknown-linux-gnu",
+            "aarch64-unknown-linux-gnu",
+            "x86_64-apple-darwin",
+            "aarch64-apple-darwin",
+            "x86_64-pc-windows-msvc",
+        ]:
+            self.assertIn(target, install)
+
+        notes_path = REPO_ROOT / "docs" / "releases" / "0.2.0.md"
+        self.assertTrue(notes_path.is_file(), "missing v0.2.0 release notes")
+        notes = notes_path.read_text(encoding="utf-8")
+        for asset in [
+            "harnessctl-v0.2.0-x86_64-unknown-linux-gnu.tar.gz",
+            "harnessctl-v0.2.0-aarch64-unknown-linux-gnu.tar.gz",
+            "harnessctl-v0.2.0-x86_64-apple-darwin.tar.gz",
+            "harnessctl-v0.2.0-aarch64-apple-darwin.tar.gz",
+            "harnessctl-v0.2.0-x86_64-pc-windows-msvc.zip",
+            "SHA256SUMS",
+            "auto",
+            "download",
+            "build",
+            "none",
+            "unsigned",
+            "5,053,165",
+            "2,642,029",
+        ]:
+            self.assertIn(asset, notes)
+
+        current_state = self.read("docs/current-state.md")
+        for link in [
+            "specs/2026-07-16-binary-release-design.md",
+            "plans/2026-07-16-binary-release-plan.md",
+            "../binary-release-implementation.md",
+            "releases/0.2.0.md",
+        ]:
+            self.assertIn(link, current_state)
+
     def test_current_state_attributes_this_increment_to_its_own_report(
         self,
     ) -> None:

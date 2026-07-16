@@ -1,10 +1,10 @@
 # Cached Subagent Harness 🧭
 
-Standalone, token-aware orchestration for subagents in agentic CLIs. This
-repository packages the `cached-subagent-harness` Skill plus a compact Rust
-`harnessctl` runtime for task batching, quality-constrained model routing,
-bounded Session reuse, stable dispatch prompts, SQLite lifecycle state, a
-read-only results Dashboard, and final audits.
+Standalone, long-running Token-aware control plane for subagents in agentic
+CLIs. This repository packages the `cached-subagent-harness` Skill plus a
+compact Rust `harnessctl` runtime for task batching, quality-constrained model
+routing, bounded Session reuse, stable dispatch prompts, SQLite lifecycle
+state, a read-only results Dashboard, and final audits.
 
 Standalone is the default. The built-in method owns planning, bounded work,
 test-first behavior changes, review, verification, and lifecycle audit without
@@ -13,6 +13,11 @@ requiring an external methodology.
 The core objective is to reduce total effective Token use without weakening
 development or review quality. Visualization is required, but it is a
 supporting evidence surface rather than a second control plane.
+
+The current policy prevents known high-cost Session regressions. It does not
+claim positive end-to-end Token savings: the retained equal-quality live A/B
+runs remain negative, while offline prompt-shape benchmarks are regression
+signals rather than billing evidence.
 
 ## Current Status
 
@@ -194,24 +199,92 @@ conservative strategy—not a claim that batching or reuse always saves Tokens.
 
 ## Install
 
-Standalone is the default installation mode. Install from a checkout with:
+Standalone is the default installation mode. The installer reads the
+exact checked-out version and downloads that version's platform archive. It
+verifies the bytes against `SHA256SUMS`, validates the archive shape, and
+atomically installs `harnessctl`. It never follows an unbounded `latest`
+release.
+
+### Prebuilt binary (recommended)
+
+On Linux, macOS, or WSL, check out the release and run the Bash installer:
 
 ```bash
-git clone https://github.com/kailiangshang/cached-subagent-harness
+git clone --branch v0.2.0 --depth 1 \
+  https://github.com/kailiangshang/cached-subagent-harness
 cd cached-subagent-harness
-scripts/install.sh
+scripts/install.sh --binary-source auto
 ```
 
-The installer is tested for Linux, macOS, and WSL-style Bash environments and
-targets a Codex-compatible Skill directory. On native Windows, use WSL for now
-or install manually. Claude Code, OpenCode, and other runtimes with a compatible
-Skill interface can use the same Skill folder, but their runtime-specific
-discovery path and lifecycle capabilities remain the host's responsibility.
+On native Windows PowerShell 7:
+
+```powershell
+git clone --branch v0.2.0 --depth 1 `
+  https://github.com/kailiangshang/cached-subagent-harness
+Set-Location cached-subagent-harness
+pwsh -NoProfile -File scripts/install.ps1 -BinarySource Auto
+```
+
+`auto` is the default on both platforms: it tries the verified prebuilt binary
+first and falls back to a locked Cargo build only when acquisition fails. The
+Skill copy is preserved if runtime acquisition ultimately fails.
+
+The five prebuilt targets are:
+
+| Platform | Rust target | Archive |
+|---|---|---|
+| Linux x86-64 | `x86_64-unknown-linux-gnu` | `.tar.gz` |
+| Linux ARM64 | `aarch64-unknown-linux-gnu` | `.tar.gz` |
+| macOS Intel | `x86_64-apple-darwin` | `.tar.gz` |
+| macOS Apple Silicon | `aarch64-apple-darwin` | `.tar.gz` |
+| Windows x86-64 | `x86_64-pc-windows-msvc` | `.zip` |
+
+SHA-256 confirms that downloaded bytes match the published manifest, but the
+binaries are currently unsigned: this release does not provide Apple
+notarization, Windows Authenticode, or another platform trust signature.
+
+### Binary source policy
+
+Use `--binary-source auto|download|build|none` with `scripts/install.sh`, or
+`-BinarySource Auto|Download|Build|None` with `scripts/install.ps1`:
+
+| Source | Behavior |
+|---|---|
+| `auto` | Verified exact-version download, then locked Cargo fallback |
+| `download` | Verified download or a nonzero failure; never builds |
+| `build` | Locked Cargo build only; never downloads |
+| `none` | Installs the Skill without a runtime and reports that boundary |
+
+`--skip-build` remains a deprecated Bash alias for `--binary-source none`.
+
+### Source build fallback
+
+To deliberately compile instead of downloading, install Rust/Cargo and run:
+
+```bash
+scripts/install.sh --binary-source build
+```
+
+```powershell
+pwsh -NoProfile -File scripts/install.ps1 -BinarySource Build
+```
+
+Both paths use Cargo's locked dependency graph. You can also build the
+repository runtime directly with `scripts/build-harnessctl.sh`.
+
+The installers target a Codex-compatible Skill directory. Claude Code,
+OpenCode, and other runtimes with a compatible Skill interface can use the same
+Skill folder, but runtime-specific discovery paths and lifecycle capabilities
+remain the host's responsibility.
 
 Use a custom Codex home:
 
 ```bash
 scripts/install.sh --codex-home /path/to/.codex
+```
+
+```powershell
+pwsh -NoProfile -File scripts/install.ps1 -CodexHome C:\path\to\.codex
 ```
 
 Replace an existing local install:
@@ -220,24 +293,12 @@ Replace an existing local install:
 scripts/install.sh --force
 ```
 
-Skip the local Cargo build:
-
-```bash
-scripts/install.sh --skip-build
-```
-
 The legacy `--skip-superpowers` flag remains accepted as a deprecated no-op for
 compatibility. Standalone is already the default:
 
 ```bash
 scripts/install.sh --skip-superpowers
 ```
-
-The installer normally builds the Rust `harnessctl` runtime with Cargo. If
-Cargo is unavailable, the standalone skill is still copied, but the required
-runtime binary is not built; that is a real runtime degradation and must be
-reported until Cargo builds the binary or a documented equivalent preserves
-the gates. Optional methodology absence is not degraded.
 
 After install, restart your CLI runtime so the new skill is loaded.
 
@@ -499,9 +560,9 @@ The binary is not committed because it is platform-specific. The source lives in
 skills/cached-subagent-harness/scripts/harnessctl
 ```
 
-For public releases, prefer building `harnessctl` from source with Cargo on the
-target machine. Prebuilt binaries should be published as a release matrix rather
-than committed into the skill directory.
+Public releases provide a verified five-target binary matrix. Building from
+source with locked Cargo remains the explicit fallback; platform binaries are
+not committed into the Skill directory.
 
 ## Usage
 

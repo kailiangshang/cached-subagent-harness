@@ -397,7 +397,7 @@ git commit -m "ci: publish cross-platform harnessctl releases"
 - Release notes enumerate assets, install modes, compatibility, evidence
   boundary, and known unsigned-binary limitation.
 
-- [ ] **Step 1: Write failing public-contract tests**
+- [x] **Step 1: Write failing public-contract tests**
 
 Add assertions for:
 
@@ -413,7 +413,7 @@ self.assertIn("unsigned", readme.lower())
 Require `docs/releases/0.2.0.md` and current-state links to the release design,
 plan, implementation report, and release notes.
 
-- [ ] **Step 2: Run tests and observe RED**
+- [x] **Step 2: Run tests and observe RED**
 
 ```bash
 python3 -m unittest scripts.test_standalone_contract -v
@@ -421,14 +421,14 @@ python3 -m unittest scripts.test_standalone_contract -v
 
 Expected: FAIL on missing v0.2.0 release documentation.
 
-- [ ] **Step 3: Write minimal truthful documentation**
+- [x] **Step 3: Write minimal truthful documentation**
 
 Document both installers and all binary-source modes. Keep compile-from-source
 instructions as an explicit fallback. State that SHA-256 verifies artifact
 integrity but binaries are not code-signed/notarized. Retain the exact negative
 A/B values and make no positive batching/reuse savings claim.
 
-- [ ] **Step 4: Run focused and full verification**
+- [x] **Step 4: Run focused and full verification**
 
 ```bash
 python3 -m unittest scripts.test_standalone_contract -v
@@ -438,7 +438,7 @@ git diff --check
 
 Expected: focused contracts and every project gate pass.
 
-- [ ] **Step 5: Commit Task 5**
+- [x] **Step 5: Commit Task 5**
 
 ```bash
 git add README.md docs/current-state.md docs/releases/0.2.0.md \

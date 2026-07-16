@@ -1,6 +1,7 @@
 # Binary Release Implementation
 
-Status: implementation — native Windows installer implemented; CI execution pending
+Status: local implementation complete; independent review and public Release
+acceptance pending
 
 ## PSOC
 
@@ -43,7 +44,13 @@ Option 2. The approved design is
 
 ## Agent Ledger
 
-No delegated Session has been planned or spawned yet.
+No delegated Session has been spawned. The durable Run currently tracks:
+
+| Task | Role | State | Evidence |
+|---|---|---|---|
+| `release-workflow` | main controller | accepted | `094d634` |
+| `release-docs` | main controller | reported | current Task 5 diff |
+| `release-review-publish` | independent reviewer | queued | Task 6 gate |
 
 ## Write Scope
 
@@ -67,6 +74,10 @@ and generated Cargo lock metadata.
 - The local Linux x86-64 binary is 3.6 MB and intentionally ignored.
 - Existing `v0.1.0` is a Git tag without a GitHub Release.
 - Existing real A/B results remain negative and constrain product claims.
+- Exact-version archives, checksums, Bash acquisition, native PowerShell, and
+  the tag-gated workflow are covered by offline contracts.
+- The workflow publishes only five explicit archives plus `SHA256SUMS`; it
+  does not use a wildcard release upload.
 
 ## Changed Files
 
@@ -78,6 +89,11 @@ Task 3 adds the native PowerShell installer with the same exact-version,
 checksum, archive-member, atomic replacement, source selection, and stale
 runtime removal boundaries. Native execution is assigned to the Windows CI gate
 in Task 4 because PowerShell is unavailable in the local Linux environment.
+Task 4 adds the five-runner build matrix, full verification dependency,
+tag-only publication gate, and explicit six-asset release command (`094d634`).
+Task 5 adds recommended prebuilt installation, source-policy and unsigned
+binary documentation, `v0.2.0` notes, current-state authority links, and public
+contract tests.
 
 ## Tests
 
@@ -94,10 +110,17 @@ check for `harnessctl 0.2.0`.
 - Task 3 RED failed on the absent PowerShell installer. GREEN passed 10/10 local
   release distribution and PowerShell static-contract tests; the dependency-free
   native smoke script is ready for Windows CI.
+- Task 4 workflow RED rejected missing matrix/archive facts and wildcard asset
+  publication. GREEN passed 12/12 release distribution/workflow tests, YAML
+  parsing, tag validation, and the full project harness.
+- Task 5 public-contract RED rejected the missing Release contract. GREEN
+  passed 20/20 standalone tests. `scripts/verify.sh` then passed on the current
+  Task 5 tree: 52 Rust tests and 68 Python tests, Clippy/format/release build,
+  both offline benchmark gates, prompt/lifecycle smoke, and all 20 invariants.
 
 ## Review Findings
 
-Pending.
+Independent release/security review pending.
 
 ## Risks
 
@@ -109,8 +132,9 @@ Pending.
 
 ## Next Actions
 
-Implement test-first, verify, independently review, tag `v0.2.0`, inspect the
-public Release, and close the lifecycle audit.
+Commit Task 5, independently review the whole release branch, fix and re-review
+all Critical/Important findings, merge and push source, publish tag `v0.2.0`,
+inspect and execute the public Linux asset, then close the lifecycle audit.
 
 ## External Agent Reconciliation
 
