@@ -135,22 +135,62 @@ where prompt-cache behavior is irrelevant.
 - Final audit enforcement before claiming completion.
 - Rust CLI checks for prompt shape, budget, and open agents.
 
-## Run, Task, and Session
+## Run, Task, Subagent, and Session
 
-These are different lifecycle objects:
+These terms describe different parts of execution:
 
 - **Run**: one Harness-controlled goal and its complete audit boundary. It owns
   Tasks, Sessions, usage, activity, and a final status.
 - **Task**: one durable unit of work inside a Run. Tasks move through `queued`,
   `running`, `reported`, and `accepted`, or a truthful blocked/failed state.
-- **Session**: a resumable host CLI/model context plus its Harness lifecycle
-  record. One Session can carry several compatible Tasks sequentially, but it
-  can be busy with only one current Task at a time.
+- **Subagent**: the delegated logical executor or role that performs work, such
+  as an explorer, worker, reviewer, or fixer.
+- **Session**: the concrete resumable host CLI/model context that carries one
+  Subagent instance plus its Harness lifecycle record.
 
-A Session is not the user's login session, not a Task, and not proof that a
-visible host tab is still reusable. Reuse requires exact compatibility,
-durable follow-up acceptance, and complete exact assignment usage strictly
-after the acceptance boundary. Unknown telemetry closes the reuse path.
+A new delegated Session normally creates a new Subagent instance. One Session
+can let that instance carry several compatible Tasks sequentially, but it can
+be busy with only one current Task at a time. Session is not an account login,
+authentication state, or Task, and a visible host tab is not proof that the
+Session remains reusable. Reuse requires exact compatibility, durable
+follow-up acceptance, and complete exact assignment usage strictly after the
+acceptance boundary. Unknown telemetry closes the reuse path.
+
+The runtime deliberately has no duplicate Subagent table. A Session already
+records the executor's role, host, requested/actual model, lifecycle state,
+current Task, and ordered Task chain. The Dashboard therefore calls these
+records **Subagent sessions** while keeping Session as the durable lifecycle
+term.
+
+## Token Decision Flow
+
+The Harness optimizes only after preserving development and review quality:
+
+```mermaid
+flowchart TD
+    A[Queued Task] --> B{Simple and no isolation value?}
+    B -- Yes --> C[Main executes directly]
+    B -- No --> D{Delegation value exceeds complete cost?}
+    D -- No --> C
+    D -- Yes --> E[Derive strictly compatible ready Tasks]
+    E --> F[Preserve order; micro-batch at most 2]
+    F --> G[Fix role, risk, uncertainty, and quality floors]
+    G --> H[Choose lowest eligible light / standard / deep route]
+    H --> I{Compatible idle Session with exact usage and budget?}
+    I -- Yes --> J[Accept at most one follow-up and reuse]
+    I -- No --> K[Start a new Subagent Session]
+    C --> L[Count complete effective Tokens]
+    J --> L
+    K --> L
+    L --> M[Tests, independent review, audit, and close]
+```
+
+Complete effective cost includes bootstrap, context, useful work, retry,
+escalation, review, and fixer Tokens. The release defaults remain at most two
+strictly compatible Tasks per micro-batch, one accepted follow-up, and 200,000
+effective Tokens for reuse eligibility. Runtime flags may only lower these
+limits. The retained real A/B evidence is negative, so this flow is a
+conservative strategy—not a claim that batching or reuse always saves Tokens.
 
 ## Install
 
@@ -303,9 +343,10 @@ skills/cached-subagent-harness/scripts/bin/harnessctl dashboard \
 ```
 
 Open `http://127.0.0.1:7347`. The Moonlight Indigo liquid-glass page supports
-zh-CN and en-US and shows progress, Tasks, Session chains, requested/actual
-models, current routing and release limits, token quality, phase totals, and
-factual activity summaries. CLI JSON and the Web
+zh-CN and en-US and shows progress, Tasks, Subagent Session chains,
+requested/actual models, current routing and release limits, the static Token
+decision policy, token quality, phase totals, and factual activity summaries.
+CLI JSON and the Web
 page use the same limited `StatusView`. It structurally excludes `repo_root`,
 `report_path`, `write_scope`, Host handles, and task-internal next actions.
 Run goals, Task titles, and activity summaries are caller-provided display text

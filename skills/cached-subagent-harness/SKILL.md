@@ -130,6 +130,29 @@ invariant wins.
 Every implementation increment must map tests and acceptance evidence back to
 these numbered invariants.
 
+## Run, Task, Subagent, and Session
+
+Use these terms consistently:
+
+| Term | Meaning |
+|---|---|
+| Run | One Harness-controlled goal and final-audit boundary. |
+| Task | One durable unit of work with route, assignment, and acceptance state. |
+| Subagent | The delegated logical executor or role that performs work. |
+| Session | The concrete host CLI/model context that carries one Subagent instance and its Harness lifecycle record. |
+
+Subagent is the delegated logical executor or role. Session is the concrete
+host CLI/model context. A new delegated Session normally creates a new
+Subagent instance; one compatible Session may execute several Tasks
+sequentially, but never two current Tasks at once. Session is not an account
+login, authentication state, or Task.
+
+Persist Run, Task, and Session as the lifecycle sources of truth. Do not add a
+duplicate Subagent ledger: the Session already records the logical executor's
+role, host, requested and actual model, state, current Task, and ordered Task
+chain. In user-facing views, call these records `Subagent sessions` when the
+extra context prevents Session from being mistaken for login state.
+
 ## Controller Loop
 
 Before writer code, create or confirm a durable brief with:
@@ -160,6 +183,21 @@ After PSOC:
 - apply an independent review whenever a mandatory trigger is present, batch
   all Critical and Important findings into one fixer pass, and re-review;
 - run the final lifecycle audit before claiming completion.
+
+Apply Token decisions in this order:
+
+1. Execute a simple Task on main when delegation provides no isolation,
+   context, capability, or independent-judgment value.
+2. Derive known compatible queued Tasks from durable state, preserve declared
+   order, and partition them into micro-batches of at most two.
+3. Fix role, risk, uncertainty, and quality floors, then choose the lowest
+   eligible `light`, `standard`, or `deep` route.
+4. For one later compatible Task, reuse an idle Session only after atomic claim,
+   durable follow-up acceptance, complete exact causal usage, and proof that
+   both reuse budgets remain. Otherwise start a new Subagent Session only when
+   delegation value exceeds complete cost; execute on main when it does not.
+5. Count bootstrap, context, work, retry, escalation, review, and fixer Tokens,
+   then enforce tests, review, lifecycle audit, and deliberate closure.
 
 Use `references/standalone-methodology.md` for the complete built-in method and
 `references/gates.md` for the executable gate flow.

@@ -92,7 +92,7 @@ solely to carry benchmark data.
 
 ## Information Architecture
 
-The page remains one dense, responsive view with five ordered regions.
+The page remains one dense, responsive view with six ordered regions.
 
 ### 1. Run bar
 
@@ -121,18 +121,34 @@ limit, reuse-eligibility effective-Token cap, evidence requirement for
 increases, and the latest persisted route summary. These are runtime constants
 and activity facts, not observer interpretation.
 
-### 4. Operational grid
+### 4. Release-policy map
+
+Add one compact **How the Harness works** map after the live dispatch-policy
+strip. This is a static release policy, not the current Task trace. It shows
+Task intake, main/delegate choice, strictly compatible batching, quality-first
+model routing, Subagent Session spawn or bounded reuse, complete Token
+accounting, and quality/audit closure. Implement it with semantic HTML and CSS,
+not a client Mermaid dependency or observer-generated text.
+
+### 5. Operational grid
 
 The wide column is a package-grouped task board. Each row shows title, role,
 required profile, state, assigned session, and the latest matching activity.
 Status text and shape accompany every semantic color.
 
-The narrow column is a session dock. Each session shows host, role, requested
-and actual model, routing result, current state, last persisted use, and an
-ordered chain of tasks associated with that session. A reused session therefore
-reads as one continuous work history instead of several disconnected rows.
+The narrow column is labeled **Subagent sessions**. Subagent means the delegated
+logical executor or role; Session means the concrete host CLI/model context and
+lifecycle record that carries one Subagent instance. A new delegated Session
+normally creates a new Subagent instance. Session is not an account login,
+authentication state, or Task.
 
-### 5. Evidence deck
+Each Session shows host, role, requested and actual model, routing result,
+current state, last persisted use, and an ordered chain of Tasks associated
+with that Session. A reused Session therefore reads as one continuous work
+history instead of several disconnected rows. Keep Session as the durable data
+term and do not add a duplicate Subagent table.
+
+### 6. Evidence deck
 
 Show the observed token composition and recent factual activity. Token totals
 cover input, output, reasoning, cache read, and cache write. Add phase totals for

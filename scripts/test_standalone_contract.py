@@ -151,6 +151,33 @@ class StandaloneContractTests(unittest.TestCase):
         for number in range(1, 21):
             self.assertRegex(invariants, rf"(?m)^{number}\. \*\*")
 
+    def test_skill_explains_subagent_task_and_session_boundaries(self) -> None:
+        skill = " ".join(self.read(SKILL_PATH).split())
+        for required in [
+            "Subagent is the delegated logical executor or role",
+            "Session is the concrete host CLI/model context",
+            "A new delegated Session normally creates a new Subagent instance",
+            "Session is not an account login",
+        ]:
+            self.assertIn(required, skill)
+
+    def test_public_docs_explain_execution_model_and_token_flow(self) -> None:
+        for relative in ["README.md", "docs/current-state.md"]:
+            with self.subTest(relative=relative):
+                text = self.read(relative)
+                normalized = " ".join(text.split())
+                for term in ["Run", "Task", "Subagent", "Session"]:
+                    self.assertIn(term, text)
+                self.assertIn("Session is not an account login", normalized)
+                self.assertIn("```mermaid", text)
+                self.assertIn("Count complete effective Tokens", text)
+
+        dashboard_design = self.read(
+            "docs/specs/2026-07-15-results-dashboard-design.md"
+        )
+        self.assertIn("Subagent sessions", dashboard_design)
+        self.assertIn("static release policy", dashboard_design)
+
     def test_skill_limits_batching_to_evidence_bounded_compatible_micro_batches(
         self,
     ) -> None:

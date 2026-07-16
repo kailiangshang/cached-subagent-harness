@@ -52,12 +52,23 @@ phase-lazy methodology integration; its absence is not degraded mode.
 
 The controller applies this order:
 
-```text
-trivial work with no isolation need              -> execute on main
-multiple strictly compatible queued Tasks       -> micro-batches of at most two
-one later compatible Task inside both budgets   -> reuse a Session
-delegation benefit exceeds complete cost         -> spawn a Session
-otherwise                                        -> execute on main
+```mermaid
+flowchart TD
+    A[Queued Task] --> B{Simple and no isolation value?}
+    B -- Yes --> C[Main executes directly]
+    B -- No --> D{Delegation value exceeds complete cost?}
+    D -- No --> C
+    D -- Yes --> E[Derive strictly compatible ready Tasks]
+    E --> F[Preserve order; micro-batch at most 2]
+    F --> G[Fix role, risk, uncertainty, and quality floors]
+    G --> H[Choose lowest eligible light / standard / deep route]
+    H --> I{Compatible idle Session with exact usage and budget?}
+    I -- Yes --> J[Accept at most one follow-up and reuse]
+    I -- No --> K[Start a new Subagent Session]
+    C --> L[Count complete effective Tokens]
+    J --> L
+    K --> L
+    L --> M[Tests, independent review, audit, and close]
 ```
 
 Compatibility includes role, required profile, risk, package, write scope,
@@ -94,18 +105,28 @@ fixer phases. Missing values remain unknown. Estimates disclose method,
 eligible sample count, and quality; cross-provider monetary savings remain
 unsupported without explicit compatible price data.
 
-## Run, Task, and Session
+## Run, Task, Subagent, and Session
 
 | Object | Meaning | Important boundary |
 |---|---|---|
 | Run | One Harness-controlled goal and final-audit scope | Owns all Tasks, Sessions, usage, and activity for that effort |
 | Task | One durable unit of work | Has status, compatibility facts, assignment, and acceptance; detailed evidence lives in the Run-level external report |
-| Session | One resumable host CLI/model context represented in Harness state | May carry compatible Tasks sequentially; never carries two current Tasks |
+| Subagent | The delegated logical executor or role that performs work | Represented by its role and execution facts; it is not a second lifecycle ledger |
+| Session | The concrete resumable host CLI/model context that carries one Subagent instance | May carry compatible Tasks sequentially; never carries two current Tasks |
 
-Session does not mean account login or browser authentication. It is also not
-synonymous with Task: a Task is work, while a Session is the host context that
-may perform that work. A Session visible in a host UI is not automatically open
-or reusable in Harness state.
+Subagent is the delegated logical executor or role. Session is the concrete
+host CLI/model context and lifecycle record. A new delegated Session normally
+creates a new Subagent instance; one compatible Session may let it execute
+several Tasks sequentially. Session is not an account login, browser
+authentication state, or Task: a Task is work, while a Session is the host
+context that may perform it. A Session visible in a host UI is not automatically
+open or reusable in Harness state.
+
+The compact runtime deliberately does not persist a duplicate Subagent table.
+The Session already carries role, host, requested and actual model, status,
+current Task, and the ordered Task chain. User-facing presentation calls these
+records **Subagent sessions** to make the logical executor visible without
+creating two lifecycle sources of truth.
 
 ## Host Boundary
 
@@ -133,7 +154,9 @@ It shows only Harness facts for one Run:
 - progress and factual Run freshness;
 - the active dispatch-policy limits and latest factual route decision;
 - Task states, package grouping, current work, and latest activity;
-- Session host/profile/model facts and ordered assignment chains;
+- Subagent Session host/role/profile/model facts and ordered assignment chains;
+- a static release-policy map, explicitly separated from the latest observed
+  route and current Run data;
 - exact or explicitly qualified Token totals and phase composition;
 - reuse, churn, assignments per spawn, estimate method, sample count, and
   quality.
