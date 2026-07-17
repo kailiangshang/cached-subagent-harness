@@ -2,7 +2,7 @@
 
 Date: 2026-07-16
 
-Status: approved for implementation
+Status: implemented and verified in `v0.2.0`
 
 ## Purpose
 

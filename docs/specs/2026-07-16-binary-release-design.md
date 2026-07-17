@@ -1,7 +1,7 @@
 # Binary Release Productization Design
 
 Date: 2026-07-16
-Status: approved by user for autonomous implementation and public release
+Status: implemented, verified, and published as `v0.2.0`
 Target release: `v0.2.0`
 
 ## Product Position

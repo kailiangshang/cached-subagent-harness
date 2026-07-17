@@ -303,16 +303,14 @@ class StandaloneContractTests(unittest.TestCase):
         current_state = self.read("docs/current-state.md")
         for link in [
             "specs/2026-07-16-binary-release-design.md",
-            "plans/2026-07-16-binary-release-plan.md",
-            "../binary-release-implementation.md",
             "releases/0.2.0.md",
+            "releases/tag/v0.2.0",
         ]:
             self.assertIn(link, current_state)
 
         for relative in [
             "docs/specs/2026-07-16-binary-release-design.md",
-            "docs/plans/2026-07-16-binary-release-plan.md",
-            "binary-release-implementation.md",
+            "docs/releases/0.2.0.md",
             ".github/workflows/release.yml",
         ]:
             text = self.read(relative)
@@ -323,19 +321,82 @@ class StandaloneContractTests(unittest.TestCase):
             " ".join(notes.split()),
         )
 
-    def test_current_state_attributes_this_increment_to_its_own_report(
-        self,
-    ) -> None:
-        current_state = self.read("docs/current-state.md")
-        self.assertIn(
+    def test_productized_documentation_boundary(self) -> None:
+        retained = [
+            "README.md",
+            "docs/benchmarks/2026-07-15-signal-sweep-corrected-ab.md",
+            "docs/benchmarks/2026-07-15-signal-sweep-real-ab.md",
+            "docs/current-state.md",
+            "docs/game-dev-ab-benchmark.md",
+            "docs/releases/0.2.0.md",
+            "docs/specs/2026-07-14-lightweight-token-harness-design.md",
+            "docs/specs/2026-07-15-results-dashboard-design.md",
+            "docs/specs/2026-07-16-binary-release-design.md",
+            "docs/specs/2026-07-16-subagent-session-token-strategy-design.md",
+            "docs/superpowers.md",
+            "docs/token-effectiveness-task.md",
+            "skills/cached-subagent-harness/SKILL.md",
+            "skills/cached-subagent-harness/references/gates.md",
+            "skills/cached-subagent-harness/references/prompt-layering.md",
+            "skills/cached-subagent-harness/references/report-contracts.md",
+            "skills/cached-subagent-harness/references/standalone-methodology.md",
+        ]
+        deleted_process_docs = [
+            "binary-release-implementation.md",
+            "corrected-signal-sweep-implementation.md",
+            "lightweight-token-harness-review.md",
+            "results-dashboard-implementation.md",
             "subagent-session-token-strategy-implementation.md",
-            current_state,
+            "docs/plans/2026-07-10-standalone-methodology-increment.md",
+            "docs/plans/2026-07-12-observability-schema-increment.md",
+            "docs/plans/2026-07-14-lightweight-token-harness-plan.md",
+            "docs/plans/2026-07-15-results-dashboard-and-signal-sweep-plan.md",
+            "docs/plans/2026-07-16-binary-release-plan.md",
+            "docs/plans/2026-07-16-subagent-session-token-strategy-plan.md",
+            "docs/skill-tests/standalone-methodology-pressure-tests.md",
+            "docs/specs/2026-07-10-agent-control-plane-design.md",
+            "docs/specs/2026-07-12-dashboard-visual-baseline.md",
+            "docs/specs/2026-07-12-observability-schema-delta.md",
+        ]
+
+        for relative in retained:
+            self.assertTrue((REPO_ROOT / relative).is_file(), relative)
+        for relative in deleted_process_docs:
+            self.assertFalse((REPO_ROOT / relative).exists(), relative)
+
+        markdown_files = subprocess.run(
+            [
+                "git",
+                "ls-files",
+                "--cached",
+                "--others",
+                "--exclude-standard",
+                "--",
+                "*.md",
+            ],
+            cwd=REPO_ROOT,
+            text=True,
+            capture_output=True,
+            check=True,
         )
-        self.assertNotIn(
-            "for this increment's full verification, final review, and "
-            "lifecycle audit",
-            " ".join(current_state.split()),
-        )
+        actual = {
+            relative
+            for relative in markdown_files.stdout.splitlines()
+            if (REPO_ROOT / relative).is_file()
+        }
+        self.assertSetEqual(set(retained), actual)
+
+        current_state = self.read("docs/current-state.md")
+        for forbidden in [
+            "-implementation.md",
+            "-review.md",
+            "plans/",
+            "skill-tests/",
+            "2026-07-10-agent-control-plane-design.md",
+            "2026-07-12-dashboard-visual-baseline.md",
+            "2026-07-12-observability-schema-delta.md",
+        ]:
+            self.assertNotIn(forbidden, current_state)
 
     def test_dashboard_strategy_returns_nonvaluable_delegation_to_main(
         self,

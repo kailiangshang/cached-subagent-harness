@@ -5,9 +5,9 @@
 Implemented and verified on 2026-07-15. Two separate Signal Sweep runs rejected
 both repeated continuation and one four-slice long turn. The Dashboard now
 shows the evidence-bounded dispatch limits and latest factual route without
-becoming a control plane. See
-[`results-dashboard-implementation.md`](../../results-dashboard-implementation.md)
-for delivery, review, and final-audit evidence.
+becoming a control plane. See the
+[`current product state`](../current-state.md) for the retained delivery and
+verification boundary.
 
 ## Problem
 

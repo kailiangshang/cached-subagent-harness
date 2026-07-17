@@ -12,10 +12,10 @@ with a small standalone harness whose primary outcome is lower total effective
 token use at unchanged quality. The Dashboard is mandatory, but it remains a
 read-only view over the same compact state used by the CLI.
 
-This design supersedes the implementation scope and delivery boundaries in
-`2026-07-10-agent-control-plane-design.md`. The earlier document remains history,
-not an implementation requirement. The standalone principles completed in
-increment 1 remain binding.
+This design supersedes the earlier event-sourced implementation scope and
+delivery boundaries retained in Git history. That earlier scope is not an
+implementation requirement. The standalone principles completed in increment 1
+remain binding.
 
 Live evidence correction (2026-07-15): the original example of one Session
 plus five sequential follow-ups is invalid. A real four-assignment Signal Sweep

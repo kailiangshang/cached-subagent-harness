@@ -8,8 +8,9 @@ GitHub Release workflow, and downloaded-binary checksum/execution evidence
 
 This is the shortest current-state entry point for `cached-subagent-harness`.
 It summarizes the implemented product and points to the binding contracts and
-retained evidence. Historical plans remain in the repository for audit, but
-their status banners determine whether they still govern implementation.
+retained evidence. Completed plans, review transcripts, implementation reports,
+and superseded designs remain available through Git history rather than the
+current product documentation tree.
 
 ## Product Priority
 
@@ -231,59 +232,28 @@ exactly the five documented platform archives plus `SHA256SUMS`. A fresh public
 download of the 1,688,956-byte Linux x86-64 archive matched checksum
 `79b8365e71056cfcd6b3f385f6eec35b8dc54e16a66b0d01c0b2b906acbe4f47`,
 contained only regular `harnessctl` and `LICENSE` members, and executed
-`harnessctl --help`. Full acceptance and residual risks are recorded in
-[`binary-release-implementation.md`](../binary-release-implementation.md).
-
-The preceding 2026-07-16 Subagent Session and Token strategy increment passed
-its own post-fix verification:
-
-- Rust tests: 52/52;
-- Python tests: 47/47 across install, standalone contract, Token-effectiveness,
-  and game A/B suites;
-- Clippy with warnings denied and a release build;
-- release metadata plus the system Skill package validator;
-- prompt-cache, offline Token, game A/B, and lifecycle regression gates;
-- exact zh-CN/en-US locale-key parity and decision-order/branch contracts;
-- zh-CN/en-US 1440×960 and constrained 390×844 visual checks with no horizontal
-  overflow or clipped policy copy.
-
-The first independent whole-diff review found no Critical issue and four
-Important issues. The delegation gate, Dashboard branch semantics, invariant
-boundary, and authoritative documentation were corrected in one bounded pass;
-the two Minor test/type-size findings were corrected with them. The fresh
-whole-diff re-review verified those fixes and found one stale historical
-evidence attribution; a focused RED/GREEN fix and narrow independent re-review
-then passed with no remaining finding. Final full verification and the Run
-lifecycle audit passed and are recorded in
-[`subagent-session-token-strategy-implementation.md`](../subagent-session-token-strategy-implementation.md).
-
-The preceding Dashboard delivery has its separate historical 50-Rust/33-Python
-verification and two-review record in
-[`results-dashboard-implementation.md`](../results-dashboard-implementation.md).
-The corrected Signal Sweep policy increment retains its own verification,
-review, and lifecycle evidence in
-[`corrected-signal-sweep-implementation.md`](../corrected-signal-sweep-implementation.md)
-and does not represent the current delivery.
+`harnessctl --help`. The retained acceptance boundary is documented in the
+[`v0.2.0` release notes](releases/0.2.0.md) and the
+[`binary release design`](specs/2026-07-16-binary-release-design.md).
 
 ## Document Authority
 
 | Document | Current role |
 |---|---|
+| [`README.md`](../README.md) | Product overview, quick start, installation, and primary navigation |
 | [`SKILL.md`](../skills/cached-subagent-harness/SKILL.md) | Binding controller constitution and workflow |
+| This current-state record | Implemented architecture, measured claim boundary, and verification state |
 | [`v0.2.0 release notes`](releases/0.2.0.md) | User-facing assets, installers, compatibility, evidence, and security boundary |
-| [`v0.2.0 binary release design`](specs/2026-07-16-binary-release-design.md) | Approved distribution and installer architecture |
-| [`v0.2.0 binary release plan`](plans/2026-07-16-binary-release-plan.md) | Task-by-task release execution and acceptance gates |
-| [`binary-release-implementation.md`](../binary-release-implementation.md) | Current release tests, reviews, public acceptance, and lifecycle audit |
-| [`2026-07-16 Subagent Session strategy`](specs/2026-07-16-subagent-session-token-strategy-design.md) | Approved four-term model, Token decision order, and presentation boundary |
-| [`subagent-session-token-strategy-implementation.md`](../subagent-session-token-strategy-implementation.md) | Current increment, tests, visual evidence, reviews, and lifecycle audit |
-| [`2026-07-14 lightweight design`](specs/2026-07-14-lightweight-token-harness-design.md) | Canonical lightweight architecture, amended by live evidence |
+| [`v0.2.0 binary release design`](specs/2026-07-16-binary-release-design.md) | Implemented distribution and installer architecture |
+| [`2026-07-16 Subagent Session strategy`](specs/2026-07-16-subagent-session-token-strategy-design.md) | Implemented four-term model, Token decision order, and presentation boundary |
+| [`2026-07-14 lightweight design`](specs/2026-07-14-lightweight-token-harness-design.md) | Canonical lightweight architecture, amended by retained live evidence |
 | [`2026-07-15 Dashboard design`](specs/2026-07-15-results-dashboard-design.md) | Implemented presentation and validation boundary |
 | [`Corrected Signal Sweep evidence`](benchmarks/2026-07-15-signal-sweep-corrected-ab.md) | Exact large-batch RED result and current policy correction |
 | [`Historical Signal Sweep evidence`](benchmarks/2026-07-15-signal-sweep-real-ab.md) | Exact repeated-follow-up RED result |
-| [`corrected-signal-sweep-implementation.md`](../corrected-signal-sweep-implementation.md) | Retained policy-correction verification, reviews, and audit |
-| [`results-dashboard-implementation.md`](../results-dashboard-implementation.md) | Completed delivery, tests, fixes, and final audit |
-| 2026-07-10/12 umbrella and event-runtime documents | Historical/superseded evidence only |
-| Implementation plans | Historical execution records; status banners identify completion or supersession |
+| [`Game-development A/B protocol`](game-dev-ab-benchmark.md) and [`Token-effectiveness task`](token-effectiveness-task.md) | Reproducible benchmark protocols and acceptance rules |
+| [`Optional Superpowers integration`](superpowers.md) | Phase-lazy optional methodology boundary |
+| [`Gates`](../skills/cached-subagent-harness/references/gates.md), [`prompt layering`](../skills/cached-subagent-harness/references/prompt-layering.md), [`report contracts`](../skills/cached-subagent-harness/references/report-contracts.md), and [`standalone methodology`](../skills/cached-subagent-harness/references/standalone-methodology.md) | Operational references loaded by the Skill when relevant |
 
-When a historical plan conflicts with the current Skill, lightweight designs,
-runtime gates, or retained live evidence, the current contract wins.
+Historical process records and superseded designs remain reachable through Git
+history. They do not govern the current product; the current Skill, retained
+designs, runtime gates, release notes, and retained evidence do.
