@@ -429,6 +429,25 @@ explicit `--allow-remote true` opt-in. The embedded server has no authentication
 or TLS. Keep it on loopback, or expose it only through a trusted,
 access-controlled network or tunnel.
 
+### Dashboard Preview
+
+![Cached Subagent Harness Dashboard in zh-CN](docs/assets/dashboard-overview-zh-cn.png)
+
+The zh-CN desktop view above comes from a sanitized representative Run rendered
+by the current embedded Dashboard. The top-right switch presents the same view
+in en-US. It makes five groups of facts visible without becoming a controller:
+
+- **Run progress and freshness** show accepted, active, reported, and queued
+  work together with the last persisted update.
+- **Outcome metrics** report exact effective Token use, telemetry quality,
+  Session reuse, assignments per spawn, and only evidence-backed estimates.
+- **The dispatch policy and policy map** separate current limits and the latest
+  factual route from the static explanation of how the Harness works.
+- **Tasks and Subagent sessions** connect durable work states to the concrete
+  Codex, Claude Code, or OpenCode context carrying each logical executor.
+- **Safety boundaries** remain visible: the page does not contain Baseline
+  comparisons, prompts, source content, sensitive paths, or billing claims.
+
 ## Benchmarks 📊
 
 This repo has two benchmark layers.

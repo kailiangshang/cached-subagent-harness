@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -231,6 +232,44 @@ class StandaloneContractTests(unittest.TestCase):
         )
         self.assertIn("Subagent sessions", dashboard_design)
         self.assertIn("static release policy", dashboard_design)
+
+    def test_readme_presents_a_factual_dashboard_screenshot(self) -> None:
+        readme = self.read("README.md")
+        preview = extract_section(
+            readme,
+            "### Dashboard Preview",
+            "\n## Benchmarks",
+        )
+        self.assertRegex(
+            preview,
+            r"!\[[^\]]+\]\(docs/assets/dashboard-overview-zh-cn\.png\)",
+        )
+        normalized_preview = " ".join(preview.split())
+        for required in [
+            "sanitized representative Run",
+            "Run progress and freshness",
+            "accepted, active, reported, and queued",
+            "Session reuse",
+            "assignments per spawn",
+            "dispatch policy",
+            "latest factual route",
+            "static explanation",
+            "Subagent sessions",
+            "Codex, Claude Code, or OpenCode",
+            "effective Token",
+            "does not contain Baseline",
+            "prompts",
+            "source content",
+            "sensitive paths",
+            "billing claims",
+        ]:
+            self.assertIn(required, normalized_preview)
+
+        screenshot = (
+            REPO_ROOT / "docs/assets/dashboard-overview-zh-cn.png"
+        ).read_bytes()
+        self.assertEqual(b"\x89PNG\r\n\x1a\n", screenshot[:8])
+        self.assertEqual((1440, 960), struct.unpack(">II", screenshot[16:24]))
 
     def test_public_docs_define_the_v020_binary_release_contract(self) -> None:
         readme = self.read("README.md")
